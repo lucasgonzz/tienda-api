@@ -140,6 +140,9 @@ Route::get('/delivery-zones/{commerce_id}',
 	Route::post('/messages',
 		'MessageController@store'
 	);
+
+	// Mail to commerce
+	Route::post('/mail-to-commerce', 'MailController@mailToCommerce');
 	
 	// Cupons
 	Route::get('cupons', 

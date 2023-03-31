@@ -40,12 +40,11 @@ class HomeController extends Controller
                             ->checkStock()
                             ->orderBy('created_at', 'DESC');
         if ($category_id != 0) {
-            Log::info('entor acaaaa');
             $articles = $articles->where('category_id', $category_id);
         } else {
             $articles = $articles->where('sub_category_id', $sub_category_id);
         }
-        $articles = $articles->get();
+        $articles = $articles->paginate(6);
         $articles = ArticleHelper::checkPriceTypes($articles);
         return response()->json(['articles' => $articles], 200);
     }

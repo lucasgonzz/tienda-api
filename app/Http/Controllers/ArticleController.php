@@ -108,7 +108,7 @@ class ArticleController extends Controller {
     }
 
     function search($query, $commerce_id, $save_last_search = true) {
-        $query = str_replace('-', ' ', $query);
+        $query = str_replace('%20', ' ', $query);
         $articles = Article::where('user_id', $commerce_id)
                             ->where(function($q) use ($query, $commerce_id) {
                                 $q->whereHas('tags', function($e) use ($query) {

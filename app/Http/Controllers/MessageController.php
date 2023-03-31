@@ -45,4 +45,5 @@ class MessageController extends Controller
         $commerce->notify(new MessageSend($message));
         return response()->json(['message' => $message], 201);
     }
+
 }
