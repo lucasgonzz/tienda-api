@@ -36,7 +36,7 @@ class Article extends Model
     */
     function scopeCheckStock($query) {
         $commerce = User::find(request()->commerce_id);
-        if (!$commerce->configuration->show_articles_without_stock) {
+        if (!$commerce->show_articles_without_stock) {
             return $query->where(function($sub_query) {
                 $sub_query->where('stock', '>', 0)
                     ->orWhereNull('stock');
