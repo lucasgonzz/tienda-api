@@ -13,6 +13,7 @@ class CommerceController extends Controller
         $commerce = User::where('id', $commerce_id)
                         ->with('addresses')
                         ->with('configuration')
+                        ->with('online_price_type')
                         ->first();
         return response()->json(['commerce' => $commerce], 200);
     }

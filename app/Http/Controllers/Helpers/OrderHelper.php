@@ -41,6 +41,10 @@ class OrderHelper
         return $cart->deliver ? $cart->address_id : null;
     }
 
+    static function getPaymentMethodDiscount($cart) {
+        return !is_null($cart->payment_method->discount) ? $cart->payment_method->discount : null;
+    }
+
     static function deleteOrderCart($cart) {
         if (!is_null($cart->order_id)) {
             $order = Order::find($cart->order_id);

@@ -46,19 +46,20 @@ class OrderController extends Controller
     function store(Request $request) {
         $cart = Cart::find($request->cart_id);
     	$order = Order::create([
-            'num'               => $this->num('orders', $request->commerce_id),
-    		'buyer_id'          => $this->buyerId(),
-    		'user_id'           => $request->commerce_id,
-            'status'            => 'unconfirmed',
-            'payment_id'        => $cart->payment_id,
-            'payment_method_id' => $cart->payment_method_id,
-            'delivery_zone_id'  => $cart->delivery_zone_id,
-            'cupon_id'          => $cart->cupon_id,
-    		'percentage_card'   => null,
-    		'deliver'           => $cart->deliver,
-            'description'       => $cart->description,
-            'order_status_id'   => $this->getModelBy('order_statuses', 'name', 'Sin confirmar', false, 'id'),
-            'address_id'        => OrderHelper::getAddressId($cart),
+            'num'                       => $this->num('orders', $request->commerce_id),
+    		'buyer_id'                  => $this->buyerId(),
+    		'user_id'                   => $request->commerce_id,
+            'status'                    => 'unconfirmed',
+            'payment_id'                => $cart->payment_id,
+            'payment_method_id'         => $cart->payment_method_id,
+            'delivery_zone_id'          => $cart->delivery_zone_id,
+            'cupon_id'                  => $cart->cupon_id,
+    		'percentage_card'           => null,
+    		'deliver'                   => $cart->deliver,
+            'description'               => $cart->description,
+            'order_status_id'           => $this->getModelBy('order_statuses', 'name', 'Sin confirmar', false, 'id'),
+            'payment_method_discount'   => OrderHelper::getPaymentMethodDiscount($cart),
+            'address_id'                => OrderHelper::getAddressId($cart),
     	]);
 
         $cart = CartHelper::getFullModel($cart->id);
