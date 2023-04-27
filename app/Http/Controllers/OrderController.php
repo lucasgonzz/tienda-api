@@ -59,6 +59,7 @@ class OrderController extends Controller
             'description'               => $cart->description,
             'order_status_id'           => $this->getModelBy('order_statuses', 'name', 'Sin confirmar', false, 'id'),
             'payment_method_discount'   => OrderHelper::getPaymentMethodDiscount($cart),
+            'payment_method_surchage'   => OrderHelper::getPaymentMethodSurchage($cart),
             'address_id'                => OrderHelper::getAddressId($cart),
     	]);
 

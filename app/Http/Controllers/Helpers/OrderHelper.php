@@ -45,6 +45,10 @@ class OrderHelper
         return !is_null($cart->payment_method->discount) ? $cart->payment_method->discount : null;
     }
 
+    static function getPaymentMethodSurchage($cart) {
+        return !is_null($cart->payment_method->surchage) ? $cart->payment_method->surchage : null;
+    }
+
     static function deleteOrderCart($cart) {
         if (!is_null($cart->order_id)) {
             $order = Order::find($cart->order_id);
@@ -66,10 +70,15 @@ class OrderHelper
     static function attachArticles($cart, $order, $dolar_blue) {
         foreach ($cart->articles as $article) {
             Log::info('cart pivot price: '.$article->pivot->price);
+            $price = $article->pivot->price;
+            $user = User::find($order->user_id);
+            if (!is_null($user->online_price_surchage)) {
+                $price += $price * (float)$user->online_price_surchage / 100;
+            }
             $order->articles()->attach([$article->id => [
                                             'amount'      => $article->pivot->amount,
                                             'cost'        => $article->pivot->cost,
-                                            'price'       => $article->pivot->price,
+                                            'price'       => $price,
                                             'color_id'    => $article->pivot->color_id,
                                             'size_id'     => $article->pivot->size_id,
                                             // 'with_dolar'  => ArticleHelper::getDolar($article, $dolar_blue),

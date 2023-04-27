@@ -66,7 +66,7 @@ class MessageSend extends Notification
                     ->markdown('emails.message-send', [
                         'commerce'  => $notifiable->user,
                         'message'   => $this->message->text,
-                        'logo_url'  => ImageHelper::image($notifiable->user),
+                        'logo_url'  => $this->commerce->image_url,
                     ]);
     }
 }

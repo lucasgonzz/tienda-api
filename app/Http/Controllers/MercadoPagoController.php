@@ -11,12 +11,13 @@ use Illuminate\Support\Facades\Log;
 class MercadoPagoController extends Controller
 {
     function preference(Request $request) {
-        $payment_method = PaymentMethod::find($request->payment_method['id']);
-        \MercadoPago\SDK::setAccessToken($payment_method->access_token);
+        $this->payment_method = PaymentMethod::find($request->payment_method['id']);
+        \MercadoPago\SDK::setAccessToken($this->payment_method->access_token);
 
         // Crea un objeto de preferencia
         $preference = new \MercadoPago\Preference();
-
+        $this->commerce = User::find($request->payment_method['user_id']);
+        Log::info('commerce online_price_surchage: '.$this->commerce->online_price_surchage);
         $articles = $this->setPrices($request->cupon, $request->delivery_zone, $request->articles);
         $items = [];
         foreach ($articles as $article) {
@@ -29,11 +30,10 @@ class MercadoPagoController extends Controller
         }
         $preference->items = $items;
 
-        $commerce = User::find($request->payment_method['user_id']);
         $preference->back_urls = [
-            'success' => $commerce->online.'/pago-exitoso',
-            'pending' => $commerce->online.'/pago-pendiente',
-            'failure' => $commerce->online.'/pago-rechazado',
+            'success' => $this->commerce->online.'/pago-exitoso',
+            'pending' => $this->commerce->online.'/pago-pendiente',
+            'failure' => $this->commerce->online.'/pago-rechazado',
         ];
 
         $preference->save();
@@ -42,13 +42,84 @@ class MercadoPagoController extends Controller
     }
 
     function setPrices($cupon, $delivery_zone, $articles) {
+        $index = 0;
+        if (!is_null($cupon)) {
+            if (!is_null($cupon['amount'])) {
+                $total_amount = $cupon['amount'];
+                foreach ($articles as $article) {
+                    $price = $this->getArticlePrice($article) * $article['amount'];
+                    if ($price > $total_amount) {
+                        Log::info('Descontando '.$total_amount.' a '.$article['name'].' price: '.$price);
+                        $price -= $total_amount;
+                        $total_amount = 0;
+                        $price = $price / $article['amount'];
+                        $new_article = [
+                            'name'      => $article['name'],
+                            'amount'    => $article['amount'],
+                            'final_price'     => $price,
+                        ];
+                        $articles[$index] = $new_article;
+                    } else {
+                        $price -= 1;
+                        $total_amount -= $price;
+                        Log::info('No alcanzo. Descontando '.$price.' a total_amount: '.$total_amount);
+                        $total_amount -= $price;
+                        Log::info('total_amount: '.$total_amount);
+                        $price = 1 / $article['amount'];
+                        $new_article = [
+                            'name'      => $article['name'],
+                            'amount'    => $article['amount'],
+                            'final_price'     => $price,
+                        ];
+                        $articles[$index] = $new_article;
+                    }
+                    $index++;
+                }
+            } else if (!is_null($cupon['percentage'])) {
+                foreach ($articles as $article) {
+                    $price = $this->getArticlePrice($article);
+                    Log::info($article['name'].' $'.$price.' x '.$article['amount']);
+                    $new_article = [
+                        'name'      => $article['name'],
+                        'amount'    => $article['amount'],
+                    ];
+                    Log::info('Descontando '.$cupon['percentage'].'% a '.$price);
+                    $new_article['final_price'] = $price - floatval($price) * floatval($cupon['percentage']) / 100;
+                    $articles[$index] = $new_article;
+                    Log::info('Quedo en $'.$articles[$index]['final_price']);
+                    $index++;
+                }
+            }
+        } else {
+            foreach ($articles as $article) {
+                $new_article = [
+                    'name'          => $article['name'],
+                    'final_price'   => $this->getArticlePrice($article),
+                    'amount'        => $article['amount'],
+                ];
+                $articles[$index] = $new_article;
+                $index++;
+            }
+        }
+        if (!is_null($delivery_zone)) {
+            $articles[] = [
+                'name'          => 'Envio',
+                'amount'        => 1,
+                'final_price'   => $delivery_zone['price'],
+            ];
+        }
+        return $articles;
+    }
+
+    function old() {
+
         if (!is_null($cupon)) {
             // $new_articles = [];
             $index = 0;
             if (!is_null($cupon['amount'])) {
                 $total_amount = $cupon['amount'];
                 foreach ($articles as $article) {
-                    $price = $article['final_price'] * $article['amount'];
+                    $price = $this->getArticlePrice($article) * $article['amount'];
                     if ($price > $total_amount) {
                         Log::info('Descontando '.$total_amount.' a '.$article['name'].' price: '.$price);
                         $price -= $total_amount;
@@ -77,13 +148,14 @@ class MercadoPagoController extends Controller
                 }
             } else {
                 foreach ($articles as $article) {
-                    Log::info($article['name'].' $'.$article['final_price'].' x '.$article['amount']);
+                    $price = $this->getArticlePrice($article);
+                    Log::info($article['name'].' $'.$price.' x '.$article['amount']);
                     $new_article = [
                         'name'      => $article['name'],
                         'amount'    => $article['amount'],
                     ];
-                    Log::info('Descontando '.$cupon['percentage'].'% a '.$article['final_price']);
-                    $new_article['price'] = floatval($article['final_price']) - floatval($article['final_price']) * floatval($cupon['percentage']) / 100;
+                    Log::info('Descontando '.$cupon['percentage'].'% a '.$price);
+                    $new_article['price'] = floatval($price) - floatval($price) * floatval($cupon['percentage']) / 100;
                     $articles[$index] = $new_article;
                     Log::info('Quedo en $'.$articles[$index]['price']);
                     $index++;
@@ -92,7 +164,7 @@ class MercadoPagoController extends Controller
             
             Log::info('---------Quedaron asi-----------');
             foreach ($articles as $article) {
-                Log::info($article['name'].' $'.$article['final_price'].' x '.$article['amount']);
+                Log::info($article['name'].' $'.$price.' x '.$article['amount']);
             }
         } 
         if (!is_null($delivery_zone)) {
@@ -107,5 +179,22 @@ class MercadoPagoController extends Controller
             $articles[0] = $new_article;
         }
         return $articles;
+    }
+
+    function getArticlePrice($article) {
+        $price = $article['final_price'];
+        if (!is_null($this->commerce->online_price_surchage)) {
+            $price += $price * $this->commerce->online_price_surchage / 100;
+            Log::info('Sumando recargo del comercio del '.$this->commerce->online_price_surchage);
+        }
+        if (!is_null($this->payment_method->surchage)) {
+            $price += $price * $this->payment_method->surchage / 100;
+            Log::info('Sumando recargo del '.$this->payment_method->surchage);
+        }
+        if (!is_null($this->payment_method->discount)) {
+            $price -= $price * $this->payment_method->discount / 100;
+            Log::info('Restado descuento del '.$this->payment_method->surchage);
+        }
+        return $price;
     }
 }
