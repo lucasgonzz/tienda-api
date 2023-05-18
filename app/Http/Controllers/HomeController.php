@@ -59,7 +59,9 @@ class HomeController extends Controller
     function categories($commerce_id) {
         $categories = Category::where('user_id', $commerce_id)
                                 ->where('name', '!=', 'La de siempre')
-                                ->with('sub_categories')
+                                ->with(['sub_categories' => function($query) {
+                                    $query->orderBy('name', 'ASC');
+                                }])
                                 ->orderBy('name', 'ASC')
                                 ->get();
         // $categories = HomeHelper::addIndexCategory($categories, $commerce_id);

@@ -59,7 +59,7 @@ class AuthController extends Controller
         }
         $buyer = Buyer::where('id', $id)
                         // ->with('document')
-                        ->with('addresses')
+                        ->withAll()
                         ->first();
         Self::setLastLogin($buyer);
         // $buyer = BuyerHelper::addMercadoPagoCards($buyer);
