@@ -71,7 +71,7 @@ class OrderController extends Controller
         $order = Order::where('id', $order->id)
                         ->withAll()
                         ->first();
-        $order->articles = ArticleHelper::setArticlesRelationsFromPivot($order->articles);
+        $order->articles = ArticleHelper::setArticlesVariants($order->articles);
         MessageHelper::sendOrderCreatedMessage($order);
         $this->sendAddModelNotification('order', $order->id, false, $order->user_id);
         Auth::guard('buyer')->user()->notify(new OrderCreated($order));

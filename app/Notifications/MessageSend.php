@@ -3,6 +3,7 @@
 namespace App\Notifications;
 
 use App\Http\Controllers\Helpers\ImageHelper;
+use App\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\BroadcastMessage;
@@ -25,6 +26,7 @@ class MessageSend extends Notification
         $this->message = $message;
         $this->for_buyer = $for_buyer;
         $this->title = $title;
+        $this->commerce = User::find($message->user_id);
     }
 
     /**

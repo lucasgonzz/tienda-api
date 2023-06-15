@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\ArticleVariant;
 use App\Color;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -17,7 +18,6 @@ class ArticleHelper
         $buyer = Auth('buyer')->user();
         if (!is_null($buyer)) {
             if (!is_null($buyer->comercio_city_client) && !is_null($buyer->comercio_city_client->price_type)) {
-                Log::info('entrooo');
                 $price_types = PriceType::where('user_id', $buyer->user_id)
                                         ->whereNotNull('position')
                                         ->orderBy('position', 'ASC')
@@ -186,39 +186,50 @@ class ArticleHelper
         return $articles;
     }
 
-    static function setArticlesRelationsFromPivot($articles) {
-        $articles = Self::setArticlesColor($articles);
-        $articles = Self::setArticlesSize($articles);
-        return $articles;
-    }
-
-    static function setArticlesColor($articles) {
-        $colors = Color::all();
+    static function setArticlesVariants($articles) {
         foreach ($articles as $article) {
-            if (isset($article->pivot) && $article->pivot->color_id) {
-                foreach ($colors as $color) {
-                    if ($color->id == $article->pivot->color_id) {
-                        $article->color = $color;
-                    }
-                }
+            if (isset($article->pivot) && !is_null($article->pivot->variant_id)) {
+                $article->selected_variant = ArticleVariant::where('id', $article->pivot->variant_id)
+                                                            ->with('article_property_values.article_property_type')
+                                                            ->first();
             } 
         }
         return $articles;
     }
 
-    static function setArticlesSize($articles) {
-        $sizes = Size::all();
-        foreach ($articles as $article) {
-            if (isset($article->pivot) && $article->pivot->size_id) {
-                foreach ($sizes as $size) {
-                    if ($size->id == $article->pivot->size_id) {
-                        $article->size = $size;
-                    }
-                }
-            } 
-        }
-        return $articles;
-    }
+    // static function setArticlesRelationsFromPivot($articles) {
+    //     $articles = Self::setArticlesColor($articles);
+    //     $articles = Self::setArticlesSize($articles);
+    //     return $articles;
+    // }
+
+    // static function setArticlesColor($articles) {
+    //     $colors = Color::all();
+    //     foreach ($articles as $article) {
+    //         if (isset($article->pivot) && $article->pivot->color_id) {
+    //             foreach ($colors as $color) {
+    //                 if ($color->id == $article->pivot->color_id) {
+    //                     $article->color = $color;
+    //                 }
+    //             }
+    //         } 
+    //     }
+    //     return $articles;
+    // }
+
+    // static function setArticlesSize($articles) {
+    //     $sizes = Size::all();
+    //     foreach ($articles as $article) {
+    //         if (isset($article->pivot) && $article->pivot->size_id) {
+    //             foreach ($sizes as $size) {
+    //                 if ($size->id == $article->pivot->size_id) {
+    //                     $article->size = $size;
+    //                 }
+    //             }
+    //         } 
+    //     }
+    //     return $articles;
+    // }
 
     static function createArticle($article, $variant) {
         $new_article = new \stdClass();

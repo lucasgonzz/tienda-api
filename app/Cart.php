@@ -14,7 +14,7 @@ class Cart extends Model
     }
 
     function articles() {
-    	return $this->belongsToMany('App\Article')->withPivot('price', 'amount', 'color_id', 'size_id');
+    	return $this->belongsToMany('App\Article')->withPivot('price', 'amount', 'variant_id');
     }
 
     function cupon() {

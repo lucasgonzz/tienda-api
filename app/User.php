@@ -83,7 +83,7 @@ class User extends Authenticatable
         return $this->hasMany('App\User', 'admin_id');
     }
 
-    public function online_price_type() {
-        return $this->belongsTo('App\OnlinePriceType');
+    public function online_configuration() {
+        return $this->hasOne('App\OnlineConfiguration');
     }
 }

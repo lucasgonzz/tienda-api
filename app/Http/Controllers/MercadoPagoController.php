@@ -17,7 +17,6 @@ class MercadoPagoController extends Controller
         // Crea un objeto de preferencia
         $preference = new \MercadoPago\Preference();
         $this->commerce = User::find($request->payment_method['user_id']);
-        Log::info('commerce online_price_surchage: '.$this->commerce->online_price_surchage);
         $articles = $this->setPrices($request->cupon, $request->delivery_zone, $request->articles);
         $items = [];
         foreach ($articles as $article) {
@@ -183,9 +182,9 @@ class MercadoPagoController extends Controller
 
     function getArticlePrice($article) {
         $price = $article['final_price'];
-        if (!is_null($this->commerce->online_price_surchage)) {
-            $price += $price * $this->commerce->online_price_surchage / 100;
-            Log::info('Sumando recargo del comercio del '.$this->commerce->online_price_surchage);
+        if (!is_null($this->commerce->online_configuration->online_price_surchage)) {
+            $price += $price * $this->commerce->online_configuration->online_price_surchage / 100;
+            Log::info('Sumando recargo del comercio del '.$this->commerce->online_configuration->online_price_surchage);
         }
         if (!is_null($this->payment_method->surchage)) {
             $price += $price * $this->payment_method->surchage / 100;

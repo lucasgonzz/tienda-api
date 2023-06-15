@@ -44,7 +44,7 @@ class VerificationCode extends Notification
     {
         return (new MailMessage)
                     ->subject('Verificacion de cuenta')
-                    ->from($this->commerce->email, $this->commerce->company_name)
+                    ->from('contacto@comerciocity.com', 'comerciocity.com')
                     ->markdown('emails.verification-code', [
                         'code'      => $this->code,
                         'commerce'  => $this->commerce,

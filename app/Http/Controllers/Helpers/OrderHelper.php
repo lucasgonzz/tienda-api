@@ -72,16 +72,14 @@ class OrderHelper
             Log::info('cart pivot price: '.$article->pivot->price);
             $price = $article->pivot->price;
             $user = User::find($order->user_id);
-            if (!is_null($user->online_price_surchage)) {
-                $price += $price * (float)$user->online_price_surchage / 100;
+            if (!is_null($user->online_configuration->online_price_surchage)) {
+                $price += $price * (float)$user->online_configuration->online_price_surchage / 100;
             }
             $order->articles()->attach([$article->id => [
                                             'amount'      => $article->pivot->amount,
                                             'cost'        => $article->pivot->cost,
                                             'price'       => $price,
-                                            'color_id'    => $article->pivot->color_id,
-                                            'size_id'     => $article->pivot->size_id,
-                                            // 'with_dolar'  => ArticleHelper::getDolar($article, $dolar_blue),
+                                            'variant_id'  => $article->pivot->variant_id,
                                         ]]);
         }
     }

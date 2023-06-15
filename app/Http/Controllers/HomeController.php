@@ -21,7 +21,7 @@ class HomeController extends Controller
                             ->checkStock()
                             ->withAll()
                             ->orderBy('created_at', 'DESC')
-                            ->paginate(6);
+                            ->paginate(12);
 
         // $last_uploads = ArticleHelper::setFavorites($last_uploads);
         $last_uploads = ArticleHelper::checkPriceTypes($last_uploads);
@@ -44,7 +44,7 @@ class HomeController extends Controller
         } else {
             $articles = $articles->where('sub_category_id', $sub_category_id);
         }
-        $articles = $articles->paginate(6);
+        $articles = $articles->paginate(12);
         $articles = ArticleHelper::checkPriceTypes($articles);
         return response()->json(['articles' => $articles], 200);
     }

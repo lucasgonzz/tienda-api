@@ -15,14 +15,14 @@ class Article extends Model
     protected $guarded = [];
 
     function scopeWithAll($query) {
-        $query->with('discounts', 'images', 'descriptions', 'condition', 'sizes', 'colors', 'brand', 'iva');
+        $query->with('discounts', 'images', 'descriptions', 'condition', 'sizes', 'colors', 'brand', 'iva', 'article_properties.article_property_values', 'article_properties.article_property_type', 'article_variants.article_property_values');
     }
 
     function scopeCheckOnline($query) {
         $commerce = User::find(request()->commerce_id);
         $query->where('status', 'active')
                 ->where('online', 1);
-        if (!$commerce->show_articles_without_images) {
+        if (!$commerce->online_configuration->show_articles_without_images) {
             $query = $query->whereHas('images');
         }
         $query = $query->with(['questions' => function($sub_query) {
@@ -38,13 +38,24 @@ class Article extends Model
     */
     function scopeCheckStock($query) {
         $commerce = User::find(request()->commerce_id);
-        if (!$commerce->show_articles_without_stock) {
+        // Log::info('scopeCheckStock commerce_id: '.request()->commerce_id);
+        // Log::info('show_articles_without_stock: '.$commerce->show_articles_without_stock);
+        if (!$commerce->online_configuration->show_articles_without_stock) {
+            Log::info('checkeando stock');
             return $query->where(function($sub_query) {
                 $sub_query->where('stock', '>', 0)
                     ->orWhereNull('stock');
             });
         }
         return $query;
+    }
+
+    function article_properties() {
+        return $this->hasMany(ArticleProperty::class);
+    }
+
+    function article_variants() {
+        return $this->hasMany(ArticleVariant::class);
     }
 
     function views() {

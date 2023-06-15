@@ -18,10 +18,10 @@ class CartHelper {
     static function attachArticles($cart, $articles) {
         foreach ($articles as $article) {
             $cart->articles()->attach($article['id'], [
-                                        'price'      => $article['final_price'],
-                                        'amount'     => $article['pivot']['amount'],
-                                        'color_id'   => $article['pivot']['color_id'],
-                                        'size_id'    => isset($article['pivot']['size_id']) ? $article['pivot']['size_id'] : null,
+                                        'price'         => $article['final_price'],
+                                        'amount'        => $article['pivot']['amount'],
+                                        'variant_id'    => isset($article['pivot']['variant_id']) ? $article['pivot']['variant_id'] : null,
+                                        // 'color_id'      => $article['pivot']['color_id'],
                                         // 'color_id'   => ArticleHelper::getColorId($article),
                                         // 'size_id'    => ArticleHelper::getSizeId($article),
                                     ]);
@@ -35,7 +35,7 @@ class CartHelper {
                             $query->withAll();
                         }])
                         ->first();
-        $model->articles = ArticleHelper::setArticlesRelationsFromPivot($model->articles);
+        $model->articles = ArticleHelper::setArticlesVariants($model->articles);
         $model->articles = ArticleHelper::checkPriceTypes($model->articles);
         return $model;
     }

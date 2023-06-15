@@ -12,8 +12,7 @@ class CommerceController extends Controller
     function commerce($commerce_id) {
         $commerce = User::where('id', $commerce_id)
                         ->with('addresses')
-                        ->with('configuration')
-                        ->with('online_price_type')
+                        ->with('online_configuration.online_price_type')
                         ->first();
         return response()->json(['commerce' => $commerce], 200);
     }
