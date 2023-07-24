@@ -48,6 +48,7 @@ class CartController extends Controller
     function update(Request $request) {
     	$cart = Cart::find($request->id);
         $cart->delivery_zone_id     = $request->delivery_zone_id;
+        $cart->payment_card_info_id = $request->payment_card_info_id;
         $cart->payment_method_id    = $request->payment_method_id;
         $cart->payment_id           = $request->payment_id;
         $cart->payment_status       = $request->payment_status;

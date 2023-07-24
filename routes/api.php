@@ -85,6 +85,11 @@ Route::post('/mercado-pago/preference',
 	'MercadoPagoController@preference'
 );
 
+// Payway
+Route::post('/payway/payment',
+	'PaywayController@payment'
+);
+
 // DeliveryZones
 Route::get('/delivery-zones/{commerce_id}',
 	'DeliveryZoneController@index'
@@ -171,6 +176,11 @@ Route::get('/delivery-zones/{commerce_id}',
 	);
 	Route::get('/carts/from-order/{order_id}',
 		'CartController@fromOrder'
+	);
+
+	// PaymentCardInfo
+	Route::post('/payment-card-info',
+		'PaymentCardInfoController@store'
 	);
 
 	// Favorites

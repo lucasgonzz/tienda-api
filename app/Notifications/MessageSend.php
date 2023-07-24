@@ -64,7 +64,7 @@ class MessageSend extends Notification
     {
         return (new MailMessage)
                     ->subject($this->title)
-                    ->from($notifiable->user->email, $notifiable->user->company_name)
+                    ->from('contacto@comerciocity.com', 'comerciocity.com')
                     ->markdown('emails.message-send', [
                         'commerce'  => $notifiable->user,
                         'message'   => $this->message->text,

@@ -119,7 +119,7 @@ class ArticleController extends Controller {
                             ->checkOnline()
                             ->checkStock()
                             ->withAll()
-                            ->paginate(6);
+                            ->paginate(12);
         // $articles = ArticleHelper::setFavorites($articles);
         $articles = ArticleHelper::checkPriceTypes($articles);
         if ($save_last_search) {

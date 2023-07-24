@@ -12,4 +12,8 @@ class PaymentMethod extends Model
     function type() {
         return $this->belongsTo('App\PaymentMethodType', 'payment_method_type_id');
     }
+
+    function payment_method_installments() {
+        return $this->hasMany('App\PaymentMethodInstallment');
+    }
 }

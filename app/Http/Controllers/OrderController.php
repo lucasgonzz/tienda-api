@@ -51,6 +51,7 @@ class OrderController extends Controller
     		'user_id'                   => $request->commerce_id,
             'status'                    => 'unconfirmed',
             'payment_id'                => $cart->payment_id,
+            'payment_card_info_id'      => $cart->payment_card_info_id,
             'payment_method_id'         => $cart->payment_method_id,
             'delivery_zone_id'          => $cart->delivery_zone_id,
             'cupon_id'                  => $cart->cupon_id,

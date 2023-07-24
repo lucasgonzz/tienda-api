@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "6414ae78136dd433b10d4c6c9dce2734",
+    "content-hash": "57969f445facff181e54966f249df73b",
     "packages": [
         {
             "name": "asm89/stack-cors",
@@ -117,6 +117,37 @@
                 }
             ],
             "time": "2021-01-20T22:51:39+00:00"
+        },
+        {
+            "name": "decidir2/php-sdk",
+            "version": "V1.7.5",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/payway-ar/sdk-php-ventaonline.git",
+                "reference": "1804155171e4e0072b50b223494e2237a86de6b4"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/payway-ar/sdk-php-ventaonline/zipball/1804155171e4e0072b50b223494e2237a86de6b4",
+                "reference": "1804155171e4e0072b50b223494e2237a86de6b4",
+                "shasum": ""
+            },
+            "require": {
+                "php": ">=5.3"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Decidir\\": "Decidir/lib"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "description": "SDK para Payway ventas online",
+            "support": {
+                "issues": "https://github.com/payway-ar/sdk-php-ventaonline/issues",
+                "source": "https://github.com/payway-ar/sdk-php-ventaonline/tree/V1.7.5"
+            },
+            "time": "2023-03-13T22:07:54+00:00"
         },
         {
             "name": "dnoegel/php-xdg-base-dir",
@@ -8086,5 +8117,5 @@
         "php": "^7.2.5"
     },
     "platform-dev": [],
-    "plugin-api-version": "2.0.0"
+    "plugin-api-version": "2.3.0"
 }

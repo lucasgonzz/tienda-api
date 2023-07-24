@@ -75,6 +75,7 @@ class OrderHelper
             if (!is_null($user->online_configuration->online_price_surchage)) {
                 $price += $price * (float)$user->online_configuration->online_price_surchage / 100;
             }
+            Log::info($article->name.' variant_id: '.$article->pivot->variant_id);
             $order->articles()->attach([$article->id => [
                                             'amount'      => $article->pivot->amount,
                                             'cost'        => $article->pivot->cost,

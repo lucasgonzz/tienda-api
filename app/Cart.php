@@ -10,7 +10,7 @@ class Cart extends Model
 	protected $guarded = [];
 
     function scopeWithAll($query) {
-        $query->with('cupon', 'articles.images', 'articles', 'articles.colors', 'articles.sizes', 'payment_method.type', 'delivery_zone');
+        $query->with('cupon', 'articles.images', 'articles', 'articles.colors', 'articles.sizes', 'payment_method.type', 'payment_method.payment_method_installments', 'delivery_zone');
     }
 
     function articles() {
