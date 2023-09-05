@@ -69,7 +69,7 @@ class OrderHelper
 
     static function attachArticles($cart, $order, $dolar_blue) {
         foreach ($cart->articles as $article) {
-            Log::info('cart pivot price: '.$article->pivot->price);
+            // Log::info('cart pivot price: '.$article->pivot->price);
             $price = $article->pivot->price;
             $user = User::find($order->user_id);
             if (!is_null($user->online_configuration->online_price_surchage)) {

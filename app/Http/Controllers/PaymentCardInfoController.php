@@ -12,6 +12,7 @@ class PaymentCardInfoController extends Controller
             'token'             => $request->token,
             'bin'               => $request->bin,
             'installments'      => $request->installments,
+            'payment_method_id' => $request->payment_method_id,
         ]);
         return response()->json(['model' => $model], 201);
     }

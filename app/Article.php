@@ -15,7 +15,7 @@ class Article extends Model
     protected $guarded = [];
 
     function scopeWithAll($query) {
-        $query->with('discounts', 'images', 'descriptions', 'condition', 'sizes', 'colors', 'brand', 'iva', 'article_properties.article_property_values', 'article_properties.article_property_type', 'article_variants.article_property_values');
+        $query->with('discounts', 'images', 'descriptions', 'condition', 'sizes', 'colors', 'brand', 'iva', 'article_properties.article_property_values', 'article_properties.article_property_type', 'article_variants.article_property_values.article_property_type');
     }
 
     function scopeCheckOnline($query) {
@@ -38,13 +38,16 @@ class Article extends Model
     */
     function scopeCheckStock($query) {
         $commerce = User::find(request()->commerce_id);
-        // Log::info('scopeCheckStock commerce_id: '.request()->commerce_id);
-        // Log::info('show_articles_without_stock: '.$commerce->show_articles_without_stock);
         if (!$commerce->online_configuration->show_articles_without_stock) {
-            Log::info('checkeando stock');
-            return $query->where(function($sub_query) {
-                $sub_query->where('stock', '>', 0)
-                    ->orWhereNull('stock');
+            $query->where(function($sub_query) use ($commerce) {
+            $sub_query->where('stock', '>', 0);
+                if ($commerce->online_configuration->stock_null_equal_0) {
+                    $sub_query->orWhereNotNull('stock');
+                    Log::info('chequeando que el stock no sea null');
+                } else {
+                    $sub_query->orWhereNull('stock');
+                    Log::info('chequeando que el stock sea null');
+                }
             });
         }
         return $query;

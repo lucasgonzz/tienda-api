@@ -86,8 +86,8 @@ Route::post('/mercado-pago/preference',
 );
 
 // Payway
-Route::post('/payway/payment',
-	'PaywayController@payment'
+Route::post('/payway/token',
+	'PaywayController@getToken'
 );
 
 // DeliveryZones

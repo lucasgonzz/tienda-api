@@ -84,11 +84,12 @@ class AuthController extends Controller
                 'phone'             => $this->getNumber($request->phone),
         		'email'             => $request->email,
         		'password'          => bcrypt($request->password),
-                'verification_code' => $code,
+                'verification_code' => null,
+                // 'verification_code' => $code,
         		'user_id'           => isset($request->commerce_id) ? $request->commerce_id : null,
         	]);
             $commerce = User::find($request->commerce_id);
-            $buyer->notify(new VerificationCode($code, $commerce));
+            // $buyer->notify(new VerificationCode($code, $commerce));
             Auth::guard('buyer')->login($buyer);
             return response()->json(['buyer' => $buyer], 201);
         }

@@ -12,6 +12,35 @@ use Illuminate\Support\Facades\Log;
 
 class PaywayController extends Controller
 {
+
+    function getToken(Request $request) {
+        $this->payment_method = PaymentMethod::find($request->payment_method_id);
+        $keys_data = [
+            'public_key' => $this->payment_method->public_key,
+            'private_key' => $this->payment_method->access_token,
+        ];
+
+        $ambient = 'test';//valores posibles: 'test' , 'prod' o 'qa'
+        $connector = new \Decidir\Connector($keys_data, $ambient);
+
+        $data = array(
+            "card_number" => $request->card_number,
+            "card_expiration_month" => $request->card_expiration_month,
+            "card_expiration_year" => $request->card_expiration_year, 
+            "card_holder_name" => $request->card_holder_name,
+            "card_holder_birthday" => $request->card_holder_birthday,
+            "card_holder_door_number" => $request->card_holder_door_number,
+            "security_code" => $request->security_code,
+            "card_holder_identification" => array(
+                "type" => "dni",
+                "number" => $request->number
+            )
+        );
+
+        $response = $connector->token()->token($data);
+        return response()->json(['model' => $response->get('cardholder',null)['name']], 201);
+    }
+
     function payment(Request $request) {
         $this->payment_method = PaymentMethod::find($request->payment_method['id']);
         $this->commerce = User::find($request->payment_method['user_id']);
