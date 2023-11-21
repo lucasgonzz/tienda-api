@@ -28,8 +28,13 @@ class HomeController extends Controller
 
         if ($request->get('page') == 1) {
             $featured = HomeHelper::getFeatured($request->commerce_id);
+            $in_offer = HomeHelper::getInOffer($request->commerce_id);
+
             $featured = ArticleHelper::checkPriceTypes($featured);
-            return response()->json(['articles' => $last_uploads, 'featured' => $featured], 200);
+            $in_offer = ArticleHelper::checkPriceTypes($in_offer);
+            return response()->json(['articles' => $last_uploads, 
+                                    'featured' => $featured, 
+                                    'in_offer' => $in_offer], 200);
         } 
         return response()->json(['articles' => $last_uploads], 200);
     }

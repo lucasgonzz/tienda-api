@@ -53,12 +53,17 @@ class HomeHelper
                             ->checkOnline()
                             ->withAll()
                             ->get();
-        // $category_featured = new \stdClass();
-        // $category_featured->id = 0;
-        // $category_featured->name = 'Artículos destacados';
-        // $category_featured->featured = true;
-        // $category_featured->articles_count = count($featured);
         return $featured;
+    }
+
+    static function getInOffer($commerce_id) {
+        $in_offer = Article::where('user_id', $commerce_id)
+                            ->where('in_offer', 1)
+                            ->checkStock()
+                            ->checkOnline()
+                            ->withAll()
+                            ->get();
+        return $in_offer;
     }
 
     static function addLastUploadsToList($commerce_id) {

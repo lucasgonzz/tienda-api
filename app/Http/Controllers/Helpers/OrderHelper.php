@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Buyer;
 use App\Cart;
 use App\Cupon;
 use App\Http\Controllers\Helpers\ArticleHelper;
@@ -12,8 +13,27 @@ use App\User;
 use Illuminate\Support\Facades\Log;
 
 
-class OrderHelper
-{
+class OrderHelper {
+
+    static function getBuyerId($request) {
+        $buyer_id = null;
+        $commerce = User::find($request->commerce_id);
+        if (!$commerce->online_configuration->register_to_buy) {
+            if (!isset($request->buyer['id'])) {
+                $buyer = Buyer::create([
+                    'name'   => $request->buyer['name'],
+                    'email'  => $request->buyer['email'],
+                    'phone'  => $request->buyer['phone'],
+                ]);
+                $buyer_id = $buyer->id;
+            } else {
+                $buyer_id = $request->buyer['id'];
+            }
+        } else {
+            $buyer_id = UserHelper::buyerId();
+        }
+        return $buyer_id;
+    }
 
     static function updateCurrentCart($cart, $order) {
         $cart = Cart::find($cart->id);

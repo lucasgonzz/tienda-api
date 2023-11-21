@@ -57,8 +57,10 @@ class CartController extends Controller
         $cart->cupon_id             = $request->cupon_id;
         $cart->description          = $request->description;
         $cart->save();
+        CartHelper::checkPaymentStatus($cart);
     	$cart->articles()->sync([]);
         $cart_deleted = false;
+
         if (count($request->articles) >= 1) {
             CartHelper::attachArticles($cart, $request->articles);
         } else {

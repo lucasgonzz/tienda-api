@@ -24,6 +24,36 @@ class BuyerController extends Controller
 		return response(null, 401);
 	}
 
+	function store(Request $request) {
+		$model = $this->getFullBuyer($request);
+		if (is_null($model)) {
+			$model = Buyer::create([
+				'name'		=> $request->name,
+				'email'		=> $request->email,
+				'phone'		=> $request->phone,
+				'user_id'	=> $request->commerce_id
+			]);
+
+			$model = $this->getFullBuyer($request);
+			$this->login($model);
+
+			return response()->json(['model' => $model], 201);
+		}
+		$this->login($model);
+		return response()->json(['model' => $model], 200);
+	}
+
+	function getFullBuyer($request) {
+		return Buyer::where('email', $request->email)
+						->where('user_id', $request->commerce_id)
+						->withAll()
+						->first();
+	}
+
+	function login($model) {
+		Auth::guard('buyer')->login($model);
+	}
+
 	function update(Request $request) {
 		$buyer = Buyer::find($this->buyerId());
 		$buyer->name = StringHelper::modelName($request->name);

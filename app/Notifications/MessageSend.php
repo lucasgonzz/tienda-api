@@ -66,7 +66,7 @@ class MessageSend extends Notification
                     ->subject($this->title)
                     ->from('contacto@comerciocity.com', 'comerciocity.com')
                     ->markdown('emails.message-send', [
-                        'commerce'  => $notifiable->user,
+                        'commerce'  => $this->commerce,
                         'message'   => $this->message->text,
                         'logo_url'  => $this->commerce->image_url,
                     ]);

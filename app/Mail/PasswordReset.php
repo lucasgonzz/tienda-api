@@ -31,7 +31,7 @@ class PasswordReset extends Mailable
     public function build()
     {
         return $this->subject('Recupero de Contraseña')
-                    ->from($this->commerce->email, $this->commerce->company_name)
+                    ->from('contacto@comerciocity.com', $this->commerce->company_name)
                     ->markdown('emails.password-reset', [
                         'code'      => $this->code,
                         'commerce'  => $this->commerce,

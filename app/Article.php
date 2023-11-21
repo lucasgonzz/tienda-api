@@ -43,10 +43,10 @@ class Article extends Model
             $sub_query->where('stock', '>', 0);
                 if ($commerce->online_configuration->stock_null_equal_0) {
                     $sub_query->orWhereNotNull('stock');
-                    Log::info('chequeando que el stock no sea null');
+                    // Log::info('chequeando que el stock no sea null');
                 } else {
                     $sub_query->orWhereNull('stock');
-                    Log::info('chequeando que el stock sea null');
+                    // Log::info('chequeando que el stock sea null');
                 }
             });
         }

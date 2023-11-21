@@ -114,7 +114,8 @@ class ArticleController extends Controller {
                                 $q->whereHas('tags', function($e) use ($query) {
                                     $e->where('name', 'LIKE', "%$query%");
                                 })
-                                ->orWhere('name', 'LIKE', "%$query%");
+                                ->orWhere('name', 'LIKE', "%$query%")
+                                ->orWhere('bar_code', 'LIKE', "%$query%");
                             })
                             ->checkOnline()
                             ->checkStock()

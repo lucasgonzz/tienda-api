@@ -8,6 +8,14 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 
 class CartHelper {
 
+    static function checkPaymentStatus($cart) {
+        if (!is_null($cart->payment_id) && !is_null($cart->order_id)) {
+            $order = Order::find($cart->order_id);
+            $order->payment_id = $cart->payment_id;
+            $order->save();
+        }
+    }
+
     static function attachCupons($cart, $cupons) {
         $cart->cupons()->detach();
         foreach ($cupons as $cupon) {

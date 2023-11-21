@@ -43,6 +43,10 @@ Route::post('/register-token',
 	'NotificationController@createBinding'
 );
 
+// Payment
+Route::post('/buyer', 'BuyerController@store');
+
+
 // Article
 Route::get('/articles/{slug}/{commerce_id}',
 	'ArticleController@show'
