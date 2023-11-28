@@ -14,6 +14,7 @@ use App\User;
 use App\View;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 
 class ArticleController extends Controller {
     
@@ -25,10 +26,7 @@ class ArticleController extends Controller {
                                 $query->whereHas('answer')->with('answer');
                             }])
     						->first();
-        // $article = ArticleHelper::setFavorites([$article])[0];
         $article = ArticleHelper::checkPriceTypes([$article])[0];
-        // $article = ArticleHelper::setArticlesKey([$article])[0];
-        // $article = ArticleHelper::checkVariantsStock([$article])[0];
         // event(new ArticleViewedEvent($article, $this->buyerId()));
     	return response()->json(['article' => $article], 200);
     }

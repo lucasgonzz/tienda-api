@@ -25,7 +25,17 @@ class ArticleHelper
                 foreach ($articles as $article) {
                     foreach ($price_types as $price_type) {
                         if ($price_type->position <= $buyer->comercio_city_client->price_type->position) {
-                            $article->final_price += $article->final_price * $price_type->percentage / 100;
+                            $percentage = $price_type->percentage;
+                            if (count($price_type->sub_categories) >= 1 && !is_null($article->sub_category)) {
+                                foreach ($price_type->sub_categories as $price_type_sub_category) {
+                                    if ($price_type_sub_category->id == $article->sub_category_id) {
+                                        Log::info('Usando el porcetaje de '.$price_type_sub_category->name.' de '.$price_type_sub_category->pivot->percentage);
+                                        $percentage = $price_type_sub_category->pivot->percentage;
+                                    }
+                                }
+                            }
+                            Log::info('sumando el '.$percentage.'% a '.$article->final_price.' de '.$article->name);
+                            $article->final_price += $article->final_price * $percentage / 100;
                         } else {
                             break;
                         }
