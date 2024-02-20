@@ -68,7 +68,8 @@ class MessageSend extends Notification
                     ->markdown('emails.message-send', [
                         'commerce'  => $this->commerce,
                         'message'   => $this->message->text,
-                        'logo_url'  => $this->commerce->image_url,
+                        'logo_url'  => 'https://api.comerciocity.com/public/storage/logo.png',
+                        // 'logo_url'  => $this->commerce->image_url,
                     ]);
     }
 }

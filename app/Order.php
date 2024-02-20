@@ -13,7 +13,7 @@ class Order extends Model
     }
 
     function articles() {
-    	return $this->belongsToMany('App\Article')->withPivot('amount', 'price', 'variant_id');
+    	return $this->belongsToMany('App\Article')->withPivot('amount', 'price', 'variant_id', 'notes');
     }
 
     function cupons() {

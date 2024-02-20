@@ -62,11 +62,11 @@ class OrderHelper {
     }
 
     static function getPaymentMethodDiscount($cart) {
-        return !is_null($cart->payment_method->discount) ? $cart->payment_method->discount : null;
+        return !is_null($cart->payment_method) && !is_null($cart->payment_method->discount) ? $cart->payment_method->discount : null;
     }
 
     static function getPaymentMethodSurchage($cart) {
-        return !is_null($cart->payment_method->surchage) ? $cart->payment_method->surchage : null;
+        return !is_null($cart->payment_method) && !is_null($cart->payment_method->surchage) ? $cart->payment_method->surchage : null;
     }
 
     static function deleteOrderCart($cart) {
@@ -99,6 +99,7 @@ class OrderHelper {
             $order->articles()->attach([$article->id => [
                                             'amount'      => $article->pivot->amount,
                                             'cost'        => $article->pivot->cost,
+                                            'notes'       => $article->pivot->notes,
                                             'price'       => $price,
                                             'variant_id'  => $article->pivot->variant_id,
                                         ]]);

@@ -28,6 +28,7 @@ class CartHelper {
             $cart->articles()->attach($article['id'], [
                                         'price'         => $article['final_price'],
                                         'amount'        => $article['pivot']['amount'],
+                                        'notes'         => $article['pivot']['notes'],
                                         'variant_id'    => isset($article['pivot']['variant_id']) ? $article['pivot']['variant_id'] : null,
                                         // 'color_id'      => $article['pivot']['color_id'],
                                         // 'color_id'   => ArticleHelper::getColorId($article),

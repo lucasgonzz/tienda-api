@@ -31,6 +31,16 @@ class ArticleController extends Controller {
     	return response()->json(['article' => $article], 200);
     }
 
+    function seleccionEspecial($articles_id) {
+        $articles = [];
+        foreach (explode('-', $articles_id) as $article_id) {
+            $articles[] = Article::where('id', $article_id)
+                                ->withAll()
+                                ->first();
+        }
+        return response()->json(['models' => $articles], 200);
+    }
+
     function similars($article_id) {
         $article = Article::find($article_id);
         if (!is_null($article->sub_category)) {

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Article;
 use App\Icon;
+use App\StockMovement;
 
 
 class HomeHelper
@@ -64,6 +65,29 @@ class HomeHelper
                             ->withAll()
                             ->get();
         return $in_offer;
+    }
+
+    static function getNovedades($commerce_id) {
+        $stock_movements = StockMovement::where('user_id', $commerce_id)
+                                    ->orderBy('created_at', 'DESC')
+                                    ->where('stock_resultante', '>', 0)
+                                    ->take(20)
+                                    ->get();
+
+        $articulos_novedades = collect();
+
+        foreach ($stock_movements as $stock_movement) {
+            $article = Article::where('id', $stock_movement->article_id)
+                            ->checkStock()
+                            ->checkOnline()
+                            ->withAll()
+                            ->first();
+
+            if (!$articulos_novedades->contains($article)) {
+                $articulos_novedades->push($article);
+            }
+        }
+        return $articulos_novedades;
     }
 
     static function addLastUploadsToList($commerce_id) {

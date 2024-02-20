@@ -24,7 +24,7 @@ class ArticleHelper
                                         ->get();
                 foreach ($articles as $article) {
                     foreach ($price_types as $price_type) {
-                        if ($price_type->position <= $buyer->comercio_city_client->price_type->position) {
+                        if (!is_null($article) && $price_type->position <= $buyer->comercio_city_client->price_type->position) {
                             $percentage = $price_type->percentage;
                             if (count($price_type->sub_categories) >= 1 && !is_null($article->sub_category)) {
                                 foreach ($price_type->sub_categories as $price_type_sub_category) {

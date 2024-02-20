@@ -38,6 +38,10 @@ class User extends Authenticatable
         'email_verified_at' => 'datetime',
     ];
 
+    public function extencions() {
+        return $this->belongsToMany('App\ExtencionEmpresa');
+    }
+
     public function addresses() {
         return $this->hasMany('App\Address');
     }

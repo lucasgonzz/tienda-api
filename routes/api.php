@@ -14,7 +14,7 @@ Route::get('/categories/{commerce_id}',
 Route::get('/sub-categories/{category_id}',
 	'HomeController@subCategories'
 );
-Route::get('/articles/from-category/{category_id}/{sub_category_id}/{commerce_id}',
+Route::get('/articles/from-category/{category_id}/{sub_category_id}/{order_by}/{commerce_id}',
 	'HomeController@articlesFromCategory'
 );
 Route::get('/titles/{commerce_id}',
@@ -63,6 +63,9 @@ Route::get('/articles/questions/answered/{article_id}',
 Route::post('advises',
 	'AdviseController@store'
 );
+Route::get('/articles-seleccion-especial/{articles_id}',
+	'ArticleController@seleccionEspecial'
+);
 // Conditions
 Route::get('conditions', 
 	'ConditionController@index'
@@ -98,6 +101,11 @@ Route::post('/payway/token',
 Route::get('/delivery-zones/{commerce_id}',
 	'DeliveryZoneController@index'
 );
+
+
+// Buyer Messages
+Route::resource('/buyer-message', 'BuyerMessageController');
+
 
 // Route::middleware('auth:sanctum')->group(function() {
 	Route::get('/user', 'BuyerController@getBuyer');
