@@ -21,6 +21,7 @@ class HomeController extends Controller
                             ->checkStock()
                             ->withAll()
                             ->orderBy('created_at', 'DESC')
+                            ->where('status', 'active')
                             ->paginate(12);
 
         $last_uploads = ArticleHelper::checkPriceTypes($last_uploads);

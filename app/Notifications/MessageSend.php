@@ -60,6 +60,12 @@ class MessageSend extends Notification
         ]);
     }
 
+    public function broadcastWith() {
+        return [
+            "foo" => "bar"
+        ];
+    }
+
     public function toMail($notifiable)
     {
         return (new MailMessage)

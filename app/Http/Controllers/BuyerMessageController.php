@@ -17,6 +17,9 @@ class BuyerMessageController extends Controller
     }
 
     function store(Request $request) {
+
+        // $this->delete_current_messages();
+
         foreach ($request->messages as $message) {
             if (!isset($message['id'])) {
                 $buyer_message = BuyerMessage::create([
@@ -35,5 +38,10 @@ class BuyerMessageController extends Controller
                 }
             }
         }
+    }
+
+    function delete_current_messages() {
+        BuyerMessage::where('buyer_id', $this->buyerId())
+                    ->delete();
     }
 }

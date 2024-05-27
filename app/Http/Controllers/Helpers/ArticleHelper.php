@@ -16,25 +16,51 @@ class ArticleHelper
 
     static function checkPriceTypes($articles) {
         $buyer = Auth('buyer')->user();
-        if (!is_null($buyer)) {
-            if (!is_null($buyer->comercio_city_client) && !is_null($buyer->comercio_city_client->price_type)) {
-                $price_types = PriceType::where('user_id', $buyer->user_id)
-                                        ->whereNotNull('position')
-                                        ->orderBy('position', 'ASC')
-                                        ->get();
+        if (!is_null($buyer) && !is_null($buyer->comercio_city_client) && !is_null($buyer->comercio_city_client->price_type)) {
+            $price_types = PriceType::where('user_id', $buyer->user_id)
+                                    ->whereNotNull('position')
+                                    ->orderBy('position', 'ASC')
+                                    ->get();
+            foreach ($articles as $article) {
+                foreach ($price_types as $price_type) {
+                    if (!is_null($article) && $price_type->position <= $buyer->comercio_city_client->price_type->position) {
+                        $percentage = $price_type->percentage;
+                       
+                        if (count($price_type->sub_categories) >= 1 && !is_null($article->sub_category)) {
+                            foreach ($price_type->sub_categories as $price_type_sub_category) {
+                                if ($price_type_sub_category->id == $article->sub_category_id) {
+                                    // Log::info('Usando el porcetaje de '.$price_type_sub_category->name.' de '.$price_type_sub_category->pivot->percentage);
+                                    $percentage = $price_type_sub_category->pivot->percentage;
+                                }
+                            }
+                        }
+                        
+                        // Log::info('sumando el '.$percentage.'% a '.$article->final_price.' de '.$article->name);
+                        $article->final_price += $article->final_price * $percentage / 100;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        } else if (count($articles) >= 1 && !is_null($articles[0])) {
+            $price_types = PriceType::where('user_id', $articles[0]->user_id)
+                                    ->whereNotNull('position')
+                                    ->orderBy('position', 'ASC')
+                                    ->get();
+            if (count($price_types) >= 1) {
                 foreach ($articles as $article) {
                     foreach ($price_types as $price_type) {
-                        if (!is_null($article) && $price_type->position <= $buyer->comercio_city_client->price_type->position) {
+                        if (!is_null($article)) {
                             $percentage = $price_type->percentage;
                             if (count($price_type->sub_categories) >= 1 && !is_null($article->sub_category)) {
                                 foreach ($price_type->sub_categories as $price_type_sub_category) {
                                     if ($price_type_sub_category->id == $article->sub_category_id) {
-                                        Log::info('Usando el porcetaje de '.$price_type_sub_category->name.' de '.$price_type_sub_category->pivot->percentage);
+                                        // Log::info('Usando el porcetaje de '.$price_type_sub_category->name.' de '.$price_type_sub_category->pivot->percentage);
                                         $percentage = $price_type_sub_category->pivot->percentage;
                                     }
                                 }
                             }
-                            Log::info('sumando el '.$percentage.'% a '.$article->final_price.' de '.$article->name);
+                            // Log::info('sumando el '.$percentage.'% a '.$article->final_price.' de '.$article->name);
                             $article->final_price += $article->final_price * $percentage / 100;
                         } else {
                             break;

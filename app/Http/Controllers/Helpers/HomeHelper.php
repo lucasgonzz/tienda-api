@@ -81,9 +81,10 @@ class HomeHelper
                             ->checkStock()
                             ->checkOnline()
                             ->withAll()
+                            ->whereNotNull('deleted_at')
                             ->first();
 
-            if (!$articulos_novedades->contains($article)) {
+            if (!is_null($article) && !$articulos_novedades->contains($article)) {
                 $articulos_novedades->push($article);
             }
         }

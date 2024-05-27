@@ -32,13 +32,19 @@ class AddedModel extends Notification {
         return 'added_model.'.$this->for_user_id;
     }
 
+    public function broadcastWith() {
+        return [
+            "foo" => "bar"
+        ];
+    }
+
     public function toBroadcast($notifiable) {
         Log::info('Se mando broadcast for_user_id: '.$this->for_user_id);
         return new BroadcastMessage([
             'model_name'        => $this->model_name,
             'model_id'          => $this->model_id,
-            'added_by'          => null,
-            'check_added_by'    => $this->check_added_by,
+            // 'added_by'          => null,
+            // 'check_added_by'    => $this->check_added_by,
         ]);
     }
 }

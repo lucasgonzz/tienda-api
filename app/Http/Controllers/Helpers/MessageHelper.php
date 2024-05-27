@@ -17,7 +17,7 @@ class MessageHelper
             'text' => $created_message,
         ]);
         $title = 'Recibimos tu pedido';
-        $order->buyer->notify(new MessageSend($message, true, $title));
-        $order->user->notify(new MessageSend($message));
+        // $order->buyer->notify(new MessageSend($message, true, $title));
+        // $order->user->notify(new MessageSend($message));
     }
 }

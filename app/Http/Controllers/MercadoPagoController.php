@@ -34,11 +34,14 @@ class MercadoPagoController extends Controller
         }
         $preference->items = $items;
 
-        $preference->back_urls = [
-            'success' => $this->commerce->online.'/pago-exitoso',
-            'pending' => $this->commerce->online.'/pago-pendiente',
-            'failure' => $this->commerce->online.'/pago-rechazado',
-        ];
+        if (env('APP_ENV') == 'production') {
+            $preference->back_urls = [
+                'success' => $this->commerce->online.'/pago-exitoso',
+                'pending' => $this->commerce->online.'/pago-pendiente',
+                'failure' => $this->commerce->online.'/pago-rechazado',
+            ];
+        }
+
 
         $preference->save();
 
