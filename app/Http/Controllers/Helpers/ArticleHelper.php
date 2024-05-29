@@ -10,13 +10,26 @@ use App\PriceType;
 use App\Size;
 use App\User;
 use Illuminate\Support\Facades\Log;
+use App\ArticlePrice;
 
 class ArticleHelper
 {
 
     static function checkPriceTypes($articles) {
-        $buyer = Auth('buyer')->user();
-        if (!is_null($buyer) && !is_null($buyer->comercio_city_client) && !is_null($buyer->comercio_city_client->price_type)) {
+        
+        $buyer = Auth('buyer')->user(); 
+        if (!is_null($buyer) && $buyer->user->use_archivos_de_intercambio) {
+            $price_type_id = $buyer->comercio_city_client->price_type->id;
+
+            foreach ($articles as $article) {
+                
+                $articlePrice = ArticlePrice::where('price_type_id', $price_type_id)
+                                            ->where('provider_code', $article->provider_code) 
+                                            ->first();
+            
+                $article->final_price = $articlePrice->price;
+            }
+        } else if (!is_null($buyer) && !is_null($buyer->comercio_city_client) && !is_null($buyer->comercio_city_client->price_type)) {
             $price_types = PriceType::where('user_id', $buyer->user_id)
                                     ->whereNotNull('position')
                                     ->orderBy('position', 'ASC')
@@ -102,6 +115,7 @@ class ArticleHelper
         }
         return null;
     }
+    
 
     static function lastProvider($article) {
         if (count($article->providers) >= 1) {
