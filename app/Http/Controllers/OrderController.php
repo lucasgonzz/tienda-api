@@ -79,13 +79,13 @@ class OrderController extends Controller
                             ->first();
             $order->articles = ArticleHelper::setArticlesVariants($order->articles);
             
-            // MessageHelper::sendOrderCreatedMessage($order);
+            MessageHelper::sendOrderCreatedMessage($order);
 
-            if (!is_null($order->user->email)) {
-                Mail::to($order->user)->send(new OrderCreated($order));
-            }
+            // if (!is_null($order->user->email)) {
+            //     Mail::to($order->user)->send(new OrderCreated($order));
+            // }
 
-            // $this->sendAddModelNotification('order', $order->id, false, $order->user_id);
+            $this->sendAddModelNotification('order', $order->id, false, $order->user_id);
             // Auth::guard('buyer')->user()->notify(new OrderCreated($order));
         	return response(null, 201);
         }

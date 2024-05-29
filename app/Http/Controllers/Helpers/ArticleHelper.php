@@ -18,7 +18,9 @@ class ArticleHelper
     static function checkPriceTypes($articles) {
         
         $buyer = Auth('buyer')->user(); 
-        if (!is_null($buyer) && $buyer->user->use_archivos_de_intercambio) {
+
+        if (!is_null($buyer) && $buyer->user->use_archivos_de_intercambio && !is_null($buyer->comercio_city_client) && !is_null($buyer->comercio_city_client->price_type)) {
+
             $price_type_id = $buyer->comercio_city_client->price_type->id;
 
             foreach ($articles as $article) {
@@ -29,6 +31,7 @@ class ArticleHelper
             
                 $article->final_price = $articlePrice->price;
             }
+
         } else if (!is_null($buyer) && !is_null($buyer->comercio_city_client) && !is_null($buyer->comercio_city_client->price_type)) {
             $price_types = PriceType::where('user_id', $buyer->user_id)
                                     ->whereNotNull('position')
