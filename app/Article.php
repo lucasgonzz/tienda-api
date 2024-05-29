@@ -17,6 +17,10 @@ class Article extends Model
     function scopeWithAll($query) {
         $query->with('discounts', 'images', 'descriptions', 'condition', 'sizes', 'colors', 'brand', 'iva', 'article_properties.article_property_values', 'article_properties.article_property_type', 'article_variants.article_property_values.article_property_type');
     }
+    
+    protected $casts = [
+        'stock' => 'integer',
+    ];
 
     function scopeCheckOnline($query) {
         $commerce = User::find(request()->commerce_id);
