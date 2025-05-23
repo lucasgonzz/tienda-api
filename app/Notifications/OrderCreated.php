@@ -9,10 +9,10 @@ use Illuminate\Notifications\Messages\BroadcastMessage;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Broadcasting\Channel;
 
-class OrderCreated extends Notification implements ShouldQueue
+class OrderCreated extends Notification 
 {
-    use Queueable;
 
     private $order;
 
@@ -34,18 +34,29 @@ class OrderCreated extends Notification implements ShouldQueue
      */
     public function via($notifiable)
     {
+        Log::info('Notificación enviada a: ' . $notifiable->id);
         return ['broadcast'];
     }
 
     public function broadcastOn()
     {
-        return 'order.'.$this->order->user_id;
+        // return 'order.'.$this->order->user_id;
+        return [new Channel('order.' . $this->order->user_id)];
     }
 
 
+
+    // public function broadcastWith($notifiable)
+    // {
+    //     Log::info('1 Datos enviados en broadcast: ', ['order_id' => $this->order->id]);
+    //     return [
+    //         'order_id' => $this->order->id,
+    //     ];
+    // }
+
     public function toBroadcast($notifiable)
     {
-        Log::info('Enviado broadcast al user_id: '.$this->order->user_id.' con la order_id: '.$this->order->id);
+        Log::info('2 Datos enviados en broadcast: ', ['order_id' => $this->order->id]);
         return new BroadcastMessage([
             'order_id' => $this->order->id,
         ]);

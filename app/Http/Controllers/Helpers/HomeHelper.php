@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Article;
 use App\Icon;
+use App\PromocionVinoteca;
 use App\StockMovement;
 
 
@@ -65,6 +66,18 @@ class HomeHelper
                             ->withAll()
                             ->get();
         return $in_offer;
+    }
+
+    static function get_promociones_vinoteca($commerce_id) {
+        $promociones_vinoteca = PromocionVinoteca::where('user_id', $commerce_id)
+                            ->withAll()
+                            ->get();
+
+        foreach ($promociones_vinoteca as $promocion_vinoteca) {
+            
+            $promocion_vinoteca->is_promocion_vinoteca = true;
+        }
+        return $promociones_vinoteca;
     }
 
     static function getNovedades($commerce_id) {

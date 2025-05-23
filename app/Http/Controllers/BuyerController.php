@@ -24,6 +24,24 @@ class BuyerController extends Controller
 		return response(null, 401);
 	}
 
+
+	// La usan los vendedores de Golonorte
+	function search($query, $commerce_id) {
+		$buyers = Buyer::where('user_id', $commerce_id)
+						->where(function($que) use ($query) {
+
+							$que->where('name', 'LIKE', "%$query%")
+								->orWhere('email', 'LIKE', "%$query%");
+						})
+						->whereNotNull('comercio_city_client_id')
+						->orderBy('name', 'ASC')
+						->withAll()
+						->get();
+
+		return response()->json(['buyers' => $buyers], 200);
+
+	}
+
 	function store(Request $request) {
 		$model = $this->getFullBuyer($request);
 		if (is_null($model)) {

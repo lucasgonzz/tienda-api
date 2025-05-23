@@ -10,11 +10,15 @@ class Cart extends Model
 	protected $guarded = [];
 
     function scopeWithAll($query) {
-        $query->with('cupon', 'articles.images', 'articles', 'articles.colors', 'articles.sizes', 'payment_method.type', 'payment_method.payment_method_installments', 'delivery_zone');
+        $query->with('cupon', 'articles.images', 'articles', 'articles.colors', 'articles.sizes', 'payment_method.type', 'payment_method.payment_method_installments', 'delivery_zone', 'promociones_vinoteca.images');
     }
 
     function articles() {
-    	return $this->belongsToMany('App\Article')->withPivot('price', 'amount', 'variant_id', 'amount_insuficiente', 'notes');
+        return $this->belongsToMany('App\Article')->withPivot('price', 'amount', 'variant_id', 'amount_insuficiente', 'notes');
+    }
+
+    function promociones_vinoteca() {
+        return $this->belongsToMany('App\PromocionVinoteca')->withPivot('price', 'amount', 'notes');
     }
 
     function cupon() {

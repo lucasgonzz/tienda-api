@@ -14,7 +14,7 @@ Route::get('/categories/{commerce_id}',
 Route::get('/sub-categories/{category_id}',
 	'HomeController@subCategories'
 );
-Route::get('/articles/from-category/{category_id}/{sub_category_id}/{order_by}/{commerce_id}',
+Route::get('/articles/from-category/{category_id}/{sub_category_id}/{bodega_id}/{order_by}/{commerce_id}',
 	'HomeController@articlesFromCategory'
 );
 Route::get('/titles/{commerce_id}',
@@ -43,8 +43,15 @@ Route::post('/register-token',
 	'NotificationController@createBinding'
 );
 
+// Payment Sellers
+Route::get('/buyer/search/{query}/{commerce_id}', 'BuyerController@search');
+
 // Payment
 Route::post('/buyer', 'BuyerController@store');
+
+
+Route::get('/delivery-day/{commerce_id}', 'DeliveryDayController@get_dias_habilitados');
+
 
 
 // Article
@@ -70,6 +77,16 @@ Route::get('/articles-seleccion-especial/{articles_id}',
 Route::get('conditions', 
 	'ConditionController@index'
 );
+
+
+
+// Vinoteca
+// Bodegas
+Route::get('bodegas/{commerce_id}', 
+	'BodegaController@index'
+);
+
+
 
 // Help
 Route::post('/help/message',

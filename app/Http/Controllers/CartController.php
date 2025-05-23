@@ -33,12 +33,18 @@ class CartController extends Controller
     }
 
     function store(Request $request) {
+        if (env('APP_ENV') == 'local') {
+            // sleep(3);
+        }
     	$cart = Cart::create([
     		'buyer_id'          => $this->buyerId(),
             'user_id'           => $request->commerce_id,
     	]);
 
         CartHelper::attachArticles($cart, $request->cart['articles']);
+        CartHelper::attach_promociones_vinoteca($cart, $request->cart['promociones_vinoteca']);
+
+        CartHelper::set_total($cart);
 
     	$cart = CartHelper::getFullModel($cart->id); 
 
@@ -46,6 +52,9 @@ class CartController extends Controller
     }
 
     function update(Request $request) {
+        if (env('APP_ENV') == 'local') {
+            // sleep(3);
+        }
     	$cart = Cart::find($request->id);
         $cart->delivery_zone_id     = $request->delivery_zone_id;
         $cart->payment_card_info_id = $request->payment_card_info_id;
@@ -56,13 +65,27 @@ class CartController extends Controller
         $cart->address_id           = $request->address_id;
         $cart->cupon_id             = $request->cupon_id;
         $cart->description          = $request->description;
+        $cart->fecha_entrega        = $request->fecha_entrega;
         $cart->save();
         CartHelper::checkPaymentStatus($cart);
-    	$cart->articles()->sync([]);
+        $cart->articles()->sync([]);
+    	$cart->promociones_vinoteca()->sync([]);
         $cart_deleted = false;
 
-        if (count($request->articles) >= 1) {
-            CartHelper::attachArticles($cart, $request->articles);
+        if (
+            count($request->articles) >= 1
+            || count($request->promociones_vinoteca) >= 1
+        ) {
+            
+            if (count($request->articles) >= 1) {
+                CartHelper::attachArticles($cart, $request->articles);
+            } 
+            
+            if (count($request->promociones_vinoteca) >= 1) {
+                CartHelper::attach_promociones_vinoteca($cart, $request->promociones_vinoteca);
+            }
+            
+            CartHelper::set_total($cart);
         } else {
             $cart->delete();
             $cart_deleted = true;
@@ -77,6 +100,7 @@ class CartController extends Controller
     function delete($cart_id) {
         $cart = Cart::find($cart_id);
         $cart->articles()->sync([]);
+        $cart->promociones_vinoteca()->sync([]);
         $cart->delete();
         return response(null, 200);
     }

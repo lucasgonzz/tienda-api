@@ -2,15 +2,12 @@
 
 namespace App\Notifications;
 
-use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
+use App\Http\Controllers\CommonLaravel\Helpers\UserHelper;
 use Illuminate\Notifications\Messages\BroadcastMessage;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
-use Illuminate\Support\Facades\Log;
 
 class AddedModel extends Notification {
-    use Queueable;
 
     public $model_name;
     public $model_id;
@@ -32,19 +29,12 @@ class AddedModel extends Notification {
         return 'added_model.'.$this->for_user_id;
     }
 
-    public function broadcastWith() {
-        return [
-            "foo" => "bar"
-        ];
-    }
-
     public function toBroadcast($notifiable) {
-        Log::info('Se mando broadcast for_user_id: '.$this->for_user_id);
         return new BroadcastMessage([
             'model_name'        => $this->model_name,
             'model_id'          => $this->model_id,
-            // 'added_by'          => null,
-            // 'check_added_by'    => $this->check_added_by,
+            // 'added_by'          => UserHelper::userId(false),
+            'check_added_by'    => $this->check_added_by,
         ]);
     }
 }

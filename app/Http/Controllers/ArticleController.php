@@ -117,18 +117,30 @@ class ArticleController extends Controller {
 
     function search($query, $commerce_id, $save_last_search = true) {
         $query = str_replace('%20', ' ', $query);
-        $articles = Article::where('user_id', $commerce_id)
-                            ->where(function($q) use ($query, $commerce_id) {
-                                $q->whereHas('tags', function($e) use ($query) {
-                                    $e->where('name', 'LIKE', "%$query%");
-                                })
-                                ->orWhere('name', 'LIKE', "%$query%")
-                                ->orWhere('bar_code', 'LIKE', "%$query%");
-                            })
-                            ->checkOnline()
+        Log::info('Buscando '.$query);
+        $articles = Article::where('user_id', $commerce_id);
+
+        $keywords = explode(' ', $query);
+
+        if (count($keywords) > 1) {
+
+            foreach ($keywords as $keyword) {
+                $query = 'name LIKE ?';
+                $articles->whereRaw($query, ["%$keyword%"]);
+            }
+        } else {
+            $articles->where(function($q) use ($query) {
+                    $q->where('name', 'LIKE', "%$query%")
+                        ->orWhere('bar_code', 'LIKE', "%$query%");
+                });
+        }
+
+        $articles = $articles->checkOnline()
                             ->checkStock()
                             ->withAll()
                             ->paginate(12);
+
+
         // $articles = ArticleHelper::setFavorites($articles);
         $articles = ArticleHelper::checkPriceTypes($articles);
         if ($save_last_search) {

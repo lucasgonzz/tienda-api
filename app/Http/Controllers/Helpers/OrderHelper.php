@@ -95,14 +95,47 @@ class OrderHelper {
             if (!is_null($user->online_configuration->online_price_surchage)) {
                 $price += $price * (float)$user->online_configuration->online_price_surchage / 100;
             }
-            Log::info($article->name.' variant_id: '.$article->pivot->variant_id);
-            $order->articles()->attach([$article->id => [
-                                            'amount'      => $article->pivot->amount,
-                                            'cost'        => $article->pivot->cost,
-                                            'notes'       => $article->pivot->notes,
-                                            'price'       => $price,
-                                            'variant_id'  => $article->pivot->variant_id,
-                                        ]]);
+
+            if (!Self::articulo_ya_cargado($order, $article)) {
+                $order->articles()->attach([$article->id => [
+                                                'amount'      => $article->pivot->amount,
+                                                'cost'        => $article->pivot->cost,
+                                                'notes'       => $article->pivot->notes,
+                                                'price'       => $price,
+                                                'variant_id'  => $article->pivot->variant_id,
+                                            ]]);
+            }
+            // Log::info($article->name.' variant_id: '.$article->pivot->variant_id);
         }
+    }
+
+    static function attachPromocionesVinoteca($cart, $order, $dolar_blue) {
+
+        foreach ($cart->promociones_vinoteca as $promo) {
+
+            $price = $promo->pivot->price;
+
+            if (!Self::promo_ya_cargada($order, $promo)) {
+                $order->promociones_vinoteca()->attach([$promo->id => [
+                                                'amount'      => $promo->pivot->amount,
+                                                'cost'        => $promo->pivot->cost,
+                                                'notes'       => $promo->pivot->notes,
+                                                'price'       => $price,
+                                            ]]);
+            }
+            // Log::info($article->name.' variant_id: '.$article->pivot->variant_id);
+        }
+    }
+
+    static function promo_ya_cargada($order, $promo) {
+        $order->load('promociones_vinoteca');
+        $order_promo = $order->promociones_vinoteca()->where('promocion_vinoteca_id', $promo->id)->first();
+        return !is_null($order_promo);
+    }
+
+    static function articulo_ya_cargado($order, $article) {
+        $order->load('articles');
+        $order_article = $order->articles()->where('article_id', $article->id)->first();
+        return !is_null($order_article);
     }
 }

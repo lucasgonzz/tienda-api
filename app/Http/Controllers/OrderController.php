@@ -9,13 +9,14 @@ use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
 use App\Http\Controllers\Helpers\StringHelper;
-use Illuminate\Support\Facades\Mail;
+use App\Jobs\SendOrderCreatedEmail;
 use App\Mail\OrderCreated;
-// use App\Notifications\OrderCreated;
 use App\Order;
 use App\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 
 class OrderController extends Controller
 {
@@ -39,8 +40,9 @@ class OrderController extends Controller
 
     function current($commerce_id) {
         $order = Order::where('buyer_id', $this->buyerId())
+                        ->orderBy('id', 'DESC')
                         ->where('user_id', $commerce_id)
-                        ->where(['status' => ['unconfirmed', 'confirmed']])
+                        ->with('articles', 'buyer', 'promociones_vinoteca')
                         ->first();
         return response()->json(['order' => $order], 200);
     }
@@ -48,10 +50,15 @@ class OrderController extends Controller
     function store(Request $request) {
         if ($this->no_es_denuevo_por_mercadopago($request)) {
             // $buyer_id = OrderHelper::getBuyerId($request);
+
+            // Log::info('request:');
+            // Log::info($request);
             $cart = Cart::find($request->cart_id);
+            Log::info('Fecha entrega carrito: '.$cart->fecha_entrega);
         	$order = Order::create([
                 'num'                       => $this->num('orders', $request->commerce_id),
-                'buyer_id'                  => $this->buyerId(),
+                'buyer_id'                  => $request->buyer_id ? $request->buyer_id : $this->buyerId(),
+                'seller_id'                 => $request->seller_id ? $request->seller_id : null,
         		// 'buyer_id'                  => $buyer_id,
         		'user_id'                   => $request->commerce_id,
                 // 'status'                    => 'unconfirmed',
@@ -67,10 +74,24 @@ class OrderController extends Controller
                 'payment_method_discount'   => OrderHelper::getPaymentMethodDiscount($cart),
                 'payment_method_surchage'   => OrderHelper::getPaymentMethodSurchage($cart),
                 'address_id'                => OrderHelper::getAddressId($cart),
+                'total'                     => $cart->total,
+                'fecha_entrega'             => $cart->fecha_entrega,
+                'address'                   => $this->get_address($request),
         	]);
 
+            Log::info('order address:');
+            Log::info($order->address);
+
+
             $cart = CartHelper::getFullModel($cart->id);
+
+            Log::info('Se van a agregar estos articulos al pedido N° '.$order->num);
+            foreach ($cart->articles as $article) {
+                Log::info($article->name.'. Cantidad: '.$article->pivot->amount.'. Notas: '.$article->pivot->notes);
+            }
+            
             OrderHelper::attachArticles($cart, $order, $request->dolar_blue);
+            OrderHelper::attachPromocionesVinoteca($cart, $order, $request->dolar_blue);
             OrderHelper::updateCurrentCart($cart, $order);
             OrderHelper::deleteOrderCart($cart);
 
@@ -79,18 +100,38 @@ class OrderController extends Controller
                             ->first();
             $order->articles = ArticleHelper::setArticlesVariants($order->articles);
             
-            MessageHelper::sendOrderCreatedMessage($order);
+            // MessageHelper::sendOrderCreatedMessage($order);
 
-            // if (!is_null($order->user->email)) {
-            //     Mail::to($order->user)->send(new OrderCreated($order));
-            // }
+            if (!is_null($order->user->email)) {
+                Log::info('enviando mail');
+                if (env('APP_ENV') == 'production') {
+                    // Mail::to($order->user)->send(new OrderCreated($order));
+                    SendOrderCreatedEmail::dispatch($order, $order->user->email)->onQueue('ecommerce');
+                }
+            }
 
-            $this->sendAddModelNotification('order', $order->id, false, $order->user_id);
-            // Auth::guard('buyer')->user()->notify(new OrderCreated($order));
+            Log::info('Termino');
         	return response(null, 201);
         }
         return response(null, 200);
     }
+
+    function get_address($request) {
+        if ($request['selected_buyer']) {
+
+            if (isset($request['selected_buyer']['comercio_city_client'])) {
+                return $request['selected_buyer']['comercio_city_client']['address'];
+            }
+
+        }
+        if ($request['buyer']['comercio_city_client']) {
+            Log::info('retun address del comercio_city_client:');
+            Log::info($request['buyer']['comercio_city_client']['address']);
+            return $request['buyer']['comercio_city_client']['address'];
+        }
+        return $request['buyer']['address'];
+    }
+
 
     function no_es_denuevo_por_mercadopago($request) {
         $cart_ya_guardado = Cart::find($request->cart_id);

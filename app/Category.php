@@ -17,6 +17,10 @@ class Category extends Model
         return $this->belongsTo('App\Icon');
     }
 
+    function category_price_type_ranges() {
+        return $this->hasMany(CategoryPriceTypeRange::class)->orderBy('min', 'asc');
+    }
+
     function views() {
         return $this->morphMany('App\View', 'viewable');
     }

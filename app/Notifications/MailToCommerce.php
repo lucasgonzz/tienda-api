@@ -44,10 +44,13 @@ class MailToCommerce extends Notification
     public function toMail($notifiable)
     {
         return (new MailMessage)
-                    ->from($this->email)
+                    ->from(env('MAIL_FROM_ADDRESS'), 'comerciocity.com')
+                    ->subject('Mensaje desde Tienda Online')
                     ->line('Mensaje de '.$this->name)
+                    ->line('Correo electronico: '.$this->email)
                     ->line('Telefono de '.$this->name.': '.$this->phone)
-                    ->line('Mensaje: '.$this->message);
+                    ->line('Mensaje: ')
+                    ->line($this->message);
     }
 
     /**

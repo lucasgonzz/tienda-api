@@ -12,8 +12,12 @@ class Order extends Model
         $query->with('articles.images', 'buyer', 'payment_method', 'delivery_zone', 'cupons', 'order_status', 'articles.article_properties.article_property_values', 'articles.article_properties.article_property_type', 'articles.article_variants.article_property_values.article_property_type', 'articles.discounts');
     }
 
+    function promociones_vinoteca() {
+        return $this->belongsToMany('App\PromocionVinoteca')->withPivot('amount', 'price', 'notes');
+    }
+
     function articles() {
-    	return $this->belongsToMany('App\Article')->withPivot('amount', 'price', 'variant_id', 'notes');
+        return $this->belongsToMany('App\Article')->withPivot('amount', 'price', 'variant_id', 'notes');
     }
 
     function cupons() {

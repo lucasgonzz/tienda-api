@@ -29,7 +29,7 @@ class OrderCreated extends Mailable
     public function build()
     {
         return $this->subject('Nuevo pedido')
-                    ->from('contacto@comerciocity.com', 'comerciocity.com')
+                    ->from(env('MAIL_FROM_ADDRESS'), 'comerciocity.com')
                     ->markdown('emails.order-created', [
                         'order'      => $this->order,
                     ]);

@@ -14,6 +14,7 @@ class CommerceController extends Controller
                         ->with('addresses')
                         ->with('extencions')
                         ->with('online_configuration.online_price_type')
+                        ->with('online_configuration.online_template')
                         ->first();
         return response()->json(['commerce' => $commerce], 200);
     }

@@ -21,14 +21,19 @@ class HomeController extends Controller
                             ->checkStock()
                             ->withAll()
                             ->orderBy('created_at', 'DESC')
-                            ->where('status', 'active')
-                            ->paginate(12);
+                            ->where('status', 'active');
+        if (str_contains(env('APP_URL'), 'truvari')) {
+            $last_uploads = $last_uploads->paginate(10);
+        } else {
+            $last_uploads = $last_uploads->paginate(12);
+        }
 
         $last_uploads = ArticleHelper::checkPriceTypes($last_uploads);
 
         if ($request->get('page') == 1) {
             $featured = HomeHelper::getFeatured($request->commerce_id);
             $in_offer = HomeHelper::getInOffer($request->commerce_id);
+            $promociones_vinoteca = HomeHelper::get_promociones_vinoteca($request->commerce_id);
 
             // Novedades son los que han tenido movimiento de stock en las ultimas 2 semanas
             $novedades = HomeHelper::getNovedades($request->commerce_id);
@@ -39,6 +44,7 @@ class HomeController extends Controller
             return response()->json([
                                         'articles' => $last_uploads, 
                                         'featured'  => $featured, 
+                                        'promociones_vinoteca'  => $promociones_vinoteca,
                                         'in_offer'  => $in_offer,
                                         'novedades' => $novedades,
                                     ], 200);
@@ -46,14 +52,16 @@ class HomeController extends Controller
         return response()->json(['articles' => $last_uploads], 200);
     }
 
-    function articlesFromCategory($category_id, $sub_category_id, $order_by) {
+    function articlesFromCategory($category_id, $sub_category_id, $bodega_id, $order_by) {
         $articles = Article::withAll()
                             ->checkOnline()
                             ->checkStock();
         if ($category_id != 0) {
             $articles = $articles->where('category_id', $category_id);
-        } else {
+        } else if ($sub_category_id != 0) {
             $articles = $articles->where('sub_category_id', $sub_category_id);
+        } else if ($bodega_id != 0) {
+            $articles = $articles->where('bodega_id', $bodega_id);
         }
         if ($order_by == 'fecha-mayor-menor') {
             $articles = $articles->orderBy('created_at', 'DESC');
@@ -85,8 +93,11 @@ class HomeController extends Controller
     function categories($commerce_id) {
         $categories = Category::where('user_id', $commerce_id)
                                 ->where('name', '!=', 'La de siempre')
+                                ->withCount('articles')
                                 ->with(['sub_categories' => function($query) {
-                                    $query->orderBy('name', 'ASC');
+                                    $query->whereHas('articles')
+                                            ->withCount('articles')
+                                            ->orderBy('name', 'ASC');
                                 }])
                                 ->orderBy('name', 'ASC')
                                 ->get();

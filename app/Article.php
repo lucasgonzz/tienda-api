@@ -15,7 +15,7 @@ class Article extends Model
     protected $guarded = [];
 
     function scopeWithAll($query) {
-        $query->with('discounts', 'images', 'descriptions', 'condition', 'sizes', 'colors', 'brand', 'iva', 'article_properties.article_property_values', 'article_properties.article_property_type', 'article_variants.article_property_values.article_property_type');
+        $query->with('discounts', 'images', 'descriptions', 'condition', 'sizes', 'colors', 'brand', 'iva', 'article_properties.article_property_values', 'article_properties.article_property_type', 'article_variants.article_property_values.article_property_type', 'bodega', 'cepa');
     }
     
     protected $casts = [
@@ -43,8 +43,11 @@ class Article extends Model
     function scopeCheckStock($query) {
         $commerce = User::find(request()->commerce_id);
         if (!$commerce->online_configuration->show_articles_without_stock) {
+            
             $query->where(function($sub_query) use ($commerce) {
-            $sub_query->where('stock', '>', 0);
+                
+                $sub_query->where('stock', '>', 0);
+
                 if ($commerce->online_configuration->stock_null_equal_0) {
                     $sub_query->orWhereNotNull('stock');
                     // Log::info('chequeando que el stock no sea null');
@@ -55,6 +58,18 @@ class Article extends Model
             });
         }
         return $query;
+    }
+    
+    function bodega() {
+        return $this->belongsTo(Bodega::class);
+    }
+    
+    function cepa() {
+        return $this->belongsTo(Cepa::class);
+    }
+
+    function price_types() {
+        return $this->belongsToMany(PriceType::class)->withPivot('percentage', 'price', 'final_price');
     }
 
     function article_properties() {

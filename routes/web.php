@@ -7,11 +7,16 @@ use App\Mail\VerificationCode;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
+use Illuminate\Support\Facades\Broadcast;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Broadcasting\BroadcastManager;
+
 Route::get('/email', function() {
 	$user = App\User::where('company_name', 'CandyGuay')->first();
 	$url = App\Http\Controllers\Helpers\ImageHelper::image($user);
 	return new VerificationCode($url);
 });
+
 
 
 Route::post('/sociallogin/{provider}/{commerce_id}', 'AuthController@social');

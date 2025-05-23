@@ -42,7 +42,7 @@ class MessageController extends Controller
             'text'          => StringHelper::onlyFirstWordUpperCase($request->text),
         ]);
         $commerce = User::find($request->commerce_id);
-        $commerce->notify(new MessageSend($message));
+        // $commerce->notify(new MessageSend($message));
         return response()->json(['message' => $message], 201);
     }
 

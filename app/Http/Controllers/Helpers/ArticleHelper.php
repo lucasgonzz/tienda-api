@@ -2,24 +2,41 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\ArticlePrice;
 use App\ArticleVariant;
 use App\Color;
+use App\Http\Controllers\Helpers\CommerceHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\PriceType;
 use App\Size;
 use App\User;
 use Illuminate\Support\Facades\Log;
-use App\ArticlePrice;
 
 class ArticleHelper
 {
 
+    static function set_promociones_vinoteca($promociones_vinoteca) {
+        foreach ($promociones_vinoteca as $promocion_vinoteca) {
+            $promocion_vinoteca->is_promocion_vinoteca = true;
+        }
+        return $promociones_vinoteca;
+    }
+
     static function checkPriceTypes($articles) {
         
         $buyer = Auth('buyer')->user(); 
+        
+        $commerce_id = null;
+        if (count($articles) >= 1) {
+            $commerce_id = $articles[0]->user_id;
+        }
 
-        if (!is_null($buyer) && $buyer->user->use_archivos_de_intercambio && !is_null($buyer->comercio_city_client) && !is_null($buyer->comercio_city_client->price_type)) {
+        if (!is_null($commerce_id) && CommerceHelper::hasExtencion('lista_de_precios_por_rango_de_cantidad_vendida', null, $commerce_id)) {
+
+            $articles = Self::set_ranges($articles);
+
+        } else if (!is_null($buyer) && $buyer->user->use_archivos_de_intercambio && !is_null($buyer->comercio_city_client) && !is_null($buyer->comercio_city_client->price_type)) {
 
             $price_type_id = $buyer->comercio_city_client->price_type->id;
 
@@ -71,12 +88,10 @@ class ArticleHelper
                             if (count($price_type->sub_categories) >= 1 && !is_null($article->sub_category)) {
                                 foreach ($price_type->sub_categories as $price_type_sub_category) {
                                     if ($price_type_sub_category->id == $article->sub_category_id) {
-                                        // Log::info('Usando el porcetaje de '.$price_type_sub_category->name.' de '.$price_type_sub_category->pivot->percentage);
                                         $percentage = $price_type_sub_category->pivot->percentage;
                                     }
                                 }
                             }
-                            // Log::info('sumando el '.$percentage.'% a '.$article->final_price.' de '.$article->name);
                             $article->final_price += $article->final_price * $percentage / 100;
                         } else {
                             break;
@@ -85,6 +100,50 @@ class ArticleHelper
                 }
             }
         }
+        return $articles;
+    }
+
+    static function set_ranges($articles) {
+
+        foreach ($articles as $article) {
+            $ranges = [];
+
+            if (
+                !is_null($article->sub_category)
+                && count($article->sub_category->category_price_type_ranges) >= 1
+            ) {
+
+                foreach ($article->sub_category->category_price_type_ranges as $range) {
+
+                    $article_price_type = $article->price_types->firstWhere('id', $range->price_type_id);
+
+                    $_range = $range;
+                    $_range->price = $article_price_type->pivot->price;
+                    $ranges[] = $_range;
+                }
+
+            } else if (
+                !is_null($article->category)
+                && count($article->category->category_price_type_ranges) >= 1
+            ) {
+                
+                foreach ($article->category->category_price_type_ranges as $range) {
+                    
+                    $article_price_type = $article->price_types->firstWhere('id', $range->price_type_id);
+
+                    $_range = $range;
+                    $_range->price = $article_price_type->pivot->price;
+                    
+                    if (is_null($range->sub_category_id)) {
+                        $ranges[] = $_range;
+                    }
+                }
+
+            }
+
+            $article->ranges = $ranges;
+        }
+
         return $articles;
     }
 
