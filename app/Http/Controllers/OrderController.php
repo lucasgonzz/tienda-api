@@ -102,7 +102,10 @@ class OrderController extends Controller
             
             // MessageHelper::sendOrderCreatedMessage($order);
 
-            if (!is_null($order->user->email)) {
+            if (
+                !env('NO_ENVIAR_MAILS', false)
+                && !is_null($order->user->email)
+            ) {
                 Log::info('enviando mail');
                 if (env('APP_ENV') == 'production') {
                     // Mail::to($order->user)->send(new OrderCreated($order));
@@ -124,12 +127,15 @@ class OrderController extends Controller
             }
 
         }
+        if ($request['buyer']['address']) {
+            return $request['buyer']['address'];
+        }
         if ($request['buyer']['comercio_city_client']) {
             Log::info('retun address del comercio_city_client:');
             Log::info($request['buyer']['comercio_city_client']['address']);
             return $request['buyer']['comercio_city_client']['address'];
         }
-        return $request['buyer']['address'];
+        return null;
     }
 
 

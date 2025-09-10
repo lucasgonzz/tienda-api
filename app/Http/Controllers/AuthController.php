@@ -80,7 +80,10 @@ class AuthController extends Controller
         	$buyer = Buyer::create([
                 'num'               => $this->num('buyers', $request->commerce_id),
         		'name'	            => ucwords(strtolower($request->name)),
-        		'surname'           => ucwords(strtolower($request->surname)),
+                'surname'           => ucwords(strtolower($request->surname)),
+                'barrio'            => ucwords(strtolower($request->barrio)),
+                'ciudad'            => ucwords(strtolower($request->ciudad)),
+        		'address'            => ucwords(strtolower($request->address)),
                 'phone'             => $this->getNumber($request->phone),
         		'email'             => $request->email,
         		'password'          => bcrypt($request->password),

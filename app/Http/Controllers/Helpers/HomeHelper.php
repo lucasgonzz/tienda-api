@@ -51,6 +51,7 @@ class HomeHelper
     static function getFeatured($commerce_id) {
         $featured = Article::where('user_id', $commerce_id)
                             ->whereNotNull('featured')
+                            ->where('featured', '!=', 0)
                             ->checkStock()
                             ->checkOnline()
                             ->withAll()
@@ -71,6 +72,7 @@ class HomeHelper
     static function get_promociones_vinoteca($commerce_id) {
         $promociones_vinoteca = PromocionVinoteca::where('user_id', $commerce_id)
                             ->withAll()
+                            ->where('online', 1)
                             ->get();
 
         foreach ($promociones_vinoteca as $promocion_vinoteca) {

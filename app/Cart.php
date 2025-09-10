@@ -14,7 +14,7 @@ class Cart extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Article')->withPivot('price', 'amount', 'variant_id', 'amount_insuficiente', 'notes');
+        return $this->belongsToMany('App\Article')->withPivot('price', 'amount', 'variant_id', 'amount_insuficiente', 'notes')->orderBy('name', 'ASC');
     }
 
     function promociones_vinoteca() {

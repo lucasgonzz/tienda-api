@@ -49,6 +49,9 @@ class BuyerController extends Controller
 				'name'		=> $request->name,
 				'email'		=> $request->email,
 				'phone'		=> $request->phone,
+				'ciudad'	=> $request->ciudad,
+				'barrio'	=> $request->barrio,
+				'address'	=> $request->address,
 				'user_id'	=> $request->commerce_id
 			]);
 

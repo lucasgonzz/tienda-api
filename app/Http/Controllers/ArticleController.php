@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\HomeHelper;
 use App\Http\Controllers\Helpers\TagHelper;
 use App\Http\Controllers\LastSearchController;
+use App\PromocionVinoteca;
 use App\Question;
 use App\Tag;
 use App\User;
@@ -26,9 +27,18 @@ class ArticleController extends Controller {
                                 $query->whereHas('answer')->with('answer');
                             }])
     						->first();
-        $article = ArticleHelper::checkPriceTypes([$article])[0];
-        // event(new ArticleViewedEvent($article, $this->buyerId()));
-    	return response()->json(['article' => $article], 200);
+
+        if ($article) {
+            $article = ArticleHelper::checkPriceTypes([$article])[0];
+            return response()->json(['article' => $article], 200);
+        } else {
+            $promo = PromocionVinoteca::where('slug', $slug)
+                            ->where('user_id', $commerce_id)
+                            ->withAll()
+                            ->first();
+        	return response()->json(['article' => $promo], 200);
+        }
+
     }
 
     function seleccionEspecial($articles_id) {
