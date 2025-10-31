@@ -52,7 +52,7 @@ class HomeController extends Controller
         return response()->json(['articles' => $last_uploads], 200);
     }
 
-    function articlesFromCategory($category_id, $sub_category_id, $bodega_id, $order_by) {
+    function articlesFromCategory($category_id, $sub_category_id, $bodega_id, $cepa_id, $order_by) {
         $articles = Article::withAll()
                             ->checkOnline()
                             ->checkStock();
@@ -62,6 +62,8 @@ class HomeController extends Controller
             $articles = $articles->where('sub_category_id', $sub_category_id);
         } else if ($bodega_id != 0) {
             $articles = $articles->where('bodega_id', $bodega_id);
+        } else if ($cepa_id != 0) {
+            $articles = $articles->where('cepa_id', $cepa_id);
         }
         if ($order_by == 'fecha-mayor-menor') {
             $articles = $articles->orderBy('created_at', 'DESC');

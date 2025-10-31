@@ -97,6 +97,29 @@ class CartController extends Controller
         return response()->json(['cart' => null], 200);
     }
 
+    function update_article_amount(Request $request, $cart_id) {
+        $cart = Cart::find($cart_id);
+
+        if ($request->is_promocion_vinoteca) {
+
+            $cart->promociones_vinoteca()->updateExistingPivot($request->id, [
+                'amount'    => $request->amount,
+            ]);
+
+        } else {
+
+            $cart->articles()->updateExistingPivot($request->id, [
+                'amount'    => $request->amount,
+            ]);
+        }
+        
+
+        CartHelper::set_total($cart);
+
+        $cart = CartHelper::getFullModel($cart->id);
+        return response()->json(['cart' => $cart], 200);
+    }
+
     function delete($cart_id) {
         $cart = Cart::find($cart_id);
         $cart->articles()->sync([]);

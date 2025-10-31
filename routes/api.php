@@ -14,7 +14,7 @@ Route::get('/categories/{commerce_id}',
 Route::get('/sub-categories/{category_id}',
 	'HomeController@subCategories'
 );
-Route::get('/articles/from-category/{category_id}/{sub_category_id}/{bodega_id}/{order_by}/{commerce_id}',
+Route::get('/articles/from-category/{category_id}/{sub_category_id}/{bodega_id}/{cepa_id}/{order_by}/{commerce_id}',
 	'HomeController@articlesFromCategory'
 );
 Route::get('/titles/{commerce_id}',
@@ -84,6 +84,10 @@ Route::get('conditions',
 // Bodegas
 Route::get('bodegas/{commerce_id}', 
 	'BodegaController@index'
+);
+// Cepas
+Route::get('cepas/{commerce_id}', 
+	'CepaController@index'
 );
 
 
@@ -206,6 +210,10 @@ Route::resource('/buyer-message', 'BuyerMessageController');
 	Route::get('/carts/from-order/{order_id}',
 		'CartController@fromOrder'
 	);
+	Route::put('/carts/update-article-amount/{cart_id}',
+		'CartController@update_article_amount'
+	);
+
 
 	// PaymentCardInfo
 	Route::post('/payment-card-info',
