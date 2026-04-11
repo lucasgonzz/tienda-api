@@ -34,6 +34,7 @@ class ArticleController extends Controller {
         } else {
             $promo = PromocionVinoteca::where('slug', $slug)
                             ->where('user_id', $commerce_id)
+                            ->where('online', 1)
                             ->withAll()
                             ->first();
         	return response()->json(['article' => $promo], 200);

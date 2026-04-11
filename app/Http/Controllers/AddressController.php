@@ -11,6 +11,8 @@ class AddressController extends Controller
     function store(Request $request) {
         $address = Address::create([
             'street' => $request->street,
+            'phone' => $request->phone,
+            'email' => $request->email,
             'street_number' => $request->street_number,
             'city' => $request->city,
             'province' => $request->province,

@@ -19,4 +19,9 @@ class Client extends Model
     public function price_type() {
         return $this->belongsTo('App\PriceType');
     }
+
+    public function credit_accounts() {
+        return $this->hasMany(CreditAccount::class, 'model_id')
+                    ->where('model_name', 'client');
+    }
 }

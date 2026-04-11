@@ -73,6 +73,7 @@ class HomeHelper
         $promociones_vinoteca = PromocionVinoteca::where('user_id', $commerce_id)
                             ->withAll()
                             ->where('online', 1)
+                            ->orderBy('id', 'DESC')
                             ->get();
 
         foreach ($promociones_vinoteca as $promocion_vinoteca) {

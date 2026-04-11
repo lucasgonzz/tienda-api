@@ -22,6 +22,30 @@ class Article extends Model
         'stock' => 'integer',
     ];
 
+    
+    function addresses() {
+        return $this->belongsToMany(Address::class)->withPivot('amount');
+    }
+    
+    public function getStockAttribute()
+    {
+
+        if (env('APP_URL') == 'https://api.golonorte.com.ar') {
+
+            $address_id = 1;
+            $article_address = $this->addresses()
+                ->where('address_id', $address_id)
+                ->first();
+
+            if ($article_address) {
+                return (float)$article_address->pivot->amount;
+            }
+
+        } 
+
+        return $this->attributes['stock'];
+    }
+
     function scopeCheckOnline($query) {
         $commerce = User::find(request()->commerce_id);
         $query->where('status', 'active')
@@ -42,20 +66,21 @@ class Article extends Model
     */
     function scopeCheckStock($query) {
         $commerce = User::find(request()->commerce_id);
-        if (!$commerce->online_configuration->show_articles_without_stock) {
-            
-            $query->where(function($sub_query) use ($commerce) {
-                
-                $sub_query->where('stock', '>', 0);
+        
+        $show_without_stock = $commerce->online_configuration->show_articles_without_stock;
+        $stock_null_equal_0 = $commerce->online_configuration->stock_null_equal_0;
 
-                if ($commerce->online_configuration->stock_null_equal_0) {
-                    $sub_query->orWhereNotNull('stock');
-                    // Log::info('chequeando que el stock no sea null');
-                } else {
-                    $sub_query->orWhereNull('stock');
-                    // Log::info('chequeando que el stock sea null');
-                }
-            });
+        if (!$show_without_stock) {
+            if ($stock_null_equal_0) {
+                // Mostrar solo artículos con stock > 0
+                $query->where('stock', '>', 0);
+            } else {
+                // Mostrar artículos con stock > 0 o stock null
+                $query->where(function($sub_query) {
+                    $sub_query->where('stock', '>', 0)
+                              ->orWhereNull('stock');
+                });
+            }
         }
         return $query;
     }

@@ -248,5 +248,9 @@ Route::resource('/buyer-message', 'BuyerMessageController');
 	Route::post('/addresses',
 		'AddressController@store'
 	);
+
+	// Cuenta corriente
+	Route::get('/credit-accounts', 'CurrentAcountController@getCreditAccounts');
+	Route::get('/current-acount/{credit_account_id}/{cantidad_movimientos}', 'CurrentAcountController@getMovements');
 // });
 
