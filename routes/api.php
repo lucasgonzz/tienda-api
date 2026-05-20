@@ -11,6 +11,12 @@ Route::get('/articles/featured-last-uploads/{commerce_id}',
 Route::get('/categories/{commerce_id}',
 	'HomeController@categories'
 );
+Route::get('/brands/{commerce_id}',
+	'HomeController@brands'
+);
+Route::get('/articles/from-brand/{brand_id}/{order_by}/{commerce_id}',
+	'HomeController@articlesFromBrand'
+);
 Route::get('/sub-categories/{category_id}',
 	'HomeController@subCategories'
 );

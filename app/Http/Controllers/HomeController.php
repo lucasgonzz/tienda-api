@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Article;
+use App\Brand;
 use App\Category;
 use App\Events\SubCategoryViewed;
 use App\Http\Controllers\Helpers\ArticleHelper;
@@ -82,6 +83,64 @@ class HomeController extends Controller
         }
         $articles = $articles->simplePaginate(12);
         $articles = ArticleHelper::checkPriceTypes($articles);
+        return response()->json(['articles' => $articles, 'reverse' => true], 200);
+    }
+
+    /**
+     * Listado de marcas del comercio que tienen al menos un artículo online con stock según reglas de la tienda.
+     *
+     * @param  int|string  $commerce_id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function brands($commerce_id)
+    {
+        request()->merge(['commerce_id' => $commerce_id]);
+        $brands = Brand::where('user_id', $commerce_id)
+            ->whereHas('articles', function ($query) use ($commerce_id) {
+                $query->where('user_id', $commerce_id)
+                    ->checkOnline()
+                    ->checkStock();
+            })
+            ->orderBy('name', 'ASC')
+            ->get();
+
+        return response()->json(['brands' => $brands], 200);
+    }
+
+    /**
+     * Artículos filtrados por marca (mismo criterio de orden que from-category).
+     *
+     * @param  int|string  $brand_id
+     * @param  string  $order_by
+     * @param  int|string  $commerce_id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function articlesFromBrand($brand_id, $order_by, $commerce_id)
+    {
+        request()->merge(['commerce_id' => $commerce_id]);
+        $articles = Article::withAll()
+            ->checkOnline()
+            ->checkStock()
+            ->where('user_id', $commerce_id)
+            ->where('brand_id', $brand_id);
+        if ($order_by == 'fecha-mayor-menor') {
+            $articles = $articles->orderBy('created_at', 'DESC');
+        } else if ($order_by == 'fecha-menor-mayor') {
+            $articles = $articles->orderBy('created_at', 'ASC');
+        } else if ($order_by == 'precio-mayor-menor') {
+            Log::info('precio mayor a menor');
+            $articles = $articles->orderBy('final_price', 'DESC');
+        } else if ($order_by == 'precio-menor-mayor') {
+            Log::info('precio menor a mayor');
+            $articles = $articles->orderBy('final_price', 'ASC');
+        } else if ($order_by == 'a-z') {
+            $articles = $articles->orderBy('name', 'ASC');
+        } else if ($order_by == 'z-a') {
+            $articles = $articles->orderBy('name', 'DESC');
+        }
+        $articles = $articles->simplePaginate(12);
+        $articles = ArticleHelper::checkPriceTypes($articles);
+
         return response()->json(['articles' => $articles, 'reverse' => true], 200);
     }
 

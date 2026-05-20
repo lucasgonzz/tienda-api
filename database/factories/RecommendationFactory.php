@@ -1,12 +1,25 @@
 <?php
 
-/** @var \Illuminate\Database\Eloquent\Factory $factory */
+namespace Database\Factories;
 
 use App\Recommendation;
-use Faker\Generator as Faker;
+use Illuminate\Database\Eloquent\Factories\Factory;
 
-$factory->define(Recommendation::class, function (Faker $faker) {
-    return [
-        //
-    ];
-});
+/**
+ * Factory para Recommendation (placeholder para tests).
+ */
+class RecommendationFactory extends Factory
+{
+    /**
+     * @var class-string<Recommendation>
+     */
+    protected $model = Recommendation::class;
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function definition(): array
+    {
+        return [];
+    }
+}

@@ -8,9 +8,19 @@ use Throwable;
 class Handler extends ExceptionHandler
 {
     /**
+     * Registro de callbacks reportables (Laravel 10).
+     *
+     * @return void
+     */
+    public function register(): void
+    {
+        //
+    }
+
+    /**
      * A list of the exception types that are not reported.
      *
-     * @var array
+     * @var array<int, class-string<\Throwable>>
      */
     protected $dontReport = [
         //
