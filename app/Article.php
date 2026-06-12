@@ -16,8 +16,12 @@ class Article extends Model
     
     protected $guarded = [];
 
+    /**
+     * Eager load de relaciones habituales para listados y detalle de artículos en tienda.
+     * Incluye price_types para que checkPriceTypes pueda leer pivot->final_price.
+     */
     function scopeWithAll($query) {
-        $query->with('discounts', 'images', 'descriptions', 'condition', 'sizes', 'colors', 'brand', 'iva', 'article_properties.article_property_values', 'article_properties.article_property_type', 'article_variants.article_property_values.article_property_type', 'bodega', 'cepa');
+        $query->with('discounts', 'images', 'descriptions', 'condition', 'sizes', 'colors', 'brand', 'iva', 'article_properties.article_property_values', 'article_properties.article_property_type', 'article_variants.article_property_values.article_property_type', 'bodega', 'cepa', 'price_types');
     }
     
     protected $casts = [

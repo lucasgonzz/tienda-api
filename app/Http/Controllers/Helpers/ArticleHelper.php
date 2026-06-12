@@ -50,51 +50,31 @@ class ArticleHelper
             }
 
         } else if (!is_null($buyer) && !is_null($buyer->comercio_city_client) && !is_null($buyer->comercio_city_client->price_type)) {
-            $price_types = PriceType::where('user_id', $buyer->user_id)
-                                    ->whereNotNull('position')
-                                    ->orderBy('position', 'ASC')
-                                    ->get();
+            // Caso 3: buyer logueado con lista de precios asignada — usar final_price del pivot
+            $price_type_id = $buyer->comercio_city_client->price_type->id;
             foreach ($articles as $article) {
-                foreach ($price_types as $price_type) {
-                    if (!is_null($article) && $price_type->position <= $buyer->comercio_city_client->price_type->position) {
-                        $percentage = $price_type->percentage;
-                       
-                        if (count($price_type->sub_categories) >= 1 && !is_null($article->sub_category)) {
-                            foreach ($price_type->sub_categories as $price_type_sub_category) {
-                                if ($price_type_sub_category->id == $article->sub_category_id) {
-                                    // Log::info('Usando el porcetaje de '.$price_type_sub_category->name.' de '.$price_type_sub_category->pivot->percentage);
-                                    $percentage = $price_type_sub_category->pivot->percentage;
-                                }
-                            }
-                        }
-                        
-                        // Log::info('sumando el '.$percentage.'% a '.$article->final_price.' de '.$article->name);
-                        $article->final_price += $article->final_price * $percentage / 100;
-                    } else {
-                        break;
+                if (!is_null($article)) {
+                    // Buscar la lista del buyer entre las price_types cargadas del artículo
+                    $matched = $article->price_types->firstWhere('id', $price_type_id);
+                    if (!is_null($matched) && !is_null($matched->pivot->final_price)) {
+                        $article->final_price = $matched->pivot->final_price;
                     }
                 }
             }
         } else if (count($articles) >= 1 && !is_null($articles[0])) {
+            // Caso 4: visitante sin login — usar la lista pública (position más alta)
             $price_types = PriceType::where('user_id', $articles[0]->user_id)
                                     ->whereNotNull('position')
-                                    ->orderBy('position', 'ASC')
+                                    ->orderBy('position', 'DESC')
                                     ->get();
             if (count($price_types) >= 1) {
+                // La primera es la de posición más alta (precio público más caro)
+                $public_price_type = $price_types->first();
                 foreach ($articles as $article) {
-                    foreach ($price_types as $price_type) {
-                        if (!is_null($article)) {
-                            $percentage = $price_type->percentage;
-                            if (count($price_type->sub_categories) >= 1 && !is_null($article->sub_category)) {
-                                foreach ($price_type->sub_categories as $price_type_sub_category) {
-                                    if ($price_type_sub_category->id == $article->sub_category_id) {
-                                        $percentage = $price_type_sub_category->pivot->percentage;
-                                    }
-                                }
-                            }
-                            $article->final_price += $article->final_price * $percentage / 100;
-                        } else {
-                            break;
+                    if (!is_null($article)) {
+                        $matched = $article->price_types->firstWhere('id', $public_price_type->id);
+                        if (!is_null($matched) && !is_null($matched->pivot->final_price)) {
+                            $article->final_price = $matched->pivot->final_price;
                         }
                     }
                 }
