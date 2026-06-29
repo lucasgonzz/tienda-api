@@ -6,6 +6,7 @@ use App\Buyer;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\Helpers\BuyerHelper;
 use App\Http\Controllers\Helpers\StringHelper;
+use Exception;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
@@ -118,5 +119,24 @@ class BuyerController extends Controller
 			return true;
 		}
 		return false;
+	}
+
+	/**
+	 * Cierra la sesión del buyer guest y destruye la cookie de sesión del browser.
+	 * Se usa tras confirmar un pedido para que la próxima visita no quede autenticado.
+	 *
+	 * @return \Illuminate\Http\Response Respuesta vacía con HTTP 200
+	 */
+	function logout() {
+		// Cerrar sesión del guard buyer
+		Auth::guard('buyer')->logout();
+		try {
+			// Invalidar sesión Laravel y regenerar token CSRF
+			request()->session()->invalidate();
+			request()->session()->regenerateToken();
+		} catch (Exception $e) {
+			// Silenciar: si la sesión ya no existe no importa
+		}
+		return response(null, 200);
 	}
 }

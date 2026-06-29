@@ -258,5 +258,8 @@ Route::resource('/buyer-message', 'BuyerMessageController');
 	// Cuenta corriente
 	Route::get('/credit-accounts', 'CurrentAcountController@getCreditAccounts');
 	Route::get('/current-acount/{credit_account_id}/{cantidad_movimientos}', 'CurrentAcountController@getMovements');
+
+	// Destruir sesión guest tras confirmar pedido (sin requerir autenticación previa)
+	Route::post('/buyer/logout', 'BuyerController@logout');
 // });
 
