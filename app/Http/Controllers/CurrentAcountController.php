@@ -49,4 +49,42 @@ class CurrentAcountController extends Controller
 
         return response()->json(['models' => $models], 200);
     }
+
+    /**
+     * Emite un token de un solo uso (5 min) para imprimir el PDF de una venta
+     * de la cuenta corriente del buyer autenticado.
+     *
+     * @param int $sale_id ID de la venta a imprimir
+     * @return \Illuminate\Http\Response|\Illuminate\Http\JsonResponse
+     */
+    function salePdfToken($sale_id) {
+        $buyer = $this->buyer();
+
+        if (!$buyer || !$buyer->comercio_city_client_id) {
+            return response(null, 403);
+        }
+
+        // Ownership: la venta tiene que estar en un movimiento de una cuenta corriente de este buyer/cliente.
+        $movement = CurrentAcount::where('sale_id', $sale_id)
+            ->whereHas('credit_account', function ($query) use ($buyer) {
+                $query->where('model_name', 'client')
+                      ->where('model_id', $buyer->comercio_city_client_id);
+            })
+            ->first();
+
+        if (!$movement) {
+            return response(null, 403);
+        }
+
+        $token = bin2hex(random_bytes(32));
+
+        \App\SalePdfAccessToken::create([
+            'token' => $token,
+            'sale_id' => $sale_id,
+            'expires_at' => now()->addMinutes(5),
+            'used_at' => null,
+        ]);
+
+        return response()->json(['token' => $token], 200);
+    }
 }
