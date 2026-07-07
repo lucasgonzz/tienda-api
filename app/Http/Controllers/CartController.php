@@ -41,6 +41,10 @@ class CartController extends Controller
             'user_id'           => $request->commerce_id,
     	]);
 
+        // Persistir opciones de checkout elegidas antes de confirmar (envío/retiro, pago, etc.)
+        $this->sync_checkout_fields($cart, $request->cart);
+        $cart->save();
+
         CartHelper::attachArticles($cart, $request->cart['articles']);
         CartHelper::attach_promociones_vinoteca($cart, $request->cart['promociones_vinoteca']);
 
@@ -56,16 +60,7 @@ class CartController extends Controller
             // sleep(3);
         }
     	$cart = Cart::find($request->id);
-        $cart->delivery_zone_id     = $request->delivery_zone_id;
-        $cart->payment_card_info_id = $request->payment_card_info_id;
-        $cart->payment_method_id    = $request->payment_method_id;
-        $cart->payment_id           = $request->payment_id;
-        $cart->payment_status       = $request->payment_status;
-        $cart->deliver              = $request->deliver;
-        $cart->address_id           = $request->address_id;
-        $cart->cupon_id             = $request->cupon_id;
-        $cart->description          = $request->description;
-        $cart->fecha_entrega        = $request->fecha_entrega;
+        $this->sync_checkout_fields($cart, $request->all());
         $cart->save();
         CartHelper::checkPaymentStatus($cart);
         $cart->articles()->sync([]);
@@ -126,5 +121,25 @@ class CartController extends Controller
         $cart->promociones_vinoteca()->sync([]);
         $cart->delete();
         return response(null, 200);
+    }
+
+    /**
+     * Copia al carrito los campos del paso de checkout (entrega, pago, notas, etc.).
+     *
+     * @param \App\Cart $cart
+     * @param array $data Payload del carrito enviado por tienda-spa
+     * @return void
+     */
+    function sync_checkout_fields($cart, $data) {
+        $cart->delivery_zone_id     = isset($data['delivery_zone_id']) ? $data['delivery_zone_id'] : null;
+        $cart->payment_card_info_id = isset($data['payment_card_info_id']) ? $data['payment_card_info_id'] : null;
+        $cart->payment_method_id    = isset($data['payment_method_id']) ? $data['payment_method_id'] : null;
+        $cart->payment_id           = isset($data['payment_id']) ? $data['payment_id'] : null;
+        $cart->payment_status       = isset($data['payment_status']) ? $data['payment_status'] : null;
+        $cart->deliver              = isset($data['deliver']) ? $data['deliver'] : 0;
+        $cart->address_id           = isset($data['address_id']) ? $data['address_id'] : null;
+        $cart->cupon_id             = isset($data['cupon_id']) ? $data['cupon_id'] : null;
+        $cart->description          = isset($data['description']) ? $data['description'] : null;
+        $cart->fecha_entrega        = isset($data['fecha_entrega']) ? $data['fecha_entrega'] : 0;
     }
 }
