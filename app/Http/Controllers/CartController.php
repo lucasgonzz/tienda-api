@@ -117,6 +117,11 @@ class CartController extends Controller
 
     function delete($cart_id) {
         $cart = Cart::find($cart_id);
+        if (is_null($cart)) {
+            // El carrito ya no existe (ej: carrito de invitado que nunca se
+            // persistio, o ya fue borrado antes). No hay nada que hacer.
+            return response(null, 200);
+        }
         $cart->articles()->sync([]);
         $cart->promociones_vinoteca()->sync([]);
         $cart->delete();
