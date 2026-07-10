@@ -140,6 +140,6 @@ class CartController extends Controller
         $cart->address_id           = isset($data['address_id']) ? $data['address_id'] : null;
         $cart->cupon_id             = isset($data['cupon_id']) ? $data['cupon_id'] : null;
         $cart->description          = isset($data['description']) ? $data['description'] : null;
-        $cart->fecha_entrega        = isset($data['fecha_entrega']) ? $data['fecha_entrega'] : 0;
+        $cart->fecha_entrega        = !empty($data['fecha_entrega']) ? $data['fecha_entrega'] : null;
     }
 }
