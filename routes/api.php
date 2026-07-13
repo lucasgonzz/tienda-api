@@ -73,9 +73,10 @@ Route::get('/articles/set-viewed/{id}',
 Route::get('/articles/questions/answered/{article_id}',
 	'ArticleController@questions'
 );
+// Público (sin auth), pero con throttle para mitigar email bombing / abuso (prompt 355).
 Route::post('advises',
 	'AdviseController@store'
-);
+)->middleware('throttle:10,1');
 Route::get('/articles-seleccion-especial/{articles_id}',
 	'ArticleController@seleccionEspecial'
 );
