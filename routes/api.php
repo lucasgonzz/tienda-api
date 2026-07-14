@@ -55,6 +55,9 @@ Route::get('/buyer/search/{query}/{commerce_id}', 'BuyerController@search');
 // Payment
 Route::post('/buyer', 'BuyerController@store');
 
+// Checkout: prefill de dirección por email (ruta pública, throttled para mitigar email bombing)
+Route::post('/buyer/checkout-address', 'BuyerController@checkoutAddress')->middleware('throttle:20,1');
+
 
 Route::get('/delivery-day/{commerce_id}', 'DeliveryDayController@get_dias_habilitados');
 

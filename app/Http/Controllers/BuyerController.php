@@ -43,6 +43,21 @@ class BuyerController extends Controller
 
 	}
 
+	/**
+	 * Crea o autentica un buyer para el checkout.
+	 *
+	 * Si es nuevo: inserta con todos los datos del request.
+	 *
+	 * Si ya existe (mismo email + commerce_id): actualiza SOLO los campos address, ciudad y barrio
+	 * (Lucas explícitamente prohibió tocar name y phone desde el checkout: un vendedor puede estar
+	 * cargando el pedido a nombre de otro).
+	 *
+	 * Los campos se actualizan SOLO si vienen en el request con contenido (no vacíos ni espacios).
+	 * Luego se hace login y se devuelve el modelo refreshed con las relaciones.
+	 *
+	 * @param  \Illuminate\Http\Request  $request
+	 * @return \Illuminate\Http\JsonResponse
+	 */
 	function store(Request $request) {
 		$model = $this->getFullBuyer($request);
 		if (is_null($model)) {
@@ -61,6 +76,24 @@ class BuyerController extends Controller
 
 			return response()->json(['model' => $model], 201);
 		}
+
+		// Buyer existente: actualizar solo address, ciudad y barrio (si vienen en el request con contenido)
+		// 🔴 PROHIBIDO tocar name, phone, o cualquier otra columna
+		// 🔴 PROHIBIDO tocar la relación comercio_city_client o el Client del ERP
+		if (isset($request->address) && trim($request->address) !== '') {
+			$model->address = trim($request->address);
+		}
+		if (isset($request->ciudad) && trim($request->ciudad) !== '') {
+			$model->ciudad = trim($request->ciudad);
+		}
+		if (isset($request->barrio) && trim($request->barrio) !== '') {
+			$model->barrio = trim($request->barrio);
+		}
+		$model->save();
+
+		// Refrescar el modelo con las relaciones (withAll) para que la respuesta vuelva
+		// con la dirección actualizada, no la vieja
+		$model = $this->getFullBuyer($request);
 		$this->login($model);
 		return response()->json(['model' => $model], 200);
 	}
@@ -138,5 +171,73 @@ class BuyerController extends Controller
 			// Silenciar: si la sesión ya no existe no importa
 		}
 		return response(null, 200);
+	}
+
+	/**
+	 * Endpoint público de prefill del checkout: retorna los datos de dirección de un buyer
+	 * existente buscado por email + commerce_id.
+	 *
+	 * 🔴 RESTRICCIÓN CRÍTICA DE SEGURIDAD: este endpoint es público (sin autenticación) y throttled.
+	 * Devuelve SOLO: found, address, ciudad, barrio. Nada más.
+	 *
+	 * No devuelve: name, phone, id, modelo Buyer completo, Client, ni ninguna otra columna.
+	 * Es una ruta pública con acceso por email: Lucas aceptó este riesgo a conciencia como el
+	 * mínimo necesario para permitir que el comprador vea y corrija su dirección de envío.
+	 * Si en el futuro alguien quiere agregar un dato extra por acá, tiene que ser una decisión
+	 * consciente, no un descuido.
+	 *
+	 * @param  \Illuminate\Http\Request  $request (email, commerce_id)
+	 * @return \Illuminate\Http\JsonResponse
+	 */
+	function checkoutAddress(Request $request) {
+		// Buscar el buyer por email + commerce_id
+		$buyer = Buyer::where('email', $request->email)
+						->where('user_id', $request->commerce_id)
+						->with('comercio_city_client')
+						->first();
+
+		// Si no existe, devolver found: false sin revelar nada
+		if (is_null($buyer)) {
+			return response()->json([
+				'found'   => false,
+				'address' => null,
+				'ciudad'  => null,
+				'barrio'  => null
+			], 200);
+		}
+
+		// Buyer existe: resolver los tres campos de dirección
+		// Prioridad: Buyer primero; fallback al Client si el Buyer no tiene el dato
+
+		// Address: buyer.address si tiene contenido; si no, buyer.comercio_city_client.address
+		$address = null;
+		if (!empty($buyer->address)) {
+			$address = $buyer->address;
+		} elseif ($buyer->comercio_city_client && !empty($buyer->comercio_city_client->address)) {
+			$address = $buyer->comercio_city_client->address;
+		}
+
+		// Ciudad: buyer.ciudad si tiene contenido; si no, buyer.comercio_city_client.ciudad (si existe esa columna)
+		$ciudad = null;
+		if (!empty($buyer->ciudad)) {
+			$ciudad = $buyer->ciudad;
+		} elseif ($buyer->comercio_city_client && isset($buyer->comercio_city_client->ciudad) && !empty($buyer->comercio_city_client->ciudad)) {
+			$ciudad = $buyer->comercio_city_client->ciudad;
+		}
+
+		// Barrio: buyer.barrio si tiene contenido; si no, buyer.comercio_city_client.barrio (si existe esa columna)
+		$barrio = null;
+		if (!empty($buyer->barrio)) {
+			$barrio = $buyer->barrio;
+		} elseif ($buyer->comercio_city_client && isset($buyer->comercio_city_client->barrio) && !empty($buyer->comercio_city_client->barrio)) {
+			$barrio = $buyer->comercio_city_client->barrio;
+		}
+
+		return response()->json([
+			'found'   => true,
+			'address' => $address,
+			'ciudad'  => $ciudad,
+			'barrio'  => $barrio
+		], 200);
 	}
 }

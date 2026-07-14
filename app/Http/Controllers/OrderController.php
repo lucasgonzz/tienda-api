@@ -176,7 +176,28 @@ class OrderController extends Controller
         return response(null, 200);
     }
 
+    /**
+     * Resuelve la dirección que se guarda en el pedido.
+     *
+     * Prioridad 1: el campo `address` de primer nivel del request. Es la dirección que el
+     * comprador VIO en el formulario del checkout y aceptó al confirmar. Gana siempre, incluso
+     * si el Buyer o el Client del ERP tienen otra guardada: si el comprador escribió "Sarmiento
+     * 123", el pedido va a "Sarmiento 123" y no a donde vivía hace dos años.
+     *
+     * El resto son fallbacks defensivos para requests que no traigan ese campo (SPA viejo
+     * cacheado, reintentos de Mercado Pago). No se eliminan, pero en el flujo normal no se usan.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return string|null
+     */
     function get_address($request) {
+        // Prioridad 1: el campo address de primer nivel del request
+        // (la dirección que el comprador vio y escribió en el formulario del checkout)
+        if (isset($request['address']) && trim($request['address']) !== '') {
+            return trim($request['address']);
+        }
+
+        // Fallbacks defensivos para requests antiguos o reintentos que no traigan address
         if ($request['selected_buyer']) {
 
             if (isset($request['selected_buyer']['comercio_city_client'])) {
