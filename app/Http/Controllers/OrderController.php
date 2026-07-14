@@ -21,16 +21,46 @@ use Illuminate\Support\Facades\Mail;
 class OrderController extends Controller
 {
 
+    /**
+     * Lista paginada de pedidos del buyer autenticado.
+     * Si no hay sesión de buyer activa (buyerId() === null), Eloquent convertiría
+     * el where('buyer_id', null) en whereNull('buyer_id') y devolvería pedidos de
+     * OTROS compradores (fuga de datos). Por eso se corta antes con un guard explícito.
+     * @return \Illuminate\Http\JsonResponse ['orders' => paginación de Order, o estructura vacía si no hay sesión]
+     */
     function index() {
-        $orders = Order::where('buyer_id', $this->buyerId())
+        // ID del buyer autenticado (null si no hay sesión activa en el guard 'buyer')
+        $buyer_id = $this->buyerId();
+
+        // Guard: sin buyer autenticado no se ejecuta la query, se responde vacío directamente
+        if (is_null($buyer_id)) {
+            return response()->json(['orders' => ['data' => []]], 200);
+        }
+
+        $orders = Order::where('buyer_id', $buyer_id)
                         ->orderBy('created_at', 'DESC')
                         ->withAll()
                         ->paginate(6);
         return response()->json(['orders' => $orders], 200);
     }
 
+    /**
+     * Devuelve el pedido confirmado del buyer autenticado para un comercio.
+     * Mismo guard que index()/current(): evita el whereNull('buyer_id') implícito
+     * cuando no hay sesión de buyer activa.
+     * @param int $commerce_id ID del comercio (user_id) al que pertenece el pedido
+     * @return \Illuminate\Http\JsonResponse ['order' => Order|null]
+     */
     function confirmed($commerce_id) {
-        $order = Order::where('buyer_id', $this->buyerId())
+        // ID del buyer autenticado (null si no hay sesión activa)
+        $buyer_id = $this->buyerId();
+
+        // Guard: sin buyer autenticado, nunca se ejecuta la query con buyer_id null
+        if (is_null($buyer_id)) {
+            return response()->json(['order' => null], 200);
+        }
+
+        $order = Order::where('buyer_id', $buyer_id)
                         ->where('user_id', $commerce_id)
                         ->where('status', 'confirmed')
                         ->first();
@@ -38,11 +68,33 @@ class OrderController extends Controller
         return response()->json(['order' => $order], 200);
     }
 
+    /**
+     * Devuelve el último pedido del buyer autenticado para un comercio (usado en la
+     * página de "gracias" del checkout y para armar el mensaje de WhatsApp).
+     * Guard explícito: si no hay buyer autenticado (por ejemplo, checkout de invitado
+     * que hace logout apenas creado el pedido), se responde 200 con order null en vez
+     * de dejar que Eloquent resuelva where('buyer_id', null) como whereNull('buyer_id')
+     * y devuelva el pedido de otro comprador.
+     * Se devuelve 200 (no 401) a propósito: el SPA trata order === null como estado
+     * válido y no debe disparar el interceptor de sesión expirada.
+     * @param int $commerce_id ID del comercio (user_id) al que pertenece el pedido
+     * @return \Illuminate\Http\JsonResponse ['order' => Order|null]
+     */
     function current($commerce_id) {
-        $order = Order::where('buyer_id', $this->buyerId())
-                        ->orderBy('id', 'DESC')
+        // ID del buyer autenticado (null si no hay sesión activa en el guard 'buyer')
+        $buyer_id = $this->buyerId();
+
+        // Guard: sin buyer autenticado no se ejecuta la query, se responde order null
+        if (is_null($buyer_id)) {
+            return response()->json(['order' => null], 200);
+        }
+
+        // 'buyer.comercio_city_client' eager-loaded para que el fallback de teléfono
+        // del mensaje de WhatsApp en Thanks.vue tenga el dato disponible
+        $order = Order::where('buyer_id', $buyer_id)
                         ->where('user_id', $commerce_id)
-                        ->with('articles', 'buyer', 'promociones_vinoteca')
+                        ->orderBy('id', 'DESC')
+                        ->with('articles', 'buyer.comercio_city_client', 'promociones_vinoteca')
                         ->first();
         return response()->json(['order' => $order], 200);
     }
