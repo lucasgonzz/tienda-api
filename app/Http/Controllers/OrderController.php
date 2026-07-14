@@ -9,14 +9,12 @@ use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
 use App\Http\Controllers\Helpers\StringHelper;
-use App\Jobs\SendOrderCreatedEmail;
-use App\Mail\OrderCreated;
+use App\Jobs\SendOrderEmails;
 use App\Order;
 use App\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 
 class OrderController extends Controller
 {
@@ -154,15 +152,22 @@ class OrderController extends Controller
             
             // MessageHelper::sendOrderCreatedMessage($order);
 
-            if (
-                !env('NO_ENVIAR_MAILS', false)
-                && !is_null($order->user->email)
-            ) {
-                Log::info('enviando mail');
-                if (env('APP_ENV') == 'production') {
-                    // Mail::to($order->user)->send(new OrderCreated($order));
-                    SendOrderCreatedEmail::dispatch($order, $order->user->email)->onQueue('ecommerce');
-                }
+            // Mails del pedido (aviso al comercio + confirmacion al comprador). Se despachan
+            // DESPUES de la respuesta HTTP: el comprador ve su confirmacion al instante y no espera
+            // los round-trips de SMTP. Que se envien o no, y a que casillas, lo decide la
+            // Configuracion Online del comercio (ya no hay ninguna variable de entorno de por medio).
+            //
+            // El try/catch es deliberadamente redundante con el que ya tiene SendOrderEmails::handle():
+            // el pedido YA esta creado en la base a esta altura, y bajo ninguna circunstancia un
+            // problema con el correo puede devolver un error al comprador y dejarlo sin saber si su
+            // compra entro (bug real: rompia el checkout en tienda-spa).
+            try {
+                SendOrderEmails::dispatchAfterResponse($order->id);
+            } catch (\Exception $e) {
+                Log::error('OrderController@store: fallo el despacho de los mails, el pedido igual se creo bien', [
+                    'order_id' => $order->id,
+                    'error'    => $e->getMessage(),
+                ]);
             }
 
             Log::info('Termino');
