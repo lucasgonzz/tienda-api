@@ -1,6 +1,8 @@
 @extends('emails.orders.layout', [
 	'titulo' => 'Entro un pedido nuevo',
 	'bajada' => $data['buyer_name'].' acaba de hacer un pedido en tu tienda online.',
+	'logo_url' => $data['logo_url'],
+	'company_name' => $data['company_name'],
 ])
 
 @section('contenido')
