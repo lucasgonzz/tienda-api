@@ -6,6 +6,7 @@ use App\Buyer;
 use App\Cupon;
 use App\Http\Controllers\Helpers\BuyerHelper;
 use App\Http\Controllers\Helpers\CuponHelper;
+use App\Http\Controllers\Helpers\GoogleLoginHelper;
 use App\Http\Controllers\Helpers\StringHelper;
 use App\Http\Controllers\Helpers\TwilioHelper;
 use App\Mail\PasswordReset;
@@ -30,6 +31,13 @@ class AuthController extends Controller
     }
 
     function social($provider, $commerce_id) {
+        // Login con Google (prompt 590, grupo 164): las credenciales ya no son globales del
+        // .env, se resuelven por comercio desde online_configurations. Si el comercio no tiene
+        // el login con Google habilitado o le faltan credenciales, se corta aca mismo con un
+        // error controlado, sin caer a las credenciales viejas del .env.
+        if ($provider == 'google' && !GoogleLoginHelper::apply($commerce_id)) {
+            return response()->json(['error' => 'El login con Google no esta disponible para este comercio'], 422);
+        }
         $social_user = Socialite::driver($provider)->stateless()->user();
         $buyer = Buyer::where('provider_id', $social_user->id)
                         ->where('user_id', $commerce_id)

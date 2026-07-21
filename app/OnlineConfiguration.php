@@ -25,6 +25,12 @@ class OnlineConfiguration extends Model
         'mail_from_address',
         'mail_from_name',
         'mail_notificacion_pedidos',
+        // Mismo motivo que las columnas de mail de arriba (prompt 590, grupo 164): este modelo
+        // viaja entero en la respuesta PUBLICA de CommerceController@commerce. El SPA solo
+        // necesita saber si el boton de Google se muestra (ver
+        // configuration.show_google_login, calculado en el controller), no las credenciales.
+        'google_client_id',
+        'google_client_secret',
     ];
 
     protected $casts = [
@@ -36,6 +42,8 @@ class OnlineConfiguration extends Model
         'notificar_pedido_al_negocio' => 'boolean',
         'notificar_pedido_al_cliente' => 'boolean',
         'avisar_ingreso_stock_por_mail' => 'boolean',
+        // Login con Google de la tienda online (prompt 590, grupo 164).
+        'google_login_enabled' => 'boolean',
     ];
 
     function online_price_type() {
