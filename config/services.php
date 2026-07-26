@@ -30,10 +30,12 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
+    // Repositorio público: prohibido volver a escribir client_id/client_secret/redirect reales en
+    // el código. Se cargan únicamente desde el .env (default vacío si no está configurado).
     'facebook' => [
-        'client_id' => '204733121616724',
-        'client_secret' => 'bdef08909a1d3d3cb0b58cdb25ad231e',
-        'redirect' => 'http://localhost:8080/'
+        'client_id' => env('FACEBOOK_CLIENT_ID', ''),
+        'client_secret' => env('FACEBOOK_CLIENT_SECRET', ''),
+        'redirect' => env('FACEBOOK_REDIRECT_URI', '')
         // 'redirect' => 'http://localhost:8080/auth/facebook/callback'
     ],
 
