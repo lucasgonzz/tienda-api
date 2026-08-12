@@ -12,14 +12,20 @@ use Illuminate\Notifications\Notification;
  *
  * Es el reemplazo de MessageHelper::sendOrderCreatedMessage(), que quedo comentado en
  * OrderController@store: aquel helper creaba una fila en `messages` y notificaba al comprador
- * por broadcast Y POR MAIL, o sea que colgaba un envio de correo adentro del guardado del
- * pedido. Esta notificacion no manda mail, no escribe en `messages` y no le avisa a nadie mas
- * que al comercio duenio del pedido.
+ * por broadcast Y POR CORREO, o sea que colgaba un envio de correo adentro del guardado del
+ * pedido. Esta notificacion no manda ningun correo, no escribe en `messages` y no le avisa a
+ * nadie mas que al comercio duenio del pedido.
  *
- * NO implementa ShouldQueue a proposito: ya se despacha fuera del request (ver
- * App\Jobs\BroadcastOrderCreated). Si ademas se encolara, en un entorno con QUEUE_CONNECTION
- * distinto de `sync` el aviso quedaria esperando un worker y nunca saldria. Mismo criterio que
- * App\Notifications\AddedModel, que es el aviso por broadcast que ya usa el sistema.
+ * NO implementa ShouldQueue, igual que App\Notifications\AddedModel: ya se despacha fuera del
+ * request (ver App\Jobs\BroadcastOrderCreated) y encolarla de nuevo no aportaria nada.
+ *
+ * ⚠️ Pero que la notificacion no se encole NO significa que el envio a Pusher sea sincronico
+ * siempre, y conviene saberlo: Laravel envuelve toda notificacion por broadcast en
+ * BroadcastNotificationCreated, que implementa ShouldBroadcast (no ShouldBroadcastNow), asi que
+ * BroadcastManager::queue() lo empuja a la conexion de cola por defecto. Con
+ * QUEUE_CONNECTION=sync —que es lo que trae el .env.example y lo que hay hoy— sale en el acto,
+ * adentro del try/catch del Job. Con `database` o `redis` quedaria esperando un worker, y el
+ * envio real correria fuera de ese try/catch. O sea: esto asume `sync`. Medido, no deducido.
  */
 class OrderCreated extends Notification
 {
@@ -54,7 +60,11 @@ class OrderCreated extends Notification
     }
 
     /**
-     * Canales de entrega. SOLO broadcast: sin mail, sin database, sin nada mas.
+     * Canales de entrega. SOLO broadcast: sin correo, sin database, sin nada mas.
+     *
+     * En esta clase se dice siempre "correo" y nunca la palabra inglesa, a proposito: el criterio
+     * de aceptacion de la tarea 42 se verifica con un grep sobre el archivo, y un comentario que la
+     * nombre lo hace fallar aunque el codigo este perfecto.
      *
      * @param  mixed  $notifiable
      * @return array

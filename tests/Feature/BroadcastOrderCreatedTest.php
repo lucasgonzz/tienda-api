@@ -9,6 +9,7 @@ use App\User;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Notifications\Events\BroadcastNotificationCreated;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
@@ -217,28 +218,109 @@ class BroadcastOrderCreatedTest extends TestCase
     }
 
     /**
-     * Criterio 5: este camino no escribe ninguna fila en `messages` (eso lo hacia el helper viejo,
-     * que sigue comentado).
+     * Criterio 5: el camino viejo —el que escribia en `messages`— sigue apagado.
+     *
+     * Es una aserción sobre el código fuente y no sobre el comportamiento, y es a propósito: la
+     * única línea que puede escribir en `messages` vive en OrderController@store, que no se puede
+     * ejercitar en este repo (no hay migraciones para armar el esquema del endpoint). Un test que
+     * corriera el aviso y después contara filas en `messages` daría verde aunque el aviso no
+     * existiera —se verificó: con handle() vacío también pasaba—, o sea que no probaba nada. Este
+     * se pone en rojo el día que alguien descomente la línea, que es exactamente el riesgo.
      */
-    public function test_no_escribe_en_messages()
+    public function test_el_camino_viejo_de_messages_sigue_comentado()
     {
-        $comercio = $this->comercio();
+        // La llamada al helper viejo no puede estar en el CODIGO del controlador. Se compara sobre
+        // el fuente sin comentarios (ver codigoSinComentarios): buscar el texto pelado no sirve,
+        // porque las tres clases nombran al helper en sus comentarios a proposito, para que se
+        // entienda por que quedo apagado.
+        $this->assertStringNotContainsString(
+            'sendOrderCreatedMessage',
+            $this->codigoSinComentarios(app_path('Http/Controllers/OrderController.php')),
+            'la llamada a sendOrderCreatedMessage tiene que seguir comentada'
+        );
 
-        (new BroadcastOrderCreated(77, 1234, $comercio->id))->handle();
+        // Y el camino nuevo no reintrodujo la escritura por otro lado.
+        foreach (['Notifications/OrderCreated.php', 'Jobs/BroadcastOrderCreated.php'] as $archivo) {
+            $codigo = $this->codigoSinComentarios(app_path($archivo));
+            $this->assertStringNotContainsString('Message::create', $codigo);
+            $this->assertStringNotContainsString('MessageHelper', $codigo);
+            $this->assertStringNotContainsString('MessageSend', $codigo);
+        }
 
         $this->assertSame(0, DB::table('messages')->count());
     }
 
     /**
-     * Si el comercio no existe, se registra y no se emite nada — pero tampoco se rompe.
+     * Devuelve el fuente de un archivo PHP sin sus comentarios, usando el tokenizador del propio
+     * PHP. Es la unica forma no fragil de afirmar algo sobre el codigo sin que un comentario que
+     * menciona el nombre lo haga fallar.
      */
-    public function test_sin_comercio_no_emite_y_no_rompe()
+    private function codigoSinComentarios($ruta)
+    {
+        $codigo = '';
+
+        foreach (token_get_all(file_get_contents($ruta)) as $token) {
+            if (is_array($token)) {
+                if ($token[0] === T_COMMENT || $token[0] === T_DOC_COMMENT) {
+                    continue;
+                }
+                $codigo .= $token[1];
+            } else {
+                $codigo .= $token;
+            }
+        }
+
+        return $codigo;
+    }
+
+    /**
+     * Si el comercio no existe, se registra y no se emite nada — pero tampoco se rompe.
+     *
+     * Afirma sobre el Log::warning y no solo sobre "no tiró": sin eso el test queda verde aunque
+     * se saque el guard `is_null($commerce)`, porque el Error de llamar notify() sobre null lo
+     * atrapa el catch y "no se envió nada" sigue siendo cierto. Medido con una mutación.
+     */
+    public function test_sin_comercio_no_emite_y_deja_constancia()
     {
         Notification::fake();
+        Log::spy();
 
         (new BroadcastOrderCreated(77, 1234, 999999))->handle();
 
         Notification::assertNothingSent();
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(function ($mensaje, $contexto = null) {
+                return strpos($mensaje, 'no se encontro el comercio') !== false;
+            })
+            ->once();
+
+        // Y no se registró ningún error: no encontrar al comercio no es una falla del aviso.
+        Log::shouldNotHaveReceived('error');
+    }
+
+    /**
+     * El catch tiene su propio try adentro para el logger. Si el logger falla, la excepción no
+     * puede escapar igual: esto corre en Application::terminate(), que no tiene ningún try/catch
+     * por encima.
+     */
+    public function test_ni_un_logger_roto_hace_escapar_nada()
+    {
+        $comercio = $this->comercio();
+
+        config(['broadcasting.default' => 'driver-que-no-existe']);
+
+        // Logger que revienta en cualquier nivel.
+        Log::swap(new class {
+            public function __call($metodo, $argumentos)
+            {
+                throw new \RuntimeException('el logger tambien esta roto');
+            }
+        });
+
+        (new BroadcastOrderCreated(77, 1234, $comercio->id))->handle();
+
+        $this->assertTrue(true, 'con el aviso roto Y el logger roto, el Job igual no tira');
     }
 
     /**

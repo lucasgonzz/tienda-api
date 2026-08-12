@@ -153,28 +153,6 @@ class OrderController extends Controller
             
             // MessageHelper::sendOrderCreatedMessage($order);
 
-            // Aviso por broadcast al sistema del comercio (empresa-spa) de que entro un pedido
-            // nuevo. Es el reemplazo de la linea comentada de arriba: aquella tambien mandaba un
-            // mail al comprador y escribia en `messages`, y por eso rompia el guardado del pedido.
-            // Esta emite SOLO por broadcast (ver App\Notifications\OrderCreated).
-            //
-            // Va ANTES del despacho de los mails a proposito: los dos corren despues de la
-            // respuesta y en el orden en que se registran, y el aviso en pantalla no tiene por que
-            // esperar los round-trips de SMTP del bloque de abajo.
-            //
-            // El try/catch es deliberadamente redundante con el que ya tiene
-            // BroadcastOrderCreated::handle(): el pedido YA esta creado en la base a esta altura y
-            // bajo ninguna circunstancia un problema del aviso puede devolverle un error al
-            // comprador (misma clase de bug que el de los mails documentado aca abajo).
-            try {
-                BroadcastOrderCreated::dispatchAfterResponse($order->id, $order->num, $order->user_id);
-            } catch (\Throwable $e) {
-                Log::error('OrderController@store: fallo el despacho del aviso por broadcast, el pedido igual se creo bien', [
-                    'order_id' => $order->id,
-                    'error'    => $e->getMessage(),
-                ]);
-            }
-
             // Mails del pedido (aviso al comercio + confirmacion al comprador). Se despachan
             // DESPUES de la respuesta HTTP: el comprador ve su confirmacion al instante y no espera
             // los round-trips de SMTP. Que se envien o no, y a que casillas, lo decide la
@@ -188,6 +166,35 @@ class OrderController extends Controller
                 SendOrderEmails::dispatchAfterResponse($order->id);
             } catch (\Exception $e) {
                 Log::error('OrderController@store: fallo el despacho de los mails, el pedido igual se creo bien', [
+                    'order_id' => $order->id,
+                    'error'    => $e->getMessage(),
+                ]);
+            }
+
+            // Aviso por broadcast al sistema del comercio (empresa-spa) de que entro un pedido
+            // nuevo. Es el reemplazo de la linea comentada mas arriba
+            // (MessageHelper::sendOrderCreatedMessage): aquella ademas le mandaba un correo al
+            // comprador y escribia en `messages`, y por eso rompia el guardado del pedido. Esta
+            // emite SOLO por broadcast (ver App\Notifications\OrderCreated).
+            //
+            // 🔴 Va ULTIMO, despues del despacho de los mails, y el orden NO es indistinto:
+            // los dos son callbacks de Application::terminate(), que los corre en un while sin
+            // try/catch, o sea que si uno tira los siguientes NO corren. Ademas, con
+            // QUEUE_CONNECTION=sync el envio a Pusher es sincronico y su cliente Guzzle tiene
+            // timeout de 30 segundos: si el aviso fuera primero, un Pusher caido le meteria esa
+            // espera al mail de confirmacion del comprador, o se lo llevaria puesto si el proceso
+            // muere antes. El aviso es para la pantalla del comercio; el mail es del comprador, y
+            // el comprador va primero.
+            //
+            // El try/catch de aca cubre solo el REGISTRO del callback (dispatchAfterResponse no
+            // ejecuta nada: solo apila un closure en terminating()). La proteccion real vive en el
+            // catch de BroadcastOrderCreated::handle(), que es donde corre el aviso. Se deja igual
+            // porque el pedido YA esta creado a esta altura y nada del aviso puede devolverle un
+            // error al comprador.
+            try {
+                BroadcastOrderCreated::dispatchAfterResponse($order->id, $order->num, $order->user_id);
+            } catch (\Throwable $e) {
+                Log::error('OrderController@store: fallo el despacho del aviso por broadcast, el pedido igual se creo bien', [
                     'order_id' => $order->id,
                     'error'    => $e->getMessage(),
                 ]);

@@ -90,15 +90,28 @@ class BroadcastOrderCreated implements ShouldQueue
 
             $commerce->notify(new OrderCreated($order));
 
-            Log::info('BroadcastOrderCreated: aviso de pedido nuevo emitido', [
+            // Dice "despachado" y no "emitido" a proposito: con QUEUE_CONNECTION=sync el evento
+            // sale a Pusher acá mismo, pero con cualquier otra conexion queda encolado (ver el
+            // comentario de App\Notifications\OrderCreated sobre ShouldBroadcast).
+            Log::info('BroadcastOrderCreated: aviso de pedido nuevo despachado', [
                 'order_id' => $this->order_id,
                 'canal'    => OrderCreated::CANAL_BASE.$this->commerce_user_id,
             ]);
         } catch (\Throwable $e) {
-            Log::error('BroadcastOrderCreated: fallo el aviso de pedido nuevo, el pedido igual se creo bien', [
-                'order_id' => $this->order_id,
-                'error'    => $e->getMessage(),
-            ]);
+            // El propio Log::error va adentro de su try/catch, y no es paranoia decorativa: el
+            // catch NO esta cubierto por el try de arriba, asi que un logger que falla (disco
+            // lleno, permisos de storage/logs despues de un deploy, rotacion) haria escapar la
+            // excepcion del Job. Y como esto corre en Application::terminate(), una excepcion que
+            // escape de acá sube hasta public/index.php sin filtro. Reproducido con un logger roto.
+            try {
+                Log::error('BroadcastOrderCreated: fallo el aviso de pedido nuevo, el pedido igual se creo bien', [
+                    'order_id' => $this->order_id,
+                    'error'    => $e->getMessage(),
+                ]);
+            } catch (\Throwable $eLog) {
+                // No queda nada por hacer: si ni siquiera se puede loguear, lo unico que importa es
+                // que el aviso muera acá adentro y no toque al pedido ni al resto del terminate.
+            }
         }
     }
 }
