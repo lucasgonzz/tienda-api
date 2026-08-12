@@ -355,17 +355,39 @@ class BroadcastOrderCreatedTest extends TestCase
 
         config(['broadcasting.default' => 'driver-que-no-existe']);
 
-        // Logger que revienta en cualquier nivel.
-        Log::swap(new class {
+        // Logger que anota qué le pidieron y después revienta. Anota antes de tirar a proposito:
+        // sin eso, el test se cumpliria igual si el camino roto no se ejercitara nunca —por ejemplo
+        // si alguien cambia el driver de arriba por uno valido— y quedaria verde sin probar nada.
+        $loggerRoto = new class {
+            public $invocaciones = [];
+
             public function __call($metodo, $argumentos)
             {
+                $this->invocaciones[] = $metodo;
+
                 throw new \RuntimeException('el logger tambien esta roto');
             }
-        });
+        };
 
-        (new BroadcastOrderCreated(77, 1234, $comercio->id))->handle();
+        $loggerOriginal = Log::getFacadeRoot();
+        Log::swap($loggerRoto);
 
-        $this->assertTrue(true, 'con el aviso roto Y el logger roto, el Job igual no tira');
+        try {
+            // Si el Job dejara escapar algo —del aviso o del propio logger— esta llamada tira.
+            (new BroadcastOrderCreated(77, 1234, $comercio->id))->handle();
+        } finally {
+            // Se restaura acá y no en tearDown porque Laravel corre clearResolvedInstances() en el
+            // setUp y no en el tearDown: sin esto, el logger roto sigue instalado durante el propio
+            // tearDown del test y cualquier callback que loguee ahí revienta con un error confuso
+            // atribuido a este test.
+            Log::swap($loggerOriginal);
+        }
+
+        $this->assertContains(
+            'error',
+            $loggerRoto->invocaciones,
+            'el catch tiene que haber intentado loguear: si no, el escenario roto no se ejercito'
+        );
     }
 
     /**
