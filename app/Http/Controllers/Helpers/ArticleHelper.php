@@ -62,7 +62,30 @@ class ArticleHelper
                 }
             }
         } else if (count($articles) >= 1 && !is_null($articles[0])) {
-            // Caso 4: visitante sin login — usar la lista pública (position más alta)
+            /**
+             * Caso 4: visitante sin login — usar la lista de `position` más alta.
+             *
+             * 🔴 NO "simplificar" esto leyendo `online_configuration->online_price_type`: esa
+             * relación NO es la lista de precios de la tienda. Apunta a `online_price_types`, un
+             * catálogo global de tres filas (`all`, `only_registered`,
+             * `only_buyers_with_comerciocity_client`) que define A QUIÉN se le muestran los precios,
+             * no CUÁL lista se usa. La consume `tienda-spa` en
+             * `src/mixins/generals.js::puede_ver_precios()`. El nombre invita al error; medido y
+             * confirmado contra las migraciones de empresa-api el 12/8/2026 (tarea 8).
+             *
+             * Hoy NO existe forma de que el comercio elija qué lista ve el visitante anónimo: la
+             * elige este `orderBy('position','DESC')`. Agregar esa configuración exige una columna
+             * en `online_configurations` (migración de empresa-api: la tienda comparte la base del
+             * ERP y no corre migraciones propias) y el selector en el modal de configuración online
+             * de empresa-spa. O sea que se resuelve desde el proyecto `empresa`, no desde acá.
+             * Decisión pendiente de Lucas en
+             * `prompts/escaladas/20260812-1034-s5-para-elegir-que-lista-de-precios-ve-el-visitante-a.json`.
+             *
+             * Ojo también con `price_types.ocultar_al_publico`: existe y esta consulta NO lo filtra,
+             * así que una lista marcada como oculta puede terminar siendo la del público si tiene la
+             * `position` más alta. Está en la misma escalada — filtrarla cambiaría precios en
+             * tiendas que ya están publicadas, y eso lo decide Lucas, no este helper.
+             */
             $price_types = PriceType::where('user_id', $articles[0]->user_id)
                                     ->whereNotNull('position')
                                     ->orderBy('position', 'DESC')
