@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
 use App\Http\Controllers\Helpers\StringHelper;
+use App\Jobs\BroadcastOrderCreated;
 use App\Jobs\SendOrderEmails;
 use App\Order;
 use App\User;
@@ -151,6 +152,28 @@ class OrderController extends Controller
             $order->articles = ArticleHelper::setArticlesVariants($order->articles);
             
             // MessageHelper::sendOrderCreatedMessage($order);
+
+            // Aviso por broadcast al sistema del comercio (empresa-spa) de que entro un pedido
+            // nuevo. Es el reemplazo de la linea comentada de arriba: aquella tambien mandaba un
+            // mail al comprador y escribia en `messages`, y por eso rompia el guardado del pedido.
+            // Esta emite SOLO por broadcast (ver App\Notifications\OrderCreated).
+            //
+            // Va ANTES del despacho de los mails a proposito: los dos corren despues de la
+            // respuesta y en el orden en que se registran, y el aviso en pantalla no tiene por que
+            // esperar los round-trips de SMTP del bloque de abajo.
+            //
+            // El try/catch es deliberadamente redundante con el que ya tiene
+            // BroadcastOrderCreated::handle(): el pedido YA esta creado en la base a esta altura y
+            // bajo ninguna circunstancia un problema del aviso puede devolverle un error al
+            // comprador (misma clase de bug que el de los mails documentado aca abajo).
+            try {
+                BroadcastOrderCreated::dispatchAfterResponse($order->id, $order->num, $order->user_id);
+            } catch (\Throwable $e) {
+                Log::error('OrderController@store: fallo el despacho del aviso por broadcast, el pedido igual se creo bien', [
+                    'order_id' => $order->id,
+                    'error'    => $e->getMessage(),
+                ]);
+            }
 
             // Mails del pedido (aviso al comercio + confirmacion al comprador). Se despachan
             // DESPUES de la respuesta HTTP: el comprador ve su confirmacion al instante y no espera
