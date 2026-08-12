@@ -239,6 +239,15 @@ class BroadcastOrderCreatedTest extends TestCase
             'la llamada a sendOrderCreatedMessage tiene que seguir comentada'
         );
 
+        // Y la línea tiene que seguir ESTANDO, comentada: si alguien la borra, se pierde la única
+        // pista de por qué ese camino está apagado, y el criterio 5 pide que siga comentada, no que
+        // desaparezca.
+        $this->assertMatchesRegularExpression(
+            '/\/\/\s*MessageHelper::sendOrderCreatedMessage/',
+            file_get_contents(app_path('Http/Controllers/OrderController.php')),
+            'la línea comentada tiene que seguir en el archivo, no borrarse'
+        );
+
         // Y el camino nuevo no reintrodujo la escritura por otro lado.
         foreach (['Notifications/OrderCreated.php', 'Jobs/BroadcastOrderCreated.php'] as $archivo) {
             $codigo = $this->codigoSinComentarios(app_path($archivo));
@@ -247,7 +256,43 @@ class BroadcastOrderCreatedTest extends TestCase
             $this->assertStringNotContainsString('MessageSend', $codigo);
         }
 
+        // 🔴 El Job se corre de verdad ANTES de contar: sin esta línea el assert de abajo es un
+        // assertSame(0, 0) —la tabla la crea vacía el setUp y nada de lo de arriba la puede tocar—,
+        // y una escritura a `messages` metida en el Job pasaría desapercibida. Medido con una
+        // mutación: sin esta línea la escritura sobrevive; con ella, el test se pone en rojo.
+        (new BroadcastOrderCreated(77, 1234, $this->comercio()->id))->handle();
+
         $this->assertSame(0, DB::table('messages')->count());
+    }
+
+    /**
+     * El aviso se despacha DESPUES de los mails, y esto lo fija porque es la decisión que la fase
+     * de verificación corrigió: al revés, un Pusher caído (30s de timeout del cliente Guzzle) le
+     * mete esa espera al mail de confirmación del comprador, o se lo lleva puesto si el proceso
+     * muere antes — los dos son callbacks del mismo `while` de Application::terminate(), que corre
+     * sin try/catch, así que si el primero tira el segundo no corre.
+     *
+     * Es una aserción sobre el orden en el fuente y no sobre el comportamiento, por lo de siempre:
+     * `store()` no se puede ejercitar sin migraciones. Se mide igual que el resto: invertir el
+     * orden dejaba los diez tests en verde, así que la corrección más cara de esta tarea era
+     * también la regresión más fácil de reintroducir.
+     */
+    public function test_el_aviso_se_despacha_despues_de_los_mails()
+    {
+        $codigo = $this->codigoSinComentarios(app_path('Http/Controllers/OrderController.php'));
+
+        $posicionMails = strpos($codigo, 'SendOrderEmails::dispatchAfterResponse');
+        $posicionAviso = strpos($codigo, 'BroadcastOrderCreated::dispatchAfterResponse');
+
+        $this->assertNotFalse($posicionMails, 'tiene que seguir despachandose el mail del pedido');
+        $this->assertNotFalse($posicionAviso, 'tiene que seguir despachandose el aviso por broadcast');
+
+        $this->assertLessThan(
+            $posicionAviso,
+            $posicionMails,
+            'el aviso por broadcast tiene que ir DESPUES del despacho de los mails: el mail es del '
+            .'comprador y el aviso es para la pantalla del comercio, y el comprador va primero'
+        );
     }
 
     /**
