@@ -138,8 +138,9 @@ Route::get('/delivery-zones/{commerce_id}',
 
 
 // Buyer Messages
-// ->only(): BuyerMessageController tiene index() y store() y nada mas. Route::resource registraba
-// las 7 rutas REST, asi que create/show/edit/update/destroy existian y reventaban con
+// ->only(): de los metodos REST, BuyerMessageController implementa solo index() y store() (tiene
+// ademas delete_current_messages(), que no es REST y Route::resource nunca mapeo). Route::resource
+// registraba las 7 rutas, asi que create/show/edit/update/destroy existian y reventaban con
 // BadMethodCallException (500) al llamarlas. apiResource tampoco alcanza: saca create y edit pero
 // deja show/update/destroy, que tampoco existen.
 Route::resource('/buyer-message', 'BuyerMessageController')->only(['index', 'store'])

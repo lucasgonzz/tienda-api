@@ -4,6 +4,7 @@ namespace Tests\Feature\Seguridad;
 
 use App\Address;
 use App\Buyer;
+use App\Client;
 use App\ExtencionEmpresa;
 use App\OnlineConfiguration;
 use App\User;
@@ -92,6 +93,15 @@ class SerializacionDeSecretosTest extends TestCase
             'user_configurations'    => new UserConfiguration(),
             'addresses'              => new Address(),
             'extencion_empresas'     => new ExtencionEmpresa(),
+            /*
+             * `clients` es la tabla del ERP y viaja en respuestas de la tienda por
+             * Buyer::withAll() -> comercio_city_client. App\Client no declara $hidden. Hoy no
+             * tiene columnas con pinta de secreto —tiene algo peor en otro sentido, `saldo`,
+             * `cuit` y `dni`, que no matchean el patron pero son PII y por eso el buscador del
+             * vendedor la recorta con un select explicito— pero es la relacion mas expuesta que
+             * queda sin lista blanca, asi que se vigila.
+             */
+            'clients'                => new Client(),
         ];
 
         $filtradas = [];

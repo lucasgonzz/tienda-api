@@ -32,22 +32,32 @@ class AuthController extends Controller
     }
 
     /**
-     * Borra de la sesion lo que dejo el comprador anterior en este mismo navegador.
+     * Ordena la sesion cuando alguien entra con su cuenta en este navegador.
      *
      * Auth::guard('buyer')->login() hace session->migrate(true), que regenera el id de sesion pero
      * CONSERVA los atributos. Eso es lo que le permite al invitado no perder su carrito al
-     * identificarse en el checkout — y es justo lo que no queremos cuando el que entra es otra
-     * persona con su cuenta.
+     * identificarse en el checkout — y es justo lo que hay que ordenar cuando el que entra puede
+     * ser otra persona.
+     *
+     * 🔴 La primera version de esto BORRABA la lista de carritos, y eso rompio la compra del
+     * invitado que se loguea con su propia cuenta: 403 en PUT /api/carts y en POST /api/orders,
+     * medido contra master por el revisor de merge. El traspaso resuelve los dos casos con un
+     * criterio que no necesita adivinar quien es el humano; el detalle esta en el docblock de
+     * CartOwnershipHelper::traspasarAlCompradorQueEntra.
+     *
+     * La identidad de checkout y la lista de pedidos SI se borran siempre: son de la compra
+     * anterior y no tienen nada que hacer en la sesion de quien acaba de entrar.
      *
      * 🔴 Se llama SOLO desde el login de una cuenta (login y social), nunca desde el
-     * BuyerController@store del checkout de invitado: ahi el carrito de la sesion es del mismo que
-     * esta comprando y borrarlo le rompe la compra en el ultimo paso.
+     * BuyerController@store del checkout de invitado: ahi no hay nada que ordenar y tocar la
+     * sesion en el ultimo paso de la compra es todo riesgo y ningun beneficio.
      *
      * @return void
      */
     function limpiarRastrosDeOtroComprador() {
+        \App\Http\Controllers\Helpers\CartOwnershipHelper::traspasarAlCompradorQueEntra($this->buyerId());
+
         session()->forget([
-            \App\Http\Controllers\Helpers\CartOwnershipHelper::CLAVE,
             self::CLAVE_CHECKOUT,
             self::CLAVE_PEDIDOS,
         ]);

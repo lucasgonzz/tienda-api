@@ -72,7 +72,18 @@ class BuyerController extends Controller
 						->whereNotNull('comercio_city_client_id')
 						->orderBy('name', 'ASC')
 						->select('id', 'name', 'surname', 'email', 'phone', 'address', 'ciudad', 'barrio', 'user_id', 'comercio_city_client_id')
-						->with('comercio_city_client')
+						/*
+						 * 🔴 La relacion tambien va recortada, y no es exceso de celo: `clients` es
+						 * la tabla del ERP y trae `saldo`, `saldo_pesos`, `saldo_dolares`, `cuit`,
+						 * `cuil`, `dni` y `razon_social`. Mandarle al vendedor el saldo de cuenta
+						 * corriente y la CUIT de cada cliente para que elija uno de una lista es
+						 * regalar exactamente lo que la lista blanca de arriba viene a evitar.
+						 * El SPA solo lee `.address` y `.phone` de esta relacion (verificado con
+						 * grep sobre todo tienda-spa/src); `name` va para poder mostrarlo.
+						 */
+						->with(['comercio_city_client' => function($q) {
+							$q->select('id', 'name', 'address', 'phone');
+						}])
 						->get();
 
 		return response()->json(['buyers' => $buyers], 200);

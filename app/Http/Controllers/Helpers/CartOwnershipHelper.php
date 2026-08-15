@@ -193,6 +193,59 @@ class CartOwnershipHelper
     }
 
     /**
+     * Traspasa al comprador que acaba de loguearse los carritos de esta sesion que todavia no son
+     * de nadie, y descarta el resto de la lista.
+     *
+     * 🔴 Esto existe por una regresion real que introdujo esta misma mision y que atrapo el revisor
+     * de merge, medida contra master: el invitado que arma el carrito y despues se loguea con su
+     * propia cuenta NO PODIA COMPRAR. El login limpiaba `carritos_propios` para proteger el
+     * dispositivo compartido, y como el carrito de invitado tiene buyer_id NULL y nunca habia sido
+     * adoptado, puede() fallaba por las dos ramas: no estaba en la lista (recien borrada) y el
+     * buyer_id era null. Resultado: 403 en PUT /api/carts y en POST /api/orders, y mudo, porque el
+     * SPA solo hace console.log.
+     *
+     * El error de razonamiento fue asumir que loguearse implica que entra OTRA persona. Cuando el
+     * invitado se loguea con su propia cuenta, el carrito de la sesion tambien es del mismo que
+     * esta comprando.
+     *
+     * El criterio que distingue los dos casos, y que no necesita adivinar quien es el humano:
+     *
+     *   - carrito de la sesion con `buyer_id` NULL  -> todavia no es de nadie. Se lo queda el que
+     *     entra. Es el invitado que se identifica.
+     *   - carrito de la sesion con `buyer_id` de otro -> ya tiene dueño. Se saca de la lista, y
+     *     ademas puede() lo rechaza solo por la segunda rama. Es el dispositivo compartido.
+     *
+     * ⚠️ Riesgo residual, declarado: en un dispositivo compartido donde A navego como invitado sin
+     * identificarse y dejo un carrito sin dueño, B se lo lleva al loguearse. Es estrictamente MENOS
+     * que lo que pasaba antes de esta mision —donde lastCart le daba a cualquiera el ultimo carrito
+     * anonimo del comercio, sin siquiera compartir navegador— y el precio de cerrarlo del todo seria
+     * romper el flujo de compra mas usado de la tienda.
+     *
+     * @param  int|null  $buyer_id  el comprador que acaba de entrar
+     * @return void
+     */
+    public static function traspasarAlCompradorQueEntra($buyer_id)
+    {
+        if (is_null($buyer_id)) {
+            return;
+        }
+
+        $ids = self::ids();
+
+        if (!empty($ids)) {
+            // Solo los que no tienen dueño. Un update masivo y no un foreach de save(): son hasta
+            // 20 ids y no hace falta instanciar los modelos.
+            \App\Cart::whereIn('id', $ids)
+                ->whereNull('buyer_id')
+                ->update(['buyer_id' => (int) $buyer_id]);
+        }
+
+        // La lista se vacia siempre: los que se adoptaron ya quedan cubiertos por la segunda rama
+        // de puede() (cart.buyer_id == buyerId()), y los que eran de otro no tienen que seguir ahi.
+        session()->forget(self::CLAVE);
+    }
+
+    /**
      * Id del comprador autenticado en el guard 'buyer', o null.
      *
      * Se repite la logica de Controller@buyerId a proposito: este helper es estatico y lo llaman

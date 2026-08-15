@@ -309,6 +309,68 @@ class SuperficiePublicaTest extends TestCase
     }
 
     /**
+     * 🔴 El invitado que arma el carrito y DESPUES se loguea con su cuenta tiene que poder comprar.
+     *
+     * Es una regresion que introdujo esta misma mision y que atrapo el revisor de merge midiendo
+     * contra master: el borrado de `carritos_propios` en el login —puesto para proteger el
+     * dispositivo compartido— dejaba al comprador sin poder tocar su propio carrito, porque el de
+     * invitado tiene buyer_id NULL y nunca habia sido adoptado. 403 en PUT /carts y en POST /orders,
+     * y mudo.
+     *
+     * Ningun otro test lo cubria: todos siembran la sesion a mano con withSession() y ninguno
+     * ejercita el login DESPUES de un carrito de invitado.
+     */
+    public function test_el_invitado_que_se_loguea_no_pierde_su_carrito()
+    {
+        $carrito = Cart::create([
+            'buyer_id' => null,
+            'user_id'  => $this->comercio->id,
+            'total'    => 100,
+        ]);
+
+        // La sesion del invitado: creo ese carrito con POST /api/carts.
+        $this->withSession(['carritos_propios' => [$carrito->id]]);
+
+        // Y ahora se loguea con su cuenta de verdad.
+        $this->json('POST', '/login', [
+            'email'       => $this->victima->email,
+            'password'    => 'una-contrasena-real',
+            'commerce_id' => $this->comercio->id,
+        ])->assertStatus(200);
+
+        // El carrito paso a ser suyo, no quedo huerfano.
+        $carrito->refresh();
+        $this->assertSame((int) $this->victima->id, (int) $carrito->buyer_id,
+            'El carrito que el invitado creo antes de loguearse tiene que quedar atado a su cuenta.');
+
+        // Y puede seguir operandolo: es el flujo "navego, cargo el carrito, me logueo para comprar".
+        $this->actingAs($this->victima, 'buyer')
+            ->json('PUT', '/api/carts/update-article-amount/'.$carrito->id, ['id' => 1, 'amount' => 3])
+            ->assertStatus(200);
+    }
+
+    /**
+     * La contracara, que es el motivo por el que existe el traspaso y no un "adoptar todo":
+     * el carrito que YA es de otro comprador no se lo lleva el que entra.
+     */
+    public function test_el_que_se_loguea_no_se_lleva_el_carrito_de_otro_comprador()
+    {
+        $ajeno = $this->carritoDe($this->victima);
+
+        $this->withSession(['carritos_propios' => [$ajeno->id]]);
+
+        $this->json('POST', '/login', [
+            'email'       => $this->ficha_invitado->email,
+            'password'    => 'no-tiene',
+            'commerce_id' => $this->comercio->id,
+        ]);
+
+        $ajeno->refresh();
+        $this->assertSame((int) $this->victima->id, (int) $ajeno->buyer_id,
+            'Un carrito que ya tiene dueño no cambia de dueño porque otro se loguee en el mismo navegador.');
+    }
+
+    /**
      * 🔴 IDOR enumerable por order_id: devolvia el carrito completo de otro comprador.
      *
      * No se cierra por sesion sino por orders.buyer_id, porque el SPA la llama desde un mensaje
