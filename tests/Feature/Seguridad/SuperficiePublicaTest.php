@@ -170,10 +170,15 @@ class SuperficiePublicaTest extends TestCase
 
         $modelo = $respuesta->json('model');
 
-        foreach (['name', 'surname', 'phone', 'email', 'messages', 'comercio_city_client', 'addresses'] as $clave) {
+        foreach (['name', 'surname', 'phone', 'email', 'messages', 'comercio_city_client'] as $clave) {
             $this->assertArrayNotHasKey($clave, $modelo,
                 'POST /api/buyer no puede devolver '.$clave.' de una cuenta ajena: es una ruta publica resuelta por email.');
         }
+
+        // `addresses` SI viaja, pero vacio: mixins/app.js::checkAddress() lee `.length` y una clave
+        // ausente ahi es un TypeError. Lo que importa es que no traiga las direcciones de nadie.
+        $this->assertSame([], $modelo['addresses'],
+            'addresses tiene que llegar vacio: la clave existe por el SPA, no para mandar datos.');
     }
 
     /**
@@ -434,6 +439,68 @@ class SuperficiePublicaTest extends TestCase
 
         $this->assertSame($antes, Order::where('buyer_id', $this->victima->id)->count(),
             'El buyer_id del request no puede atribuirle el pedido a otro comprador.');
+    }
+
+    /**
+     * 🔴 Ser vendedor no alcanza para cargarle un pedido a cualquiera: tiene que ser un comprador
+     * DE SU COMERCIO.
+     *
+     * Lo encontro la revision independiente del diff. El primer arreglo solo comprobaba
+     * `seller_id`, asi que un vendedor del comercio A podia crear un pedido a nombre de un cliente
+     * del comercio B — y como la tienda comparte base con el ERP, ese pedido confirmado termina en
+     * una venta contra la cuenta corriente de esa persona.
+     */
+    public function test_un_vendedor_no_puede_cargar_un_pedido_a_un_comprador_de_otro_comercio()
+    {
+        $otro_comercio_id = $this->comercio->id + 99999;
+
+        $ajeno = Buyer::create([
+            'name'    => 'Comprador De Otro Comercio',
+            'email'   => 'otro-comercio-'.uniqid().'@example.com',
+            'user_id' => $otro_comercio_id,
+        ]);
+
+        $vendedor = Buyer::create([
+            'name'      => 'Vendedor Test',
+            'email'     => 'vendedor3-test-'.uniqid().'@example.com',
+            'seller_id' => 1,
+            'user_id'   => $this->comercio->id,
+        ]);
+
+        $carrito = Cart::create([
+            'buyer_id' => null,
+            'user_id'  => $this->comercio->id,
+            'total'    => 100,
+        ]);
+
+        $antes = Order::where('buyer_id', $ajeno->id)->count();
+
+        $this->withSession(['carritos_propios' => [$carrito->id]])
+            ->actingAs($vendedor, 'buyer')
+            ->json('POST', '/api/orders', [
+                'commerce_id' => $this->comercio->id,
+                'cart_id'     => $carrito->id,
+                'buyer_id'    => $ajeno->id,
+                'address'     => 'Calle Test 1',
+            ]);
+
+        $this->assertSame($antes, Order::where('buyer_id', $ajeno->id)->count(),
+            'Un vendedor no puede atribuirle un pedido a un comprador de otro comercio.');
+    }
+
+    /**
+     * Y sin `Accept: application/json` el 401 tiene que seguir siendo 401.
+     *
+     * 🔴 No es un detalle cosmetico. El handler de Laravel 10 hace
+     * `redirect()->guest($exception->redirectTo() ?? route('login'))`, y en este repo no existe
+     * ninguna ruta con nombre 'login': sin el override de Handler@unauthenticated eso es un 500
+     * con la traza completa en el cuerpo. Y esta mision movio ~25 rutas detras de auth:buyer, o
+     * sea que lo dispara cualquier curl o bot que pase por ahi.
+     */
+    public function test_sin_cabecera_accept_el_401_sigue_siendo_401_y_no_un_500()
+    {
+        $this->get('/api/orders', ['Accept' => 'text/html'])->assertStatus(401);
+        $this->get('/api/user', ['Accept' => '*/*'])->assertStatus(401);
     }
 
     /** Y tampoco con el carrito de otro. */

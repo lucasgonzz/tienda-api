@@ -76,12 +76,17 @@ class CartOwnershipHelper
      */
     public static function registrar($cart_id)
     {
-        $ids = self::ids();
+        // Se saca primero el id si ya estaba, para que re-registrarlo lo mueva AL FINAL y no lo
+        // deje en su posicion vieja. Con array_unique() sobre la lista ya concatenada pasaba lo
+        // contrario (conserva la primera aparicion), y un carrito activo podia ser desalojado por
+        // el recorte de abajo. Hoy no puede pasar —hay un solo call site, justo despues de
+        // Cart::create—, pero es una mina para el segundo.
+        $ids = array_values(array_diff(self::ids(), [(int) $cart_id]));
         $ids[] = (int) $cart_id;
 
         // Se dejan los ultimos TOPE. array_values para que no queden agujeros en las claves:
         // la lista se serializa a la sesion y un array asociativo la ensucia sin necesidad.
-        $ids = array_values(array_slice(array_unique($ids), -self::TOPE));
+        $ids = array_values(array_slice($ids, -self::TOPE));
 
         session()->put(self::CLAVE, $ids);
     }
@@ -116,9 +121,19 @@ class CartOwnershipHelper
      */
     private static function avisarSiNoHaySesion()
     {
+        // Una sola linea por request: ids() se llama varias veces por request (puede() y adoptar()
+        // pasan por aca), y en un cliente mal configurado eso serian cuatro lineas identicas por
+        // cada toque del carrito. Mismo criterio que la memoizacion de BuyerTrackingHelper.
+        static $ya_aviso = false;
+
+        if ($ya_aviso) {
+            return;
+        }
+
         $request = request();
 
         if (!is_null($request) && !$request->hasSession()) {
+            $ya_aviso = true;
             Log::warning('CartOwnershipHelper: no hay sesion en el request, el comprador no va a poder operar su carrito. Revisar SANCTUM_STATEFUL_DOMAINS del .env contra el dominio del SPA.', [
                 'ruta'   => $request->path(),
                 'origin' => $request->headers->get('Origin'),

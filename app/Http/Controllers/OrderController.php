@@ -294,7 +294,29 @@ class OrderController extends Controller
             $vendedor = $this->buyer();
 
             if (!is_null($vendedor) && !is_null($vendedor->seller_id)) {
-                return (int) $request->buyer_id;
+                /*
+                 * 🔴 Ser vendedor NO alcanza: hay que comprobar que el comprador sea de SU
+                 * comercio. Sin esto, un vendedor del comercio A carga un pedido a nombre de un
+                 * cliente del comercio B, y como la tienda comparte base con el ERP, ese pedido
+                 * confirmado termina en una venta contra la cuenta corriente de esa persona.
+                 *
+                 * Es el mismo criterio que BuyerController@search: el comercio sale del vendedor,
+                 * nunca del request. Ese se aplico bien y este se habia olvidado — lo encontro la
+                 * revision independiente del diff.
+                 */
+                $comprador = Buyer::find($request->buyer_id);
+
+                if (!is_null($comprador) && (int) $comprador->user_id === (int) $vendedor->user_id) {
+                    return (int) $comprador->id;
+                }
+
+                Log::warning('OrderController@store: un vendedor intento cargar un pedido a nombre de un comprador de otro comercio', [
+                    'buyer_id_pedido'  => $request->buyer_id,
+                    'comercio_pedido'  => is_null($comprador) ? null : $comprador->user_id,
+                    'comercio_vendedor'=> $vendedor->user_id,
+                ]);
+
+                return $propio;
             }
 
             Log::warning('OrderController@store: se ignoro un buyer_id del request de alguien que no es vendedor', [

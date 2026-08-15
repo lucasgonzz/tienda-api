@@ -24,10 +24,33 @@ class AuthController extends Controller
 
     function login(Request $request) {
     	if (Auth::guard('buyer')->attempt(['email' => $request->email, 'user_id' => $request->commerce_id, 'password' => $request->password], $request->remember)) {
+            $this->limpiarRastrosDeOtroComprador();
             $buyer = Self::getFullBuyer();
             return response()->json(['buyer' => $buyer], 200);
         }
     	return response(null, 403);
+    }
+
+    /**
+     * Borra de la sesion lo que dejo el comprador anterior en este mismo navegador.
+     *
+     * Auth::guard('buyer')->login() hace session->migrate(true), que regenera el id de sesion pero
+     * CONSERVA los atributos. Eso es lo que le permite al invitado no perder su carrito al
+     * identificarse en el checkout — y es justo lo que no queremos cuando el que entra es otra
+     * persona con su cuenta.
+     *
+     * 🔴 Se llama SOLO desde el login de una cuenta (login y social), nunca desde el
+     * BuyerController@store del checkout de invitado: ahi el carrito de la sesion es del mismo que
+     * esta comprando y borrarlo le rompe la compra en el ultimo paso.
+     *
+     * @return void
+     */
+    function limpiarRastrosDeOtroComprador() {
+        session()->forget([
+            \App\Http\Controllers\Helpers\CartOwnershipHelper::CLAVE,
+            self::CLAVE_CHECKOUT,
+            self::CLAVE_PEDIDOS,
+        ]);
     }
 
     function social($provider, $commerce_id) {
@@ -57,6 +80,7 @@ class AuthController extends Controller
             $new_buyer = true;
         }
         Auth::guard('buyer')->login($buyer);
+        $this->limpiarRastrosDeOtroComprador();
         $buyer = Self::getFullBuyer();
         return response()->json(['new_buyer' => $new_buyer, 'buyer' => $buyer], 200);
     }
@@ -74,8 +98,30 @@ class AuthController extends Controller
         return $buyer;
     }
 
+    /**
+     * Cierra la sesion del comprador desde el boton de salir del nav.
+     *
+     * 🔴 Hasta el 15/8/2026 esto solo hacia el logout del guard y NO invalidaba la sesion. Con la
+     * titularidad del carrito viviendo en la sesion (CartOwnershipHelper), eso significaba que en
+     * un dispositivo compartido —la tablet del negocio, la PC del local— el comprador que entraba
+     * despues heredaba `carritos_propios` del anterior: podia modificarle y borrarle los carritos,
+     * y lastCart le podia devolver el carrito abierto del otro con sus datos de checkout adentro.
+     *
+     * Lo mismo con la identidad de checkout: sin invalidar, despues de salir un POST /orders
+     * seguia atribuyendole el pedido al comprador identificado en el checkout anterior.
+     *
+     * Se invalida igual que BuyerController@logout, que ya lo hacia bien.
+     *
+     * @return \Illuminate\Http\Response
+     */
     function logout() {
     	Auth::guard('buyer')->logout();
+        try {
+            request()->session()->invalidate();
+            request()->session()->regenerateToken();
+        } catch (\Exception $e) {
+            // Silenciar: si la sesion ya no existe, no hay nada que invalidar.
+        }
     	return response(null, 200);
     }
 

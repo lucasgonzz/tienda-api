@@ -182,6 +182,10 @@ class BuyerController extends Controller
 			'ciudad'    => $model->ciudad,
 			'barrio'    => $model->barrio,
 			'seller_id' => $model->seller_id,
+			// Va vacio, no ausente: mixins/app.js::checkAddress() lee `this.user.addresses.length`.
+			// Hoy no lo llama nadie, pero una clave faltante ahi es un TypeError a un call site de
+			// distancia, y el costo de dejarla es cero.
+			'addresses' => [],
 		];
 	}
 
