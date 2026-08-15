@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\ArticlePrice;
 use App\ArticleVariant;
 use App\Color;
+use App\Http\Controllers\Helpers\ClientOfferHelper;
 use App\Http\Controllers\Helpers\CommerceHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -115,6 +116,19 @@ class ArticleHelper
                 }
             }
         }
+
+        /*
+         * La oferta personalizada va DESPUES de resolver el precio y es lo ultimo que pasa:
+         * el porcentaje del contrato con empresa-api se aplica sobre el precio YA resuelto,
+         * sea cual sea de los cuatro casos de arriba. Ver el docblock de
+         * 2026_08_17_100200_create_client_offers_table.php en empresa-api.
+         *
+         * Es el unico enganche de toda la mision: colgandolo aca, los 12 llamadores de
+         * checkPriceTypes (ArticleController x4, HomeController x6, CartHelper::getFullModel)
+         * muestran la oferta sin tocarse ni uno.
+         */
+        $articles = ClientOfferHelper::aplicar($articles);
+
         return $articles;
     }
 

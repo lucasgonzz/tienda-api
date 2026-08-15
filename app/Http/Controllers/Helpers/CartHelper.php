@@ -6,6 +6,7 @@ use App\ArticlePriceTypeGroup;
 use App\Cart;
 use App\Cupon;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\ClientOfferHelper;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -94,6 +95,37 @@ class CartHelper {
     }
 
     static function get_price($articles, $article, $has_price_ranges, $article_groups) {
+
+        /*
+         * 🔴 La oferta personalizada gana, y la resuelve EL SERVIDOR contra la base.
+         *
+         * Que se gana: el PORCENTAJE y la VIGENCIA dejan de venir del navegador. Sin esto,
+         * el objeto `oferta_personalizada` que el SPA reenvia con el carrito seria la unica
+         * fuente del descuento, y cualquiera podria mandarse un 90%, usar una oferta vencida
+         * o la de otro cliente — y eso termina en un pedido confirmado, que en esta base es
+         * una venta contra la cuenta corriente de una persona.
+         *
+         * Que NO se toca, a proposito: la BASE del precio la sigue mandando el SPA
+         * ($article['precio_sin_oferta']), igual que hoy manda $article['final_price'].
+         * Reconstruirla en el servidor exigiria duplicar los cuatro casos de
+         * ArticleHelper::checkPriceTypes() adentro de un helper de carrito, y una copia que
+         * se desincronice cobra distinto segun el camino — peor que el agujero que arregla.
+         * "El cliente fija el precio base" es un agujero PREEXISTENTE y su arreglo es otra
+         * mision; esta no lo empeora ni un poco, y le saca al cliente el control del
+         * descuento, que es lo que esta mision agrega.
+         *
+         * Molde: get_price_range() de aca abajo, que ya resuelve un tramo desde `amount`
+         * del lado del servidor.
+         *
+         * Sin `precio_sin_oferta` en el payload, precioDeLinea() devuelve null SIEMPRE y las
+         * dos ramas de abajo quedan identicas a master: un articulo sin oferta cobra
+         * exactamente lo de hoy, byte por byte.
+         */
+        $precio_con_oferta = ClientOfferHelper::precioDeLinea($article, $articles[0]['user_id']);
+
+        if (!is_null($precio_con_oferta)) {
+            return $precio_con_oferta;
+        }
 
         if ($has_price_ranges) {
 

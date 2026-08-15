@@ -254,6 +254,13 @@ Route::middleware('auth:buyer')->group(function() {
 		'CuponController@setRead',
 	);
 
+	// Ofertas personalizadas del comprador (mision promocion-personalizada-tienda).
+	// Va en auth:buyer y no puede salir de aca: la oferta es de UN cliente del ERP y se
+	// resuelve por buyers.comercio_city_client_id de la SESION, nunca por un id de la URL.
+	Route::get('/client-offers/{commerce_id}',
+		'ClientOfferController@index'
+	);
+
 	// Favorites
 	Route::get('/favorites',
 		'ArticleController@favorites'
