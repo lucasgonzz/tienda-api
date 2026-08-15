@@ -138,6 +138,15 @@ Route::get('/delivery-zones/{commerce_id}',
 Route::resource('/buyer-message', 'BuyerMessageController');
 
 
+// Tracking de comportamiento de compradores (mision tracking-buyers-tienda).
+// Ingesta por LOTES: un request por evento le costaria un pedido al comprador en cada vista.
+// Va a proposito ANTES del bloque de auth:sanctum: el visitante anonimo es el caso normal de
+// una tienda, no el borde, y el buyer_id lo resuelve el controller desde la sesion cuando la hay.
+// Lejos del bloque de /articles/, donde el orden de registro ya sombrea una ruta viva
+// (/articles/{slug}/{commerce_id} se come a /articles/set-viewed/{id}, los dos de 3 segmentos).
+Route::post('buyer-tracking/events', 'BuyerTrackingController@store')->middleware('throttle:60,1');
+
+
 // Route::middleware('auth:sanctum')->group(function() {
 	Route::get('/user', 'BuyerController@getBuyer');
 
