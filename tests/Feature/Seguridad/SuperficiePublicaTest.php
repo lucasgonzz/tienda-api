@@ -352,22 +352,46 @@ class SuperficiePublicaTest extends TestCase
     /**
      * La contracara, que es el motivo por el que existe el traspaso y no un "adoptar todo":
      * el carrito que YA es de otro comprador no se lo lleva el que entra.
+     *
+     * 🔴 La primera version de este test era VACUA y la atrapo el revisor de merge: logueaba a la
+     * ficha de invitado, que se crea sin contraseña, asi que POST /login devolvia 403,
+     * limpiarRastrosDeOtroComprador() nunca corria y la asercion era trivialmente cierta. Seguia
+     * verde aunque le sacaran el whereNull('buyer_id') al traspaso — o sea, no guardaba la
+     * invariante que lleva en el nombre.
+     *
+     * De ahi las dos cosas que ahora tiene y antes no: un comprador con contraseña de VERDAD, y un
+     * assertStatus(200) sobre el login. Sin ese assert, un login que falla vuelve a dejar el test
+     * inerte sin que nadie se entere.
      */
     public function test_el_que_se_loguea_no_se_lleva_el_carrito_de_otro_comprador()
     {
         $ajeno = $this->carritoDe($this->victima);
 
+        $otro = Buyer::create([
+            'name'     => 'Otro Comprador Con Cuenta',
+            'email'    => 'otro-cuenta-'.uniqid().'@example.com',
+            'password' => bcrypt('la-contrasena-del-otro'),
+            'user_id'  => $this->comercio->id,
+        ]);
+
         $this->withSession(['carritos_propios' => [$ajeno->id]]);
 
+        // 🔴 Sin este assert el test se vuelve vacuo de nuevo: si el login falla, nada de lo que
+        // viene abajo prueba nada.
         $this->json('POST', '/login', [
-            'email'       => $this->ficha_invitado->email,
-            'password'    => 'no-tiene',
+            'email'       => $otro->email,
+            'password'    => 'la-contrasena-del-otro',
             'commerce_id' => $this->comercio->id,
-        ]);
+        ])->assertStatus(200);
 
         $ajeno->refresh();
         $this->assertSame((int) $this->victima->id, (int) $ajeno->buyer_id,
             'Un carrito que ya tiene dueño no cambia de dueño porque otro se loguee en el mismo navegador.');
+
+        // Y tampoco lo puede operar.
+        $this->actingAs($otro, 'buyer')
+            ->json('PUT', '/api/carts/update-article-amount/'.$ajeno->id, ['id' => 1, 'amount' => 5])
+            ->assertStatus(403);
     }
 
     /**

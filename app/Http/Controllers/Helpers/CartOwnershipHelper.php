@@ -215,18 +215,38 @@ class CartOwnershipHelper
      *   - carrito de la sesion con `buyer_id` de otro -> ya tiene dueño. Se saca de la lista, y
      *     ademas puede() lo rechaza solo por la segunda rama. Es el dispositivo compartido.
      *
-     * ⚠️ Riesgo residual, declarado: en un dispositivo compartido donde A navego como invitado sin
-     * identificarse y dejo un carrito sin dueño, B se lo lleva al loguearse. Es estrictamente MENOS
-     * que lo que pasaba antes de esta mision —donde lastCart le daba a cualquiera el ultimo carrito
-     * anonimo del comercio, sin siquiera compartir navegador— y el precio de cerrarlo del todo seria
-     * romper el flujo de compra mas usado de la tienda.
+     * ⚠️ RIESGO RESIDUAL, declarado con sus numeros porque sin ellos no se puede juzgar el precio:
+     *
+     *   - **Que pasa**: en un dispositivo compartido donde A navego como invitado SIN identificarse
+     *     y dejo un carrito sin dueño, B se lo lleva al loguearse.
+     *   - **Que se lleva, exactamente**: no es solo "un carrito". lastCart le entrega el modelo
+     *     completo via CartHelper::getFullModel, o sea tambien lo que escribe sync_checkout_fields:
+     *     `description` (las notas del pedido), `address_id`, `fecha_entrega` y
+     *     `payment_card_info_id`. Si A llego al formulario de checkout sin identificarse, ahi va su
+     *     direccion de entrega y sus notas. Es una transferencia chica de datos personales, no solo
+     *     la perdida de un carrito.
+     *   - **Cuanto dura la ventana**: exactamente lo que dure la sesion, o sea `SESSION_LIFETIME`.
+     *     🔴 Y esta misma mision lo subio de 1 a 120 minutos en config/session.php (hacia falta,
+     *     porque con un minuto el carrito del invitado moria solo). O sea que en una tablet
+     *     compartida la ventana paso de un minuto a dos horas. Los dos cambios estan acoplados y
+     *     conviene leerlos juntos.
+     *   - **Contra que se compara**: antes de esta mision, el whereNull de lastCart le daba a
+     *     CUALQUIERA el ultimo carrito anonimo del comercio, sin siquiera compartir navegador. Esto
+     *     es estrictamente menos exposicion.
+     *   - **Por que no se cierra del todo**: la unica forma seria no traspasar los carritos sin
+     *     dueño, y eso reintroduce la regresion que este metodo vino a arreglar — el invitado que
+     *     se loguea con su propia cuenta no puede comprar.
      *
      * @param  int|null  $buyer_id  el comprador que acaba de entrar
      * @return void
      */
     public static function traspasarAlCompradorQueEntra($buyer_id)
     {
+        // Sin comprador no hay a quien traspasar, pero la lista se vacia igual: dejarla llena
+        // seria lo peor de los dos mundos. Hoy ningun call site llega aca con null; esta por si
+        // aparece un tercero.
         if (is_null($buyer_id)) {
+            session()->forget(self::CLAVE);
             return;
         }
 
