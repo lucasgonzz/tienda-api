@@ -494,6 +494,36 @@ class ClientOfferHelper
     }
 
     /**
+     * ¿Tiene sentido siquiera preguntar por ofertas en este request?
+     *
+     * Es la guarda barata para quien necesita decidir ANTES de cargar nada: hay comprador
+     * logueado con cliente del ERP, y las dos tablas del contrato existen. Cuesta 0 queries sin
+     * sesion o sin cliente (que es la mayoria de los compradores de la tienda) y la del
+     * information_schema memoizada en el resto.
+     *
+     * La usa CartHelper::resincronizar_precios_de_oferta() para no cargar los articulos del
+     * carrito en las bases donde este esquema todavia no llego — o sea, hoy, en todas.
+     *
+     * @return bool
+     */
+    public static function hayContrato()
+    {
+        try {
+            list($buyer_id, $client_id) = self::buyerYCliente();
+
+            if (is_null($client_id)) {
+                return false;
+            }
+
+            return self::hayTablas();
+        } catch (\Throwable $e) {
+            self::registrarFalla($e);
+
+            return false;
+        }
+    }
+
+    /**
      * Descarta la memoria del proceso. La usan los tests, que crean y esconden las tablas.
      *
      * @return void

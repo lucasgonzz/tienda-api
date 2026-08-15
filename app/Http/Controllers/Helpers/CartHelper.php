@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Article;
 use App\ArticlePriceTypeGroup;
 use App\Cart;
 use App\Cupon;
@@ -84,9 +85,148 @@ class CartHelper {
         }
     }
 
+    /**
+     * 🔴 Vuelve a resolver, contra la base, el precio de las lineas que tienen oferta
+     * personalizada. Corre ANTES de sumar el total, en todos los caminos que escriben el carrito.
+     *
+     * ── EL DEFECTO QUE ARREGLA, MEDIDO EN LA TIENDA CORRIENDO ────────────────────────────────
+     * `CartController::update_article_amount()` —el boton "Actualizar" de la ficha— cambia el
+     * `amount` del pivot con `updateExistingPivot` y NO vuelve a pasar por `get_price()`. Antes
+     * de esta mision eso era inofensivo, porque el precio no dependia de la cantidad. Con una
+     * oferta por tramos SI depende:
+     *
+     *   Articulo de $3.948 con tramos 1-5 al 5%, 6-11 al 10% y 12+ al 18%.
+     *   El comprador agrega 12 -> se guarda price = 3.237,36 (el tramo del 18%).
+     *   Cambia la cantidad a 1 y aprieta Actualizar -> el pivot queda amount = 1 y
+     *   price = 3.237,36. La pantalla le mostraba $3.750,60 (el tramo del 5%, que es el que le
+     *   corresponde) y el carrito guardaba $3.237,36. Total: 3.237,36 en vez de 3.750,60.
+     *
+     * O sea que el descuento mas profundo se conseguia con cualquier cantidad, sin manipular
+     * nada: agregando 12 y bajando a 1 con un boton de la interfaz. Y la pantalla y el carrito
+     * decian numeros distintos, que es el peor sintoma posible en el camino de la plata.
+     *
+     * ── POR QUE ACA Y NO EN EL CONTROLLER ────────────────────────────────────────────────────
+     * `set_total()` es el unico punto por el que pasan TODOS los caminos que escriben el carrito
+     * (`store`, `update` y `update_article_amount`). Arreglarlo en uno solo dejaria los otros dos
+     * dependiendo de que nadie cambie el orden de las llamadas.
+     *
+     * ── LA BASE LA DERIVA EL SERVIDOR, NO EL PAYLOAD ─────────────────────────────────────────
+     * A diferencia de `get_price()` —que recibe la base del navegador porque asi funciona todo
+     * el carrito de este repo—, aca no hay payload: el precio se reconstruye cargando los
+     * articulos por el mismo camino que `getFullModel()` y pasandolos por `checkPriceTypes()`,
+     * que es exactamente lo que la tienda le mostro al comprador.
+     *
+     * ── LA ASIMETRIA, Y ES LA PARTE QUE HAY QUE ENTENDER ANTES DE TOCAR ESTO ─────────────────
+     * No alcanza con revisar las lineas que HOY tienen oferta: las que hay que corregir son
+     * justamente las que la PERDIERON (el comerciante la cancelo, o vencio), que ya no aparecen
+     * en ninguna lista de ofertas vigentes. Por eso se recorren todas las lineas del carrito.
+     *
+     * Y por eso mismo la escritura es asimetrica:
+     *   - Linea CON oferta vigente: se escribe el precio del tramo, para arriba o para abajo.
+     *     Es el precio que el comprador esta viendo en pantalla.
+     *   - Linea SIN oferta: se escribe SOLO si el precio nuevo es MAYOR, o sea unicamente para
+     *     deshacer un descuento que ya no corresponde. Nunca para otorgar uno.
+     *
+     * Esa asimetria es a proposito: para una linea sin oferta, la base que resuelve el servidor
+     * es la misma cifra que el carrito guarda hoy, asi que en el caso honesto no se escribe nada
+     * y el comportamiento es identico a master. "El cliente fija el precio base" sigue siendo un
+     * agujero PREEXISTENTE de este repo y arreglarlo es otra mision; lo unico que se cierra aca
+     * es que esta funcionalidad no lo agrande.
+     *
+     * ── LO BARATO PRIMERO ────────────────────────────────────────────────────────────────────
+     * La primera guarda es `hayContrato()`: 0 queries sin sesion o sin cliente del ERP, y la del
+     * information_schema memoizada en el resto. Sin las tablas del contrato —o sea, hoy, en
+     * todos los clientes— no se carga ni un articulo y esto no cuesta nada.
+     *
+     * @param  \App\Cart  $cart
+     * @return void
+     */
+    static function resincronizar_precios_de_oferta($cart) {
+        try {
+            if (!ClientOfferHelper::hayContrato()) {
+                return;
+            }
+
+            /* Las lineas del carrito, una por una: el tramo se elige con la cantidad de ESA
+               linea, igual que en get_price(). Un mismo articulo puede estar dos veces con
+               variantes distintas, y cada fila tiene su propia cantidad. */
+            $lineas = DB::table('article_cart')->where('cart_id', $cart->id)->get();
+
+            if (count($lineas) == 0) {
+                return;
+            }
+
+            /* Mismo camino que getFullModel(): withAll() trae las price_types que
+               checkPriceTypes() necesita para resolver el precio de este comprador, y de paso
+               cuelga la oferta personalizada en los articulos que la tengan. */
+            $articulos = Article::whereIn('id', $lineas->pluck('article_id')->unique()->all())
+                                ->withAll()
+                                ->get();
+
+            if (count($articulos) == 0) {
+                return;
+            }
+
+            $articulos = ArticleHelper::checkPriceTypes($articulos);
+
+            foreach ($lineas as $linea) {
+                $articulo = $articulos->firstWhere('id', $linea->article_id);
+
+                if (is_null($articulo)) {
+                    continue;
+                }
+
+                $tiene_oferta = isset($articulo->oferta_personalizada)
+                                && !empty($articulo->oferta_personalizada['precio_aplicado']);
+
+                /* La base la resuelve el servidor: `precio_sin_oferta` cuando hay oferta, y el
+                   `final_price` de checkPriceTypes cuando no. */
+                $base = $tiene_oferta && isset($articulo->precio_sin_oferta)
+                        ? $articulo->precio_sin_oferta
+                        : $articulo->final_price;
+
+                if (!is_numeric($base)) {
+                    continue;
+                }
+
+                $precio = ClientOfferHelper::precioDeLinea([
+                    'id'                => $articulo->id,
+                    'amount'            => $linea->amount,
+                    'precio_sin_oferta' => $base,
+                    'precio_pausado'    => isset($articulo->precio_pausado) ? $articulo->precio_pausado : null,
+                ], $cart->user_id);
+
+                if (is_null($precio) || (float) $precio === (float) $linea->price) {
+                    continue;
+                }
+
+                /* Sin oferta vigente solo se corrige HACIA ARRIBA: deshacer un descuento que ya
+                   no vale, nunca otorgar uno. Ver la asimetria en el docblock. */
+                if (!$tiene_oferta && (float) $precio < (float) $linea->price) {
+                    continue;
+                }
+
+                DB::table('article_cart')->where('id', $linea->id)->update(['price' => $precio]);
+            }
+        } catch (\Throwable $e) {
+            /* Una oferta que falla no puede romper el carrito: se deja el precio que ya estaba,
+               que es el comportamiento de master, y queda constancia. */
+            Log::warning('CartHelper::resincronizar_precios_de_oferta fallo, el carrito sigue con el precio anterior.', [
+                'cart_id'   => $cart->id,
+                'excepcion' => get_class($e),
+                'mensaje'   => $e->getMessage(),
+            ]);
+        }
+    }
+
     static function set_total($cart) {
+        /* Antes de sumar, el precio de las lineas con oferta se vuelve a resolver contra la
+           base. Ver el docblock de arriba: sin esto, cambiar la cantidad desde "Actualizar"
+           conservaba el precio del tramo anterior. */
+        Self::resincronizar_precios_de_oferta($cart);
+
         $cart->load('articles');
-        
+
         $total = 0;
 
         foreach ($cart->articles as $article) {
