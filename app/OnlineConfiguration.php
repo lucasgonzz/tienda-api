@@ -31,6 +31,28 @@ class OnlineConfiguration extends Model
         // configuration.show_google_login, calculado en el controller), no las credenciales.
         'google_client_id',
         'google_client_secret',
+        /*
+         * Credenciales de Mercado Pago y Zippin (mision de seguridad, 15/8/2026). Cada comercio
+         * conecta su propia cuenta por OAuth desde el ERP; empresa-api las guarda cifradas (cast
+         * 'encrypted' en su app/Models/OnlineConfiguration.php) y las oculta. Este repo no tenia
+         * ni el cast ni el $hidden, asi que serializaba el ciphertext crudo en la respuesta
+         * PUBLICA de CommerceController@commerce. Medido con centinelas: los cinco salian.
+         *
+         * Que viajen cifrados no los vuelve inofensivos: es material secreto publicado en una
+         * URL sin autenticacion.
+         *
+         * Verificado antes de ocultarlas: ni tienda-api ni tienda-spa leen ninguna de estas
+         * columnas (cero coincidencias en los dos repos). La public_key de Mercado Pago que usa
+         * el SPA para el brick de pago sale de payment_methods.public_key
+         * (components/payment/components/payment-method/CardPaymentMethod.vue:66), no de aca.
+         */
+        'mp_access_token',
+        'mp_refresh_token',
+        'mp_user_id',
+        'mp_public_key',
+        'zippin_access_token',
+        'zippin_refresh_token',
+        'zippin_account_id',
     ];
 
     protected $casts = [
