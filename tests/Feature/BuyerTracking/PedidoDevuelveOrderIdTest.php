@@ -74,12 +74,29 @@ class PedidoDevuelveOrderIdTest extends TestCase
         $cart      = $this->crearCarrito();
         $comprador = $this->crearComprador();
 
-        $respuesta = $this->postJson(self::RUTA, [
-            'cart_id'     => $cart->id,
-            'commerce_id' => $this->comercio->id,
-            'buyer_id'    => $comprador->id,
-            'address'     => 'San Martin 100',
-        ]);
+        /*
+         * La sesion representa lo que el SPA ya hizo antes de llegar a POST /orders: creo el
+         * carrito con POST /api/carts (que lo registra en `carritos_propios`) y se identifico con
+         * POST /api/buyer (que deja la identidad de checkout).
+         *
+         * 🔴 Esto se agrego el 15/8/2026, en la mision seguridad-api-publica-tienda, y NO es
+         * aflojar el test: es al reves. Hasta entonces este POST andaba sin ninguna sesion, con un
+         * carrito ajeno y con el buyer_id puesto a dedo en el payload — que es exactamente el
+         * ataque que esa mision cerro (cualquiera podia convertir el carrito de otro en un pedido
+         * a nombre de un tercero). La asercion no cambio: sigue exigiendo 201 y que el order_id
+         * sea EL id del pedido creado. Lo que cambio es la precondicion, para que describa el
+         * flujo real y no uno que ya no existe.
+         */
+        $respuesta = $this->withSession([
+                'carritos_propios'  => [$cart->id],
+                'checkout_buyer_id' => $comprador->id,
+            ])
+            ->postJson(self::RUTA, [
+                'cart_id'     => $cart->id,
+                'commerce_id' => $this->comercio->id,
+                'buyer_id'    => $comprador->id,
+                'address'     => 'San Martin 100',
+            ]);
 
         $respuesta->assertStatus(201);
         $respuesta->assertJsonStructure(['order_id']);
@@ -170,8 +187,10 @@ class PedidoDevuelveOrderIdTest extends TestCase
      * Comprador del pedido. Hace falta de verdad: `orders.buyer_id` es NOT NULL en el esquema
      * real, asi que un pedido sin comprador no se puede crear ni desde el endpoint.
      *
-     * Se manda por el payload igual que lo hace el SPA (store() usa
-     * `$request->buyer_id ? $request->buyer_id : $this->buyerId()`).
+     * Se manda por el payload igual que lo hace el SPA, pero desde el 15/8/2026 store() lo
+     * IGNORA salvo que quien pide sea un vendedor (buyers.seller_id): el pedido se le atribuye a
+     * la identidad de la sesion. Por eso el test ademas siembra `checkout_buyer_id` con este
+     * mismo comprador — si solo mandara el payload, el pedido quedaria sin comprador.
      *
      * @return \App\Buyer
      */

@@ -153,13 +153,17 @@ class BuyerController extends Controller
 	 * No se podia sacar el login a secas: la atribucion del pedido de invitado depende de que
 	 * quede una identidad en la sesion (orders.buyer_id es NOT NULL). Entonces se parte en dos:
 	 *
-	 *   - Registro SIN contraseña -> no es una cuenta, es una ficha que creo un checkout de
-	 *     invitado anterior. Se loguea igual que antes: no hay credencial que proteger y sacarlo
-	 *     cambiaria el comportamiento del flujo mas usado de la tienda.
-	 *   - Registro CON contraseña -> es una cuenta de verdad. NO se abre sesion: se guarda una
-	 *     identidad de checkout acotada (Controller::CLAVE_CHECKOUT), que alcanza para atribuirle
-	 *     el pedido y nada mas. Para entrar a la cuenta hay que loguearse con la contraseña, como
-	 *     corresponde.
+	 *   - Ficha SIN credencial -> no es una cuenta, es un registro que dejo un checkout de invitado
+	 *     anterior. Se loguea igual que antes: no hay credencial que proteger y sacarlo cambiaria
+	 *     el comportamiento del flujo mas usado de la tienda.
+	 *   - Cuenta CON credencial -> NO se abre sesion: se guarda una identidad de checkout acotada
+	 *     (Controller::CLAVE_CHECKOUT), que alcanza para atribuirle el pedido y nada mas. Para
+	 *     entrar a la cuenta hay que loguearse, como corresponde.
+	 *
+	 * 🔴 "Con credencial" es contraseña **O** provider_id, y la segunda mitad es facil de olvidar:
+	 * AuthController@social crea el comprador de login con Google SIN contraseña (no la necesita).
+	 * Si la condicion mirara solo el password, toda cuenta creada con Google seguiria siendo
+	 * tomable sabiendo el mail — el mismo agujero, por otra puerta.
 	 *
 	 * El SPA no se entera de la diferencia: sigue recibiendo el mismo modelo en la misma forma y
 	 * sigue llamando a los mismos endpoints. Por eso esto no obliga a desplegar tienda-spa.
@@ -168,12 +172,25 @@ class BuyerController extends Controller
 	 * @return void
 	 */
 	function login($model) {
-		if (is_null($model->password) || $model->password === '') {
+		if ($this->esFichaDeInvitado($model)) {
 			Auth::guard('buyer')->login($model);
 			return;
 		}
 
 		session()->put(self::CLAVE_CHECKOUT, (int) $model->id);
+	}
+
+	/**
+	 * Indica si el registro es una ficha creada por un checkout de invitado y no una cuenta.
+	 *
+	 * @param  \App\Buyer  $model
+	 * @return bool
+	 */
+	function esFichaDeInvitado($model) {
+		$sin_password = is_null($model->password) || $model->password === '';
+		$sin_provider = is_null($model->provider_id) || $model->provider_id === '';
+
+		return $sin_password && $sin_provider;
 	}
 
 	function update(Request $request) {
