@@ -201,7 +201,19 @@ class OrderController extends Controller
             }
 
             Log::info('Termino');
-        	return response(null, 201);
+
+            // Devuelve el id del pedido recien creado. Antes esto era un `response(null, 201)`
+            // con el cuerpo VACIO, y eso dejaba ciego al evento `checkout_complete` del tracking
+            // (mision tracking-buyers-tienda) justo en el medio de pago dominante: en la rama de
+            // Mercado Pago el SPA (mixins/cart.js) nunca llama a getCurrentOrder, asi que no tenia
+            // de donde sacar el id y el evento se iba sin order_id. Sin order_id no hay como atar
+            // la venta al recorrido del comprador, que es lo unico que cierra el embudo.
+            //
+            // El cambio es ESTRICTAMENTE ADITIVO y por eso es admisible tocar este controller:
+            // pasar de cuerpo vacio a cuerpo con una clave no rompe al SPA viejo (ignora el
+            // cuerpo del 201) ni al SPA nuevo contra una API vieja (lee el id de forma
+            // defensiva). El status sigue siendo 201 y no se saca ni se renombra nada.
+        	return response()->json(['order_id' => $order->id], 201);
         }
         return response(null, 200);
     }
