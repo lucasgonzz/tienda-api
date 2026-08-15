@@ -31,7 +31,19 @@ return [
     |
     */
 
-    'lifetime' => env('SESSION_LIFETIME', 1),
+    /*
+     * 🔴 El default es 120, NO 1. Estuvo en 1 hasta el 15/8/2026 y hay que dejarlo asi.
+     *
+     * Desde la mision de seguridad de esa fecha la sesion es load-bearing: la titularidad del
+     * carrito del invitado vive en la sesion (CartOwnershipHelper), porque un invitado no tiene
+     * buyer_id con el cual acotar el acceso. Con lifetime = 1 minuto, un cliente instalado sin
+     * SESSION_LIFETIME en su .env perderia la titularidad de su propio carrito al minuto: el
+     * siguiente PUT /api/carts le daria 403, y tienda-spa no lo muestra en pantalla
+     * (store/cart.js:260 solo hace console.log). O sea, la tienda se rompe en silencio.
+     *
+     * No se toca sin releer CartOwnershipHelper.
+     */
+    'lifetime' => env('SESSION_LIFETIME', 120),
 
     'expire_on_close' => false,
 
