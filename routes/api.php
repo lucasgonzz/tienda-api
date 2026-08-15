@@ -144,7 +144,21 @@ Route::resource('/buyer-message', 'BuyerMessageController');
 // una tienda, no el borde, y el buyer_id lo resuelve el controller desde la sesion cuando la hay.
 // Lejos del bloque de /articles/, donde el orden de registro ya sombrea una ruta viva
 // (/articles/{slug}/{commerce_id} se come a /articles/set-viewed/{id}, los dos de 3 segmentos).
-Route::post('buyer-tracking/events', 'BuyerTrackingController@store')->middleware('throttle:60,1');
+//
+// 🔴 El withoutMiddleware NO es opcional, y sacarlo degrada la navegacion del comprador.
+// El grupo `api` ya trae 'throttle:api' (Kernel.php:45), definido en RouteServiceProvider:35-39
+// como Limit::perMinute(60)->by(optional($request->user())->id ?? $request->ip()). Ese
+// $request->user() usa el guard `web`, que para un comprador es SIEMPRE null, asi que el limite
+// termina siendo por IP — y ese cubo de 60 por minuto esta COMPARTIDO con toda la API de la
+// tienda: articulos, carrito, categorias, pedidos.
+// O sea que sin esta exclusion el tracking (que hace flush cada 5 segundos) le come el cupo al
+// comprador, y los 429 no caen en el tracking sino en los requests que si importan. Peor todavia
+// con varios compradores detras de un mismo NAT.
+// La ruta conserva su propio 'throttle:60,1', que es un cubo aparte: sigue acotada, pero con su
+// presupuesto propio y no con el de la navegacion.
+Route::post('buyer-tracking/events', 'BuyerTrackingController@store')
+	->middleware('throttle:60,1')
+	->withoutMiddleware('throttle:api');
 
 
 // Route::middleware('auth:sanctum')->group(function() {
