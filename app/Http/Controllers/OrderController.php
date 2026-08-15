@@ -6,6 +6,7 @@ use App\Buyer;
 use App\Cart;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartHelper;
+use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
 use App\Http\Controllers\Helpers\StringHelper;
@@ -83,21 +84,49 @@ class OrderController extends Controller
         // ID del buyer autenticado (null si no hay sesión activa en el guard 'buyer')
         $buyer_id = $this->buyerId();
 
-        // Guard: sin buyer autenticado no se ejecuta la query, se responde order null
-        if (is_null($buyer_id)) {
-            return response()->json(['order' => null], 200);
-        }
-
         // 'buyer.comercio_city_client' eager-loaded para que el fallback de teléfono
         // del mensaje de WhatsApp en Thanks.vue tenga el dato disponible
-        $order = Order::where('buyer_id', $buyer_id)
-                        ->where('user_id', $commerce_id)
+        $order = Order::where('user_id', $commerce_id)
                         ->orderBy('id', 'DESC')
-                        ->with('articles', 'buyer.comercio_city_client', 'promociones_vinoteca')
-                        ->first();
-        return response()->json(['order' => $order], 200);
+                        ->with('articles', 'buyer.comercio_city_client', 'promociones_vinoteca');
+
+        if (!is_null($buyer_id)) {
+            $order = $order->where('buyer_id', $buyer_id);
+        } else {
+            // Sin sesión de cuenta, el único pedido que esta sesión puede ver es el que ELLA
+            // acaba de crear. Es el caso del comprador que hizo checkout con una cuenta que tiene
+            // contraseña: BuyerController@store ya no lo loguea (era una toma de cuenta por
+            // email), así que acá no hay buyer_id — pero la página de gracias tiene que andar
+            // igual. Resolverlo por buyer_id sería reabrir la puerta que se acaba de cerrar.
+            $pedidos = $this->pedidosDeLaSesion();
+
+            if (empty($pedidos)) {
+                return response()->json(['order' => null], 200);
+            }
+
+            $order = $order->whereIn('id', $pedidos);
+        }
+
+        return response()->json(['order' => $order->first()], 200);
     }
 
+    /**
+     * Crea el pedido.
+     *
+     * 🔴 Dos agujeros que tenia, y ninguno se arreglaba con auth:buyer solo:
+     *
+     *   1. `'buyer_id' => $request->buyer_id ? ... : ...` — el comprador al que se le atribuye el
+     *      pedido venia DEL REQUEST. Cualquiera podia crear un pedido a nombre de otro.
+     *      Ahora el buyer_id del request solo se respeta si quien pide es un VENDEDOR
+     *      (buyers.seller_id no nulo), que es el unico caso legitimo: el vendedor de Golonorte
+     *      cargando el pedido de un cliente (mixins/cart.js:268 lo manda siempre, por eso se
+     *      IGNORA en vez de rechazar el request — asi el SPA viejo cacheado no se rompe).
+     *   2. `Cart::find($request->cart_id)` sin comprobar de quien era el carrito: se podia
+     *      convertir el carrito de otro en un pedido.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\Response
+     */
     function store(Request $request) {
         if ($this->no_es_denuevo_por_mercadopago($request)) {
             // $buyer_id = OrderHelper::getBuyerId($request);
@@ -105,10 +134,26 @@ class OrderController extends Controller
             // Log::info('request:');
             // Log::info($request);
             $cart = Cart::find($request->cart_id);
+
+            if (!CartOwnershipHelper::puede($cart)) {
+                Log::warning('OrderController@store: se intento crear un pedido con un carrito ajeno', [
+                    'cart_id' => $request->cart_id,
+                ]);
+                return response(null, 403);
+            }
+
+            $buyer_id = $this->resolverBuyerIdDelPedido($request);
+
+            // orders.buyer_id es NOT NULL: sin identidad el insert reventaba en 500. Se corta
+            // antes y se dice que pasa.
+            if (is_null($buyer_id)) {
+                return response()->json(['error' => 'No hay comprador identificado para este pedido'], 401);
+            }
+
             Log::info('Fecha entrega carrito: '.$cart->fecha_entrega);
         	$order = Order::create([
                 'num'                       => $this->num('orders', $request->commerce_id),
-                'buyer_id'                  => $request->buyer_id ? $request->buyer_id : $this->buyerId(),
+                'buyer_id'                  => $buyer_id,
                 'seller_id'                 => $request->seller_id ? $request->seller_id : null,
         		// 'buyer_id'                  => $buyer_id,
         		'user_id'                   => $request->commerce_id,
@@ -202,6 +247,13 @@ class OrderController extends Controller
 
             Log::info('Termino');
 
+            // Se registra el pedido como propio de esta sesion. Lo necesita la pagina de gracias
+            // cuando la compra se hizo con identidad de checkout y no con sesion de cuenta: ver
+            // current() mas arriba y Controller@checkoutBuyerId.
+            $pedidos = $this->pedidosDeLaSesion();
+            $pedidos[] = (int) $order->id;
+            session()->put(self::CLAVE_PEDIDOS, array_values(array_slice(array_unique($pedidos), -10)));
+
             // Devuelve el id del pedido recien creado. Antes esto era un `response(null, 201)`
             // con el cuerpo VACIO, y eso dejaba ciego al evento `checkout_complete` del tracking
             // (mision tracking-buyers-tienda) justo en el medio de pago dominante: en la rama de
@@ -216,6 +268,42 @@ class OrderController extends Controller
         	return response()->json(['order_id' => $order->id], 201);
         }
         return response(null, 200);
+    }
+
+    /**
+     * Decide a que comprador se le atribuye el pedido.
+     *
+     * El `buyer_id` del request SOLO se respeta si quien pide es un vendedor. Es el unico caso
+     * legitimo en el que alguien carga un pedido a nombre de otro: el vendedor de Golonorte
+     * eligiendo un cliente en components/payment/components/SellerSelectClient.vue.
+     *
+     * Para todos los demas se usa la identidad de la sesion: el comprador logueado, o la identidad
+     * de checkout que dejo BuyerController@store para el invitado.
+     *
+     * ⚠️ Se IGNORA el buyer_id ajeno en vez de rechazar el request a proposito. mixins/cart.js:268
+     * lo manda SIEMPRE (viene del store del carrito, que es null salvo en el flujo de vendedor),
+     * asi que rechazar rompería al SPA viejo cacheado en cuanto ese valor viniera con algo.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return int|null
+     */
+    function resolverBuyerIdDelPedido($request) {
+        $propio = $this->checkoutBuyerId();
+
+        if ($request->buyer_id) {
+            $vendedor = $this->buyer();
+
+            if (!is_null($vendedor) && !is_null($vendedor->seller_id)) {
+                return (int) $request->buyer_id;
+            }
+
+            Log::warning('OrderController@store: se ignoro un buyer_id del request de alguien que no es vendedor', [
+                'buyer_id_pedido' => $request->buyer_id,
+                'buyer_id_real'   => $propio,
+            ]);
+        }
+
+        return $propio;
     }
 
     /**

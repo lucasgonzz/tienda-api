@@ -1,0 +1,160 @@
+<?php
+
+namespace App\Http\Controllers\Helpers;
+
+use Illuminate\Support\Facades\Auth;
+
+/**
+ * Titularidad del carrito.
+ *
+ * ── Por que existe ────────────────────────────────────────────────────────────────────────────
+ *
+ * Hasta el 15/8/2026 CartController resolvia el carrito con Cart::find($id) a secas, sin
+ * comprobar de quien era. Medido con curl sin ninguna sesion: `DELETE /api/carts/{id}` borro de
+ * verdad el carrito de otro comprador, y `GET /api/carts/from-order/{order_id}` devolvio el
+ * carrito completo de otro, enumerable por id.
+ *
+ * El arreglo obvio —meter las rutas de carrito detras de auth— NO se puede hacer: la tienda
+ * permite comprar sin registrarse, y hay caminos del SPA que guardan el carrito antes de que el
+ * comprador se identifique (components/payment/components/payment-method/CardPaymentMethod.vue:52
+ * al elegir el medio de pago, y mixins/articles.js:36 al sacar un articulo). Un invitado no tiene
+ * buyer_id: no hay con que acotarlo.
+ *
+ * Lo que si tiene un invitado es sesion. Se verifico midiendo, no suponiendo: con el Origin del
+ * dominio stateful, la respuesta trae la cookie laravel_session y la sesion sobrevive entre
+ * requests (se hizo POST /api/buyer y despues GET /api/user con el mismo cookie jar, y devolvio
+ * el comprador). Entonces la titularidad se guarda ahi.
+ *
+ * ── El detalle que hace que esto funcione ─────────────────────────────────────────────────────
+ *
+ * Auth::guard('buyer')->login() llama internamente a session->migrate(true), y Store::migrate()
+ * (vendor/laravel/framework/src/Illuminate/Session/Store.php) destruye el registro viejo y
+ * regenera el id, pero NO toca $this->attributes. O sea que la lista de carritos propios
+ * SOBREVIVE al login del invitado en el checkout. Si no fuera asi, todo este mecanismo se caeria
+ * justo en el paso mas importante.
+ *
+ * ── Y el que casi lo rompe ────────────────────────────────────────────────────────────────────
+ *
+ * CartController nunca rellenaba cart.buyer_id despues de que el invitado se identifica: lo setea
+ * al crear (con null) y no lo vuelve a tocar. O sea que hoy lastCart encuentra el carrito del
+ * invitado por el propio bug del whereNull, y ahi es donde el SPA reconstruye el carrito al
+ * volver de Mercado Pago (App.vue -> mixins/app.js -> cart/getLastCart). Cerrar el whereNull sin
+ * adoptar el carrito rompia el retorno de Mercado Pago. De ahi adoptar().
+ *
+ * ── Si no hay sesion ──────────────────────────────────────────────────────────────────────────
+ *
+ * EnsureFrontendRequestsAreStateful solo monta StartSession cuando el Referer/Origin matchea
+ * SANCTUM_STATEFUL_DOMAINS (ver el comentario de app/Http/Middleware/VerifyCsrfToken.php). Un
+ * curl pelado no lo matchea, la sesion no arranca, ids() devuelve [] y puede() da false: 403 en
+ * todo. Ese es exactamente el atacante, y el modo de falla es el correcto.
+ */
+class CartOwnershipHelper
+{
+    /** Clave de la lista de carritos propios dentro de la sesion. */
+    const CLAVE = 'carritos_propios';
+
+    /**
+     * Tope de ids guardados. La sesion de un comprador que navega mucho no puede crecer sin
+     * techo: cada carrito abandonado dejaria un id adentro de la cookie de sesion para siempre.
+     */
+    const TOPE = 20;
+
+    /**
+     * Registra un carrito recien creado como propio de esta sesion.
+     *
+     * @param  int  $cart_id
+     * @return void
+     */
+    public static function registrar($cart_id)
+    {
+        $ids = self::ids();
+        $ids[] = (int) $cart_id;
+
+        // Se dejan los ultimos TOPE. array_values para que no queden agujeros en las claves:
+        // la lista se serializa a la sesion y un array asociativo la ensucia sin necesidad.
+        $ids = array_values(array_slice(array_unique($ids), -self::TOPE));
+
+        session()->put(self::CLAVE, $ids);
+    }
+
+    /**
+     * Ids de carrito que esta sesion creo.
+     *
+     * @return int[]
+     */
+    public static function ids()
+    {
+        $ids = session()->get(self::CLAVE, []);
+
+        return is_array($ids) ? $ids : [];
+    }
+
+    /**
+     * Indica si el carrito es de quien esta pidiendo.
+     *
+     * Dos formas de serlo, y las dos hacen falta:
+     *   - lo creo esta sesion (el invitado, que no tiene buyer_id);
+     *   - es del comprador autenticado (el que vuelve al dia siguiente con su cuenta, cuya
+     *     sesion ya no tiene la lista).
+     *
+     * @param  \App\Cart|null  $cart
+     * @return bool
+     */
+    public static function puede($cart)
+    {
+        if (is_null($cart)) {
+            return false;
+        }
+
+        if (in_array((int) $cart->id, self::ids(), true)) {
+            return true;
+        }
+
+        $buyer_id = self::buyerId();
+
+        return !is_null($buyer_id) && !is_null($cart->buyer_id) && (int) $cart->buyer_id === $buyer_id;
+    }
+
+    /**
+     * Le escribe el buyer_id al carrito de un invitado que acaba de identificarse.
+     *
+     * Sin esto, un carrito creado sin sesion de comprador queda con buyer_id NULL para siempre, y
+     * la unica forma de volver a encontrarlo seria el whereNull que esta mision cierra.
+     *
+     * @param  \App\Cart|null  $cart
+     * @return void
+     */
+    public static function adoptar($cart)
+    {
+        if (is_null($cart) || !is_null($cart->buyer_id)) {
+            return;
+        }
+
+        $buyer_id = self::buyerId();
+
+        if (is_null($buyer_id) || !self::puede($cart)) {
+            return;
+        }
+
+        $cart->buyer_id = $buyer_id;
+        $cart->save();
+    }
+
+    /**
+     * Id del comprador autenticado en el guard 'buyer', o null.
+     *
+     * Se repite la logica de Controller@buyerId a proposito: este helper es estatico y lo llaman
+     * controllers distintos; hacerlo depender de una instancia de Controller lo ataria a quien lo
+     * usa.
+     *
+     * @return int|null
+     */
+    private static function buyerId()
+    {
+        if (Auth::guard('buyer')->check()) {
+            return (int) Auth::guard('buyer')->id();
+        }
+
+        return null;
+    }
+}

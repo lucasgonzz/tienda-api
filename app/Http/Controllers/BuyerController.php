@@ -26,9 +26,44 @@ class BuyerController extends Controller
 	}
 
 
-	// La usan los vendedores de Golonorte
+	/**
+	 * Buscador de clientes para el VENDEDOR que carga un pedido a nombre de otro.
+	 * La usan los vendedores de Golonorte.
+	 *
+	 * 🔴 Era la peor fuga de la API. Ruta publica, sin auth, y devolvia la base de compradores
+	 * completa del comercio con `withAll()`: nombre, mail, telefono, direccion, el Client del ERP
+	 * — y el hash bcrypt de la contraseña, el remember_token y el verification_code, porque
+	 * App\Buyer no declaraba $hidden. Medido el 15/8/2026 con curl sin sesion.
+	 *
+	 * Y estaba FUERA del grupo auth:sanctum comentado, asi que descomentar ese grupo ni la habria
+	 * tocado.
+	 *
+	 * Ahora tiene tres candados, y hacen falta los tres:
+	 *
+	 *   1. auth:buyer en la ruta (routes/api.php). Los vendedores son compradores logueados: el
+	 *      SPA solo muestra este buscador con v-if="user.seller_id"
+	 *      (components/payment/components/SellerSelectClient.vue:3) y `user` sale de /api/user.
+	 *   2. seller_id obligatorio. Con auth:buyer solo no alcanza: cualquier invitado que confirmo
+	 *      un pedido queda logueado en el guard 'buyer', y podria llamarla.
+	 *   3. El comercio sale del vendedor, NO de la URL. Sin esto un vendedor de un comercio se
+	 *      lleva la base de compradores de otro cambiando un numero.
+	 *
+	 * Y aun con los tres, se devuelve un select explicito en vez de confiar en el $hidden del
+	 * modelo: lo que el vendedor necesita para elegir un cliente es nombre, mail y direccion. Una
+	 * lista blanca no se puede filtrar sola cuando alguien agregue una columna nueva a `buyers`.
+	 *
+	 * @param  string  $query
+	 * @param  int     $commerce_id  se ignora a proposito, ver el punto 3
+	 * @return \Illuminate\Http\JsonResponse
+	 */
 	function search($query, $commerce_id) {
-		$buyers = Buyer::where('user_id', $commerce_id)
+		$vendedor = $this->buyer();
+
+		if (is_null($vendedor) || is_null($vendedor->seller_id)) {
+			return response()->json(['buyers' => []], 403);
+		}
+
+		$buyers = Buyer::where('user_id', $vendedor->user_id)
 						->where(function($que) use ($query) {
 
 							$que->where('name', 'LIKE', "%$query%")
@@ -36,7 +71,8 @@ class BuyerController extends Controller
 						})
 						->whereNotNull('comercio_city_client_id')
 						->orderBy('name', 'ASC')
-						->withAll()
+						->select('id', 'name', 'surname', 'email', 'phone', 'address', 'ciudad', 'barrio', 'user_id', 'comercio_city_client_id')
+						->with('comercio_city_client')
 						->get();
 
 		return response()->json(['buyers' => $buyers], 200);
@@ -105,8 +141,39 @@ class BuyerController extends Controller
 						->first();
 	}
 
+	/**
+	 * Identifica al comprador para poder terminar la compra.
+	 *
+	 * 🔴 ESTE METODO ERA UNA TOMA DE CUENTA. Hacia Auth::guard('buyer')->login($model) sobre
+	 * cualquier comprador encontrado por email + comercio, sin pedir contraseña ni nada. O sea:
+	 * sabiendo el mail de alguien, POST /api/buyer te dejaba adentro de su cuenta. Medido el
+	 * 15/8/2026 con curl: se entro a una cuenta con contraseña mandando solo el email, y despues
+	 * GET /api/user devolvio esa cuenta, con sus pedidos y su cuenta corriente detras.
+	 *
+	 * No se podia sacar el login a secas: la atribucion del pedido de invitado depende de que
+	 * quede una identidad en la sesion (orders.buyer_id es NOT NULL). Entonces se parte en dos:
+	 *
+	 *   - Registro SIN contraseña -> no es una cuenta, es una ficha que creo un checkout de
+	 *     invitado anterior. Se loguea igual que antes: no hay credencial que proteger y sacarlo
+	 *     cambiaria el comportamiento del flujo mas usado de la tienda.
+	 *   - Registro CON contraseña -> es una cuenta de verdad. NO se abre sesion: se guarda una
+	 *     identidad de checkout acotada (Controller::CLAVE_CHECKOUT), que alcanza para atribuirle
+	 *     el pedido y nada mas. Para entrar a la cuenta hay que loguearse con la contraseña, como
+	 *     corresponde.
+	 *
+	 * El SPA no se entera de la diferencia: sigue recibiendo el mismo modelo en la misma forma y
+	 * sigue llamando a los mismos endpoints. Por eso esto no obliga a desplegar tienda-spa.
+	 *
+	 * @param  \App\Buyer  $model
+	 * @return void
+	 */
 	function login($model) {
-		Auth::guard('buyer')->login($model);
+		if (is_null($model->password) || $model->password === '') {
+			Auth::guard('buyer')->login($model);
+			return;
+		}
+
+		session()->put(self::CLAVE_CHECKOUT, (int) $model->id);
 	}
 
 	function update(Request $request) {

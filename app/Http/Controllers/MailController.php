@@ -10,9 +10,24 @@ use Illuminate\Support\Facades\Mail;
 
 class MailController extends Controller
 {
+    /**
+     * Formulario de contacto de la tienda. Publico por definicion, con throttle en la ruta.
+     *
+     * El guard tapa un 500 medido: con un commerce_id inexistente, o con un comercio sin email
+     * cargado, Mail::to(null) tira LogicException ("An email must have a To"). En una ruta
+     * publica eso es un 500 que cualquiera puede disparar a voluntad, y encima con la traza de
+     * Symfony adentro de la respuesta cuando APP_DEBUG esta prendido.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\Response
+     */
     function mailToCommerce(Request $request) {
 
         $user = User::find($request->commerce_id);
+
+        if (is_null($user) || empty($user->email)) {
+            return response()->json(['error' => 'El comercio no tiene un correo de contacto configurado'], 422);
+        }
 
         $mensaje = [
             [
