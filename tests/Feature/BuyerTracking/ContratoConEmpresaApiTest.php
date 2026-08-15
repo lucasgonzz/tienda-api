@@ -137,6 +137,21 @@ class ContratoConEmpresaApiTest extends TestCase
 
         Log::shouldNotHaveReceived('warning');
         Log::shouldNotHaveReceived('error');
+
+        /*
+         * Pero mudo del todo tampoco: queda UNA linea en nivel info, una sola por proceso.
+         *
+         * Es la otra mitad del mismo razonamiento. Sin ninguna señal, "la tienda esta esperando
+         * el esquema" y "hace tres semanas que no se captura nada y nadie sabe por que" se ven
+         * exactamente igual desde afuera. Con nivel info y una vez por proceso, el operador lo
+         * puede ver sin que se le llene el log — que es justo lo que la asercion de arriba
+         * protege.
+         */
+        Log::shouldHaveReceived('info')
+            ->withArgs(function ($mensaje) {
+                return is_string($mensaje) && strpos($mensaje, 'no existe todavia en esta base') !== false;
+            })
+            ->once();
     }
 
     /**

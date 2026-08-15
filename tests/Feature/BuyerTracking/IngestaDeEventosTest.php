@@ -9,6 +9,7 @@ use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Tests\TestCase;
@@ -419,6 +420,104 @@ class IngestaDeEventosTest extends TestCase
         $this->postJson(self::RUTA, ['commerce_id' => 'abc', 'events' => [$this->evento('product_view')]])->assertStatus(204);
 
         $this->assertCount(0, $this->filas());
+    }
+
+    /**
+     * Los descartes de CONFIGURACION dejan constancia; los de cada evento, no.
+     *
+     * Es la mitad que le faltaba a la promesa del helper. La respuesta HTTP tiene que ser muda
+     * para el comprador, pero si el helper tambien es mudo en el log, "hace tres semanas que no
+     * se captura nada" se vuelve algo que nadie puede notar — exactamente lo que el docblock de
+     * la clase dice estar evitando.
+     *
+     * Las tres cosas que fija, y las tres importan:
+     *   - que avise cuando el comercio no tiene la extension pero el SPA igual manda eventos
+     *     (o sea, cuando el interruptor del front y el del back estan desalineados);
+     *   - que avise UNA SOLA VEZ por proceso, y no por lote: al ritmo de un flush cada 5
+     *     segundos serian miles de lineas por dia, y ese ruido tapa las fallas de verdad;
+     *   - que NO lo reporte como warning ni como error: la extension apagada es una decision
+     *     valida del comercio, no una falla, y esos dos niveles quedan para el catch.
+     */
+    public function test_avisa_una_sola_vez_que_el_comercio_no_tiene_la_extencion()
+    {
+        /* A proposito NO se llama a prenderLaExtencion(). */
+
+        Log::spy();
+
+        for ($i = 0; $i < 3; $i++) {
+            $this->postJson(self::RUTA, [
+                'commerce_id' => $this->comercio->id,
+                'events'      => [$this->evento('product_view', ['article_id' => 7])],
+            ])->assertStatus(204);
+        }
+
+        Log::shouldHaveReceived('info')
+            ->withArgs(function ($mensaje) {
+                return is_string($mensaje) && strpos($mensaje, 'no tiene la extension') !== false;
+            })
+            ->once();
+
+        Log::shouldNotHaveReceived('warning');
+        Log::shouldNotHaveReceived('error');
+    }
+
+    /**
+     * Idem con el otro descarte de configuracion: llegan eventos y no viene el commerce_id.
+     *
+     * Sin el commerce_id no se va a capturar NADA nunca, y sin esta linea eso es
+     * indistinguible de "no hubo trafico".
+     */
+    public function test_avisa_una_sola_vez_que_llegan_eventos_sin_commerce_id()
+    {
+        $this->prenderLaExtencion();
+
+        Log::spy();
+
+        for ($i = 0; $i < 3; $i++) {
+            $this->postJson(self::RUTA, [
+                'events' => [$this->evento('product_view', ['article_id' => 7])],
+            ])->assertStatus(204);
+        }
+
+        Log::shouldHaveReceived('info')
+            ->withArgs(function ($mensaje) {
+                return is_string($mensaje) && strpos($mensaje, 'sin un commerce_id valido') !== false;
+            })
+            ->once();
+
+        Log::shouldNotHaveReceived('warning');
+        Log::shouldNotHaveReceived('error');
+    }
+
+    /**
+     * La contracara, y es la que evita que el arreglo del log se vuelva el ruido que venia a
+     * evitar: los descartes evento por evento NO se loguean.
+     *
+     * Un tipo inventado o un uuid mal formado son normales —los manda un navegador— y no
+     * significan que la captura este rota. Loguearlos seria una linea por evento malo de cada
+     * visitante.
+     */
+    public function test_los_descartes_de_cada_evento_no_se_loguean()
+    {
+        $this->prenderLaExtencion();
+
+        Log::spy();
+
+        $this->postJson(self::RUTA, [
+            'commerce_id' => $this->comercio->id,
+            'events'      => [
+                $this->evento('robar_la_base', ['article_id' => 1]),
+                ['event_type' => 'product_view', 'visitor_id' => 'no-soy-un-uuid', 'session_id' => $this->session_id],
+                $this->evento('product_view', ['article_id' => 2, 'amount' => 1.0E+20]),
+                $this->evento('product_view', ['article_id' => 3]),
+            ],
+        ])->assertStatus(204);
+
+        $this->assertCount(2, $this->filas(), 'el escenario no se ejercito: no se descarto nada');
+
+        Log::shouldNotHaveReceived('info');
+        Log::shouldNotHaveReceived('warning');
+        Log::shouldNotHaveReceived('error');
     }
 
     // ---------------------------------------------------------------------------------------
