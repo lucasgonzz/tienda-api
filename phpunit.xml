@@ -21,8 +21,22 @@
         <env name="APP_ENV" value="testing"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="CACHE_DRIVER" value="array"/>
-        <env name="DB_CONNECTION" value="sqlite"/>
-        <env name="DB_DATABASE" value=":memory:"/>
+        <!--
+            🔴 NO descomentar estas dos sin leer esto.
+
+            Los <env> de phpunit se aplican ANTES del bootstrap de Laravel, asi que le GANAN a
+            .env.testing: con estas dos activas, toda la suite corre sobre sqlite en memoria sin
+            importar lo que diga el .env.testing del slot.
+
+            Y sqlite no sirve para esta suite: `tienda-api` NO tiene database/migrations (el esquema
+            lo gobierna `empresa-api`), asi que una base sqlite vacia no tiene ninguna de las 374
+            tablas contra las que corre la tienda. Sobre sqlite solo se puede probar lo que arme su
+            propio esquema a mano, que es justamente lo que hace BroadcastOrderCreatedTest — y por
+            eso ese test ahora se declara su conexion sqlite el mismo, en vez de dependerla de aca.
+
+            <env name="DB_CONNECTION" value="sqlite"/>
+            <env name="DB_DATABASE" value=":memory:"/>
+        -->
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>

@@ -5,6 +5,11 @@
 /vendor
 .env
 .env.backup
+# Repositorio publico: ningun .env con valores reales entra al historico. El propio .env del repo
+# lo advierte. Se excluyen todas las variantes (.env.testing, .env.local, .env.production...) y se
+# deja pasar solo el ejemplo, que es el unico sin credenciales.
+.env.*
+!.env.example
 .phpunit.result.cache
 Homestead.json
 Homestead.yaml

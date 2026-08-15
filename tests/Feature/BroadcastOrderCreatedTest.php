@@ -36,6 +36,32 @@ class BroadcastOrderCreatedTest extends TestCase
     {
         parent::setUp();
 
+        /**
+         * Este test se arma su propio esquema con Schema::create, asi que necesita una base VACIA y
+         * descartable. Antes se la daba phpunit.xml, que ponia toda la suite en sqlite en memoria;
+         * esas dos lineas se comentaron para que la suite corra contra la base real del slot (que es
+         * la unica que tiene las 374 tablas, porque este repo no tiene migraciones propias).
+         *
+         * 🔴 La conexion se declara aca a proposito: la necesidad es de ESTE test, no de la suite.
+         * Sin esto, los Schema::create de abajo le pegan a la base real y revientan con
+         * "Base table or view already exists".
+         */
+        config([
+            'database.default'                     => 'sqlite',
+            'database.connections.sqlite.database'  => ':memory:',
+        ]);
+        DB::purge('sqlite');
+
+        /**
+         * Red de seguridad: si algun dia esa config deja de tomar efecto, el test tiene que
+         * detenerse ACA y no seguir hasta los Schema::create sobre la base real del slot.
+         */
+        $this->assertSame(
+            'sqlite',
+            DB::connection()->getDriverName(),
+            'este test tiene que correr sobre sqlite en memoria, nunca sobre la base real'
+        );
+
         Schema::create('users', function (Blueprint $table) {
             $table->increments('id');
             $table->string('name')->nullable();
