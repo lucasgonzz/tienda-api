@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Titularidad del carrito.
@@ -36,10 +37,18 @@ use Illuminate\Support\Facades\Auth;
  * ── Y el que casi lo rompe ────────────────────────────────────────────────────────────────────
  *
  * CartController nunca rellenaba cart.buyer_id despues de que el invitado se identifica: lo setea
- * al crear (con null) y no lo vuelve a tocar. O sea que hoy lastCart encuentra el carrito del
- * invitado por el propio bug del whereNull, y ahi es donde el SPA reconstruye el carrito al
- * volver de Mercado Pago (App.vue -> mixins/app.js -> cart/getLastCart). Cerrar el whereNull sin
- * adoptar el carrito rompia el retorno de Mercado Pago. De ahi adoptar().
+ * al crear (con null) y no lo vuelve a tocar. O sea que un carrito creado sin sesion de comprador
+ * quedaba con buyer_id NULL para siempre, y la unica forma de volver a encontrarlo era el
+ * whereNull que esta mision cierra. De ahi adoptar(): sin el, un comprador que se identifica en
+ * el checkout pierde su carrito en cuanto se le vence la sesion.
+ *
+ * ⚠️ Precision que conviene tener escrita, porque es facil creer lo contrario: esto NO arregla el
+ * retorno de Mercado Pago de un INVITADO. `cart/getLastCart` se dispara desde
+ * App.vue::callAuthMethods(), que esta detras de `if (this.authenticated)`, y `authenticated`
+ * solo se pone en true cuando GET /api/user devuelve 200. Un invitado nunca lo es, asi que por
+ * ese camino lastCart no se llama nunca — ni antes ni ahora. Para el invitado la titularidad la
+ * sostiene la lista de la sesion, no la adopcion. adoptar() sirve para el comprador CON cuenta,
+ * cuyo carrito de invitado previo pasa a quedar atado a su buyer_id.
  *
  * ── Si no hay sesion ──────────────────────────────────────────────────────────────────────────
  *
@@ -84,9 +93,37 @@ class CartOwnershipHelper
      */
     public static function ids()
     {
+        self::avisarSiNoHaySesion();
+
         $ids = session()->get(self::CLAVE, []);
 
         return is_array($ids) ? $ids : [];
+    }
+
+    /**
+     * Deja constancia en el log cuando la sesion no arranco.
+     *
+     * 🔴 Existe porque el modo de falla de esta funcionalidad es MUDO. Si un cliente no tiene
+     * SANCTUM_STATEFUL_DOMAINS bien seteado, EnsureFrontendRequestsAreStateful no monta
+     * StartSession, la lista de carritos propios queda vacia y el comprador recibe 403 al
+     * modificar SU PROPIO carrito. Del lado del SPA eso cae en un .catch() que solo hace
+     * console.log (store/cart.js), o sea que el comerciante ve "no puedo comprar" y no hay ni un
+     * error en ningun lado que explique por que.
+     *
+     * Con esto, al menos queda una linea que nombra la causa.
+     *
+     * @return void
+     */
+    private static function avisarSiNoHaySesion()
+    {
+        $request = request();
+
+        if (!is_null($request) && !$request->hasSession()) {
+            Log::warning('CartOwnershipHelper: no hay sesion en el request, el comprador no va a poder operar su carrito. Revisar SANCTUM_STATEFUL_DOMAINS del .env contra el dominio del SPA.', [
+                'ruta'   => $request->path(),
+                'origin' => $request->headers->get('Origin'),
+            ]);
+        }
     }
 
     /**

@@ -156,6 +156,49 @@ class SuperficiePublicaTest extends TestCase
     }
 
     /**
+     * 🔴 Cerrar la toma de sesion no alcanzaba: POST /api/buyer seguia VOLCANDO el perfil entero
+     * del comprador (via el scope withAll(): direcciones, el Client del ERP y todo su historial
+     * de mensajes privados) a cualquiera que supiera el mail. Lo encontro la verificacion
+     * independiente, despues del primer arreglo.
+     */
+    public function test_no_se_puede_leer_el_perfil_de_una_cuenta_ajena_mandando_solo_el_email()
+    {
+        $respuesta = $this->json('POST', '/api/buyer', [
+            'email'       => $this->victima->email,
+            'commerce_id' => $this->comercio->id,
+        ])->assertStatus(200);
+
+        $modelo = $respuesta->json('model');
+
+        foreach (['name', 'surname', 'phone', 'email', 'messages', 'comercio_city_client', 'addresses'] as $clave) {
+            $this->assertArrayNotHasKey($clave, $modelo,
+                'POST /api/buyer no puede devolver '.$clave.' de una cuenta ajena: es una ruta publica resuelta por email.');
+        }
+    }
+
+    /**
+     * 🔴 Y tampoco puede ESCRIBIRLE. La ruta es publica y se resuelve por email: si actualizara la
+     * direccion de cualquiera, se le podria reescribir la direccion de entrega a otra persona en
+     * la base que la tienda comparte con el ERP.
+     */
+    public function test_no_se_puede_pisar_la_direccion_de_una_cuenta_ajena()
+    {
+        $original = $this->victima->address;
+
+        $this->json('POST', '/api/buyer', [
+            'email'       => $this->victima->email,
+            'commerce_id' => $this->comercio->id,
+            'address'     => 'Calle Del Atacante 999',
+            'ciudad'      => 'Ciudad Falsa',
+        ])->assertStatus(200);
+
+        $this->victima->refresh();
+
+        $this->assertSame($original, $this->victima->address,
+            'La direccion de una cuenta con credencial no se puede cambiar desde una ruta publica.');
+    }
+
+    /**
      * La contracara: la ficha de un invitado no es una cuenta y tiene que seguir logueandose, o se
      * rompe el flujo mas usado de la tienda.
      */

@@ -110,28 +110,79 @@ class BuyerController extends Controller
 			$model = $this->getFullBuyer($request);
 			$this->login($model);
 
-			return response()->json(['model' => $model], 201);
+			return response()->json(['model' => $this->modeloParaElCheckout($model)], 201);
 		}
 
-		// Buyer existente: actualizar solo address, ciudad y barrio (si vienen en el request con contenido)
-		// 🔴 PROHIBIDO tocar name, phone, o cualquier otra columna
-		// 🔴 PROHIBIDO tocar la relación comercio_city_client o el Client del ERP
-		if (isset($request->address) && trim($request->address) !== '') {
-			$model->address = trim($request->address);
-		}
-		if (isset($request->ciudad) && trim($request->ciudad) !== '') {
-			$model->ciudad = trim($request->ciudad);
-		}
-		if (isset($request->barrio) && trim($request->barrio) !== '') {
-			$model->barrio = trim($request->barrio);
-		}
-		$model->save();
+		// 🔴 Desde el 15/8/2026, la actualizacion de la direccion SOLO corre si el registro es una
+		// ficha de invitado. Esta ruta es publica y se resuelve por email: si tambien escribiera
+		// sobre cuentas con credencial, cualquiera podria reescribirle la direccion de entrega a
+		// otra persona —de forma permanente y en la base que comparte con el ERP— sabiendo su
+		// mail. El pedido igual sale a la direccion correcta: OrderController@get_address le da
+		// prioridad al `address` del request, que es la que el comprador vio en pantalla.
+		if ($this->esFichaDeInvitado($model)) {
+			// Buyer existente: actualizar solo address, ciudad y barrio (si vienen en el request con contenido)
+			// 🔴 PROHIBIDO tocar name, phone, o cualquier otra columna
+			// 🔴 PROHIBIDO tocar la relación comercio_city_client o el Client del ERP
+			if (isset($request->address) && trim($request->address) !== '') {
+				$model->address = trim($request->address);
+			}
+			if (isset($request->ciudad) && trim($request->ciudad) !== '') {
+				$model->ciudad = trim($request->ciudad);
+			}
+			if (isset($request->barrio) && trim($request->barrio) !== '') {
+				$model->barrio = trim($request->barrio);
+			}
+			$model->save();
 
-		// Refrescar el modelo con las relaciones (withAll) para que la respuesta vuelva
-		// con la dirección actualizada, no la vieja
-		$model = $this->getFullBuyer($request);
+			// Refrescar el modelo con las relaciones (withAll) para que la respuesta vuelva
+			// con la dirección actualizada, no la vieja
+			$model = $this->getFullBuyer($request);
+		}
+
 		$this->login($model);
-		return response()->json(['model' => $model], 200);
+		return response()->json(['model' => $this->modeloParaElCheckout($model)], 200);
+	}
+
+	/**
+	 * Recorta lo que POST /api/buyer devuelve, segun si el registro es una ficha o una cuenta.
+	 *
+	 * 🔴 Esta ruta es PUBLICA y se resuelve por email. Cerrar la toma de sesion no alcanzaba: el
+	 * metodo seguia devolviendo `getFullBuyer()`, que usa el scope withAll() de App\Buyer y trae
+	 * `addresses`, `comercio_city_client` (el registro Client del ERP, que no declara $hidden) y
+	 * **todo el historial de mensajes privados** del comprador con el comercio. O sea que con
+	 * saber un mail se leia el perfil entero de esa persona, 20 veces por minuto.
+	 *
+	 * Que devuelve ahora:
+	 *
+	 *   - Ficha de invitado -> lo mismo que antes, menos los mensajes. Es su propia ficha, no hay
+	 *     credencial de por medio, y el checkout no lee `messages` en ningun lado (verificado en
+	 *     tienda-spa: cero usos en components/payment, mixins/cart.js y store/auth.js).
+	 *   - Cuenta con credencial -> solo lo que el checkout necesita mecanicamente, que es la misma
+	 *     clase de dato que ya devuelve POST /api/buyer/checkout-address. Ese endpoint es publico
+	 *     por decision explicita de Lucas y su docblock dice que a proposito NO devuelve nombre,
+	 *     telefono, el modelo completo ni el Client. Este ahora respeta el mismo limite.
+	 *
+	 * El SPA no se rompe con el modelo recortado: `mixins/cart.js` lee `seller_id` y `address`, y
+	 * la direccion del pedido sale del formulario (`cart.buyer.address`), no de aca.
+	 *
+	 * @param  \App\Buyer  $model
+	 * @return array
+	 */
+	function modeloParaElCheckout($model) {
+		if ($this->esFichaDeInvitado($model)) {
+			$ficha = $model->toArray();
+			unset($ficha['messages']);
+
+			return $ficha;
+		}
+
+		return [
+			'id'        => $model->id,
+			'address'   => $model->address,
+			'ciudad'    => $model->ciudad,
+			'barrio'    => $model->barrio,
+			'seller_id' => $model->seller_id,
+		];
 	}
 
 	function getFullBuyer($request) {

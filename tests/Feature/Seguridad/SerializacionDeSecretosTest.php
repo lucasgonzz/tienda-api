@@ -2,9 +2,12 @@
 
 namespace Tests\Feature\Seguridad;
 
+use App\Address;
 use App\Buyer;
+use App\ExtencionEmpresa;
 use App\OnlineConfiguration;
 use App\User;
+use App\UserConfiguration;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -76,6 +79,19 @@ class SerializacionDeSecretosTest extends TestCase
             'users'                  => new User(),
             'buyers'                 => new Buyer(),
             'online_configurations'  => new OnlineConfiguration(),
+            /*
+             * Las relaciones hijas del comercio viajan ENTERAS en la respuesta publica de
+             * CommerceController@commerce: la lista blanca recorta `users`, no a sus hijos. Hoy
+             * ninguna de estas tablas tiene columnas sensibles (se midio: user_configurations son
+             * flags de negocio, addresses son las sucursales que la tienda muestra, y
+             * extencion_empresas es el catalogo de funcionalidades). Se vigilan igual, porque el
+             * esquema lo gobierna empresa-api y el dia que alguna sume un secreto nadie en este
+             * repo se va a enterar — que es exactamente como llegaron mp_access_token y
+             * google_custom_search_api_key.
+             */
+            'user_configurations'    => new UserConfiguration(),
+            'addresses'              => new Address(),
+            'extencion_empresas'     => new ExtencionEmpresa(),
         ];
 
         $filtradas = [];
