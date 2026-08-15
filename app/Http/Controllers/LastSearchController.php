@@ -10,8 +10,27 @@ use Illuminate\Support\Facades\Auth;
 
 class LastSearchController extends Controller
 {
+    /**
+     * Ultimas busquedas del comprador autenticado.
+     *
+     * 🔴 El guard no es defensivo, tapa una fuga medida. `last_searches.buyer_id` es NULLABLE y
+     * Eloquent convierte where('buyer_id', null) en whereNull('buyer_id'), asi que sin sesion
+     * esta consulta devolvia las busquedas de TODOS los visitantes anonimos — y la tabla ni
+     * siquiera tiene user_id, o sea que cruzaba comercios. Medido el 15/8/2026 con curl sin
+     * sesion: 200 con las busquedas de otro.
+     *
+     * Mismo criterio que OrderController@index: se corta antes de armar la query.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
     function index() {
-        $last_searchs = LastSearch::where('buyer_id', $this->buyerId())
+        $buyer_id = $this->buyerId();
+
+        if (is_null($buyer_id)) {
+            return response()->json(['last_searchs' => []], 200);
+        }
+
+        $last_searchs = LastSearch::where('buyer_id', $buyer_id)
                                     ->orderBy('created_at', 'DESC')
                                     ->get();
         return response()->json(['last_searchs' => $last_searchs], 200);
