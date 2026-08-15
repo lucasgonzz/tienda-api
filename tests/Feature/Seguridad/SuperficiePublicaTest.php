@@ -106,6 +106,7 @@ class SuperficiePublicaTest extends TestCase
             ['GET',  '/api/customers/cards/alguien@example.com'],
             ['GET',  '/api/buyer/search/algo/'.$this->comercio->id],
             ['GET',  '/api/carts/from-order/1'],
+            ['GET',  '/api/client-offers/'.$this->comercio->id],
         ];
 
         foreach ($rutas as $ruta) {

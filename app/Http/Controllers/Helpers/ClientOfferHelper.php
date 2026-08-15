@@ -165,6 +165,15 @@ class ClientOfferHelper
     private static $extenciones = [];
 
     /**
+     * Memoria de las ofertas vigentes de un comprador, indexada por "user_id:client_id".
+     * Es lo que hace que un carrito de N lineas cueste una query y no N. Ver
+     * ofertasDelComprador().
+     *
+     * @var array
+     */
+    private static $ofertas_por_comprador = [];
+
+    /**
      * Cuelga la oferta personalizada del comprador logueado sobre los articulos, y aplica el
      * descuento cuando corresponde. Nunca tira: devuelve la misma coleccion que recibio.
      *
@@ -337,8 +346,32 @@ class ClientOfferHelper
      * desincronice cobra distinto segun el camino — peor que el agujero que arregla. "El
      * cliente fija el precio base" es un agujero PREEXISTENTE y su arreglo es otra mision.
      *
+     * 🔴 Y CUANDO LA OFERTA YA NO EXISTE, EL PRECIO ES LA BASE — no `final_price`.
+     *
+     * Este es el punto que la primera version de este metodo tenia mal, y el defecto era de
+     * plata: devolvia null al no encontrar oferta vigente, y `CartHelper::get_price()` caia
+     * entonces a `$article['final_price']`, que en una oferta 'unidad' es EL PRECIO QUE ESTE
+     * MISMO SERVIDOR dejo ya descontado en la respuesta anterior. Resultado: el comerciante
+     * cancelaba la promocion (o pasaba la medianoche del `hasta`) y la pestaña que habia
+     * quedado abierta la seguia cobrando, sin que nadie manipulara nada y sin ninguna señal.
+     *
+     * Por eso null significa una sola cosa: "este camino no es mio, segui por donde ibas".
+     * Se devuelve null nada mas en tres casos, y en los tres el precio de la linea es
+     * exactamente el de master:
+     *   - el payload no trae `precio_sin_oferta` (SPA viejo, o articulo que nunca tuvo oferta),
+     *   - el comercio tiene la extension de rangos por cantidad vendida (el precio lo resuelve
+     *     get_price_range con article.ranges[].price, que es otro mecanismo entero),
+     *   - el articulo tiene el precio pausado (no hay importe que descontar).
+     * En todo lo demas —sin sesion, sin cliente del ERP, sin las tablas, sin oferta para ese
+     * articulo, oferta vencida, cancelada, de otro cliente, de otro comercio, porcentaje
+     * inservible o tramo que no encaja— la respuesta es LA BASE.
+     *
+     * La unica excepcion es el catch: una excepcion no es evidencia de que la oferta no valga,
+     * y cobrarle al comprador mas de lo que vio en pantalla por una falla nuestra es peor que
+     * seguir confiando en `final_price` como ya hace el resto del carrito.
+     *
      * @param array $article Articulo tal cual lo mando el SPA (con 'id', 'amount', 'precio_sin_oferta').
-     * @param int $user_id Comercio dueño de la instancia.
+     * @param int $user_id Comercio dueño del CARRITO (no el del payload: ver CartHelper::attachArticles).
      * @return float|null
      */
     public static function precioDeLinea($article, $user_id)
@@ -363,21 +396,46 @@ class ClientOfferHelper
                 return null;
             }
 
-            /* Guardas 2 y 3: el comprador de la SESION. El client_id nunca sale del payload. */
-            list($buyer_id, $client_id) = self::buyerYCliente();
+            $base = round((float) $article['precio_sin_oferta'], 2);
 
-            if (is_null($client_id)) {
-                return null;
-            }
-
-            /* Guarda 4: el comercio. */
+            /* Guarda 2: el comercio, que sale del CARRITO y no del payload. */
             $user_id = self::idPositivo($user_id);
 
             if (is_null($user_id)) {
                 return null;
             }
 
-            /* Guarda 5: las tablas. Mismo criterio y misma memoria que aplicar(). */
+            /* Guarda 3: con la extension de rangos por cantidad vendida prendida NO se toca
+               ningun precio, ni aca ni en aplicar(): el precio de esa extension lo resuelve
+               get_price_range() con `article.ranges[].price`, que es otro mecanismo entero.
+               Devolver null deja que CartHelper::get_price() siga por esa rama, intacta. */
+            if (self::comercioTieneRangosPorCantidad($user_id)) {
+                return null;
+            }
+
+            /* Guarda 4: con el precio pausado no hay importe que descontar. Ese flujo ya esta
+               resuelto y probado, y esta mision no lo toca. */
+            if (isset($article['precio_pausado']) && $article['precio_pausado']) {
+                return null;
+            }
+
+            /*
+             * 🔴 DE ACA PARA ABAJO DECIDE EL SERVIDOR, Y NO HAY MAS `return null`.
+             *
+             * El payload declaro una base, o sea que este servidor le aplico una oferta a esta
+             * linea en algun momento. Entonces el precio lo vuelve a decidir el: con oferta
+             * vigente, la base descontada; sin ella, LA BASE. Nunca `final_price`, que es el
+             * numero que quedo en el navegador y que puede ser el descontado de cuando la
+             * oferta valia. Ver el docblock de arriba: ahi esta el defecto que esto arregla.
+             */
+
+            /* El comprador de la SESION. El client_id jamas sale del payload ni de la URL. */
+            list($buyer_id, $client_id) = self::buyerYCliente();
+
+            if (is_null($client_id)) {
+                return $base;
+            }
+
             if (!self::hayTablas()) {
                 self::avisarUnaVez(
                     'tablas',
@@ -385,65 +443,46 @@ class ClientOfferHelper
                     .'No hay ofertas personalizadas hasta que llegue el esquema de empresa-api.'
                 );
 
-                return null;
+                return $base;
             }
 
-            /* Guarda 6: el articulo de la linea. */
             $article_id = self::idPositivo(isset($article['id']) ? $article['id'] : null);
 
             if (is_null($article_id)) {
-                return null;
+                return $base;
             }
 
-            /* Guarda 7: la oferta, releida DE LA BASE. */
-            $ofertas = self::ofertasVigentes($user_id, $client_id, [$article_id]);
+            /* Las ofertas del comprador, releidas DE LA BASE y memoizadas para todo el carrito:
+               un carrito de N lineas hace UNA query, no N. Ver ofertasDelComprador(). */
+            $ofertas = self::ofertasDelComprador($user_id, $client_id);
 
             if (!array_key_exists($article_id, $ofertas)) {
-                return null;
+                return $base;
             }
 
             $oferta = $ofertas[$article_id];
 
-            /* Con la extension de rangos por cantidad vendida prendida NO se toca ningun
-               precio, ni aca ni en aplicar(): el precio de esa extension lo resuelve
-               get_price_range() con `article.ranges[].price`, que es otro mecanismo entero.
-               Devolver null deja que CartHelper::get_price() siga por esa rama, intacta. */
-            if (self::comercioTieneRangosPorCantidad($user_id)) {
-                return null;
-            }
-
-            /* Con el precio pausado no hay importe que descontar: el flujo de precio pausado ya
-               esta resuelto y probado, y esta mision no lo toca. */
-            if (isset($article['precio_pausado']) && $article['precio_pausado']) {
-                return null;
-            }
-
-            $base = round((float) $article['precio_sin_oferta'], 2);
-
             if ($oferta['tipo_descuento'] === self::TIPO_CANTIDAD) {
-                /* Guarda 8: los tramos, solo para esta oferta. */
-                $rangos = self::rangosDe([$oferta['id']]);
-
                 $porcentaje = self::porcentajeDelTramo(
-                    array_key_exists($oferta['id'], $rangos) ? $rangos[$oferta['id']] : [],
+                    $oferta['rangos'],
                     self::cantidadDeLinea($article)
                 );
 
-                /* Sin tramo que encaje no hay descuento que aplicar: se devuelve null y la
-                   linea cobra exactamente lo de hoy. */
+                /* Sin tramo que encaje —una cantidad por debajo del primero— no hay descuento:
+                   se cobra la base, que es el precio de lista. */
                 if (is_null($porcentaje)) {
-                    return null;
+                    return $base;
                 }
 
                 return self::aplicarPorcentaje($base, $porcentaje);
             }
 
             if ($oferta['tipo_descuento'] !== self::TIPO_UNIDAD) {
-                return null;
+                return $base;
             }
 
             if (!self::porcentajeUsable($oferta['porcentaje'])) {
-                return null;
+                return $base;
             }
 
             return self::aplicarPorcentaje($base, $oferta['porcentaje']);
@@ -463,6 +502,7 @@ class ClientOfferHelper
     {
         self::$hay_tablas = null;
         self::$extenciones = [];
+        self::$ofertas_por_comprador = [];
 
         /* Tambien los avisos: si no, el segundo caso del proceso no podria medir que se avisa. */
         self::$avisos = [];
@@ -473,8 +513,9 @@ class ClientOfferHelper
      *
      * 🔴 En consola NO se memoiza, y ese es justamente el punto de la memoria.
      *
-     * "Por request" se cumple en PHP-FPM porque el proceso se recicla entre requests. Un
-     * proceso de consola no: la suite corre todos los casos en el mismo proceso, y ahi el
+     * "Por request" se cumple bajo PHP-FPM porque las estaticas se resetean al terminar el
+     * script, aunque el worker siga vivo y atienda el request siguiente. Un proceso de consola
+     * no termina entre casos: la suite corre todos en el mismo proceso, y ahi el
      * estatico se convierte en un cache persistente que sirve una respuesta vieja — arruinando
      * justo el test que verifica el camino de "las tablas no estan", que las esconde en
      * caliente con RENAME TABLE. Mismo criterio que BuyerTrackingHelper::hayTabla().
@@ -567,8 +608,12 @@ class ClientOfferHelper
                 'porcentaje'      => is_null($fila->porcentaje) ? null : (float) $fila->porcentaje,
                 'desde'           => $fila->desde,
                 'hasta'           => $fila->hasta,
-                /* Arranca en false y lo sube colgarEnElArticulo() si de verdad toco el precio.
-                   false = la tienda muestra la oferta pero no pudo aplicarla. */
+                /* Arranca en false y lo sube colgarEnElArticulo() cuando la oferta SI se puede
+                   aplicar a este articulo. Ojo con el matiz: en 'unidad' eso significa que
+                   `final_price` quedo descontado; en 'cantidad' el precio no se toca —el
+                   servidor no conoce la cantidad en un listado— y el true significa que la
+                   base quedo en `precio_sin_oferta` y los tramos viajan para que el SPA
+                   resuelva el precio. false = la oferta se muestra pero no toca ningun precio. */
                 'precio_aplicado' => false,
                 'rangos'          => [],
             ];
@@ -607,6 +652,49 @@ class ClientOfferHelper
         }
 
         return $rangos;
+    }
+
+    /**
+     * TODAS las ofertas vigentes del comprador en ese comercio, con sus tramos ya colgados,
+     * memoizadas por proceso.
+     *
+     * Existe por el carrito. `precioDeLinea()` corre UNA VEZ POR LINEA, asi que sin memoria un
+     * carrito de 8 articulos hacia 8 queries de ofertas mas 8 de tramos — justo lo contrario de
+     * la disciplina que esta clase declara para el listado ("una query para toda la pagina").
+     * Con esto, el carrito entero cuesta 1 query (y 1 mas si alguna oferta es 'cantidad').
+     *
+     * Se traen TODAS y no solo las de los articulos del carrito porque un comprador tiene un
+     * puñado de ofertas —el motor de empresa-api genera pocas por cliente— y porque asi la
+     * memoria sirve para cualquier linea que venga despues, sin volver a la base.
+     *
+     * En consola no se memoiza, por el mismo motivo que hayTablas(): la suite crea y borra
+     * ofertas entre casos dentro del mismo proceso.
+     *
+     * @param int $user_id
+     * @param int $client_id
+     * @return array Indexado por article_id, con 'rangos' ya resuelto.
+     */
+    private static function ofertasDelComprador($user_id, $client_id)
+    {
+        $clave = $user_id.':'.$client_id;
+
+        if (!array_key_exists($clave, self::$ofertas_por_comprador) || app()->runningInConsole()) {
+            $ofertas = self::ofertasVigentes($user_id, $client_id, null);
+
+            $rangos = self::rangosDeLasOfertasPorCantidad($ofertas);
+
+            foreach ($ofertas as $article_id => $oferta) {
+                if ($oferta['tipo_descuento'] === self::TIPO_CANTIDAD) {
+                    $ofertas[$article_id]['rangos'] = array_key_exists($oferta['id'], $rangos)
+                        ? $rangos[$oferta['id']]
+                        : [];
+                }
+            }
+
+            self::$ofertas_por_comprador[$clave] = $ofertas;
+        }
+
+        return self::$ofertas_por_comprador[$clave];
     }
 
     /**

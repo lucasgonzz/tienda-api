@@ -11,8 +11,14 @@ use App\Http\Controllers\Helpers\ClientOfferHelper;
  *
  * 🔴 Esta ruta vive en el grupo `auth:buyer` y no puede salir de ahi: la oferta es de UN
  * cliente del ERP y se resuelve por `buyers.comercio_city_client_id` de la SESION, nunca por un
- * id de la URL ni del payload. El `commerce_id` de la URL solo acota el comercio; la identidad
- * la pone la sesion.
+ * id de la URL ni del payload.
+ *
+ * 🔴 Y EL COMERCIO TAMBIEN SALE DE LA SESION, no de la URL. Antes salia de la URL, y eso
+ * alcanzaba para que un comprador de A pidiera `/api/client-offers/{id_de_B}` y se llevara los
+ * articulos, los precios y las ofertas de B —acotado a ofertas hechas a esa misma persona, pero
+ * el filtro de aislamiento entre comercios no lo puede elegir quien pregunta—. Es exactamente
+ * lo que este repo ya prohibe en BuyerController@search, cuyo test fija que el controller
+ * IGNORE el id de la URL y use el de la sesion. Aca se hace lo mismo.
  *
  * Toda la logica de lectura vive en ClientOfferHelper, que es la convencion del repo (21
  * helpers estaticos en esa carpeta) y ademas el unico punto que toca las tablas del contrato.
@@ -31,11 +37,22 @@ class ClientOfferController extends Controller
      * cliente, articulo) y el motor del ERP genera un puñado por cliente. Si algun dia crece,
      * se pagina; hoy paginar seria complejidad sin problema.
      *
-     * @param  int  $commerce_id
+     * @param  int  $commerce_id  se ignora cuando el comprador declara su comercio, ver arriba
      * @return \Illuminate\Http\JsonResponse  { articles: [...] }
      */
     function index($commerce_id)
     {
+        /* El comercio sale del comprador de la SESION. El id de la URL queda solo como respaldo
+           para los `buyers` viejos que tengan `user_id` en null (la columna es nullable): esos
+           no pueden declarar su comercio, y sin respaldo la funcionalidad no existiria para
+           ellos. El aislamiento no se apoya en esto de todas formas: la query filtra ADEMAS por
+           el `client_id` de la sesion. */
+        $buyer = auth('buyer')->user();
+
+        $commerce_id = (!is_null($buyer) && !is_null($buyer->user_id))
+            ? (int) $buyer->user_id
+            : (int) $commerce_id;
+
         /* Los scopes checkOnline() y checkStock() de App\Article resuelven el comercio con
            `User::find(request()->commerce_id)`. Como aca el comercio viene por la URL y no por
            query string, sin este merge los dos revientan sobre null. */

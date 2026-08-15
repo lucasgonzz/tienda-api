@@ -41,7 +41,14 @@ class CartHelper {
 
             if (!isset($article['is_promocion_vinoteca'])) {
 
-                $price = Self::get_price($articles, $article, $has_price_ranges, $article_groups);
+                /*
+                 * El comercio sale del CARRITO y no del payload. Es el filtro de aislamiento
+                 * entre comercios de la oferta personalizada: si saliera de
+                 * $articles[0]['user_id'] —que es lo que manda el navegador—, el atacante
+                 * elegiria contra que comercio se busca la oferta. `$cart->user_id` lo escribio
+                 * el servidor al crear el carrito.
+                 */
+                $price = Self::get_price($articles, $article, $has_price_ranges, $article_groups, $cart->user_id);
 
                 Log::info('price para guardar: '.$price);
 
@@ -94,7 +101,7 @@ class CartHelper {
         $cart->save();
     }
 
-    static function get_price($articles, $article, $has_price_ranges, $article_groups) {
+    static function get_price($articles, $article, $has_price_ranges, $article_groups, $user_id = null) {
 
         /*
          * 🔴 La oferta personalizada gana, y la resuelve EL SERVIDOR contra la base.
@@ -105,14 +112,20 @@ class CartHelper {
          * o la de otro cliente — y eso termina en un pedido confirmado, que en esta base es
          * una venta contra la cuenta corriente de una persona.
          *
+         * 🔴 Y GANA TAMBIEN CUANDO LA OFERTA YA NO EXISTE. Eso es lo que hace que la frase de
+         * arriba sea cierta, y la primera version de este cambio no lo hacia: `precioDeLinea`
+         * devolvia null al no encontrar oferta vigente y la linea caia al `final_price` del
+         * payload — que en una oferta 'unidad' es el precio QUE EL PROPIO SERVIDOR dejo ya
+         * descontado en la respuesta anterior. O sea que el comerciante cancelaba la promocion
+         * y la pestaña abierta la seguia cobrando, sin que nadie manipulara nada.
+         *
          * Que NO se toca, a proposito: la BASE del precio la sigue mandando el SPA
          * ($article['precio_sin_oferta']), igual que hoy manda $article['final_price'].
          * Reconstruirla en el servidor exigiria duplicar los cuatro casos de
          * ArticleHelper::checkPriceTypes() adentro de un helper de carrito, y una copia que
          * se desincronice cobra distinto segun el camino — peor que el agujero que arregla.
          * "El cliente fija el precio base" es un agujero PREEXISTENTE y su arreglo es otra
-         * mision; esta no lo empeora ni un poco, y le saca al cliente el control del
-         * descuento, que es lo que esta mision agrega.
+         * mision.
          *
          * Molde: get_price_range() de aca abajo, que ya resuelve un tramo desde `amount`
          * del lado del servidor.
@@ -121,7 +134,7 @@ class CartHelper {
          * dos ramas de abajo quedan identicas a master: un articulo sin oferta cobra
          * exactamente lo de hoy, byte por byte.
          */
-        $precio_con_oferta = ClientOfferHelper::precioDeLinea($article, $articles[0]['user_id']);
+        $precio_con_oferta = ClientOfferHelper::precioDeLinea($article, $user_id);
 
         if (!is_null($precio_con_oferta)) {
             return $precio_con_oferta;
