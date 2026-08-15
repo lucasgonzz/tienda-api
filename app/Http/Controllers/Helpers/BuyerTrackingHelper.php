@@ -97,8 +97,28 @@ class BuyerTrackingHelper
     /** Techo de `unsignedInteger` en MySQL. Ver enteroAcotado. */
     const MAX_UNSIGNED_INT = 4294967295;
 
-    /** Techo de `decimal(22,2)`: 20 digitos enteros. Ver monto. */
-    const MAX_AMOUNT = 99999999999999999999.99;
+    /**
+     * Techo de `amount`, y a proposito MUY por debajo del de la columna. Ver monto().
+     *
+     * 🔴 SI VENIS A "CORREGIRLO" AL MAXIMO DE decimal(22,2), LEE ESTO PRIMERO.
+     *
+     * Aca decia 99999999999999999999.99 (el tope exacto de la columna) y era un bug medido:
+     * ese literal NO ENTRA EN UN DOUBLE, asi que PHP lo parsea como exactamente 1.0E+20, que
+     * es MAYOR que el tope real de decimal(22,2). O sea que la guarda dejaba pasar
+     * justamente el valor que MySQL despues rechaza (`ERROR 1264 Out of range`, verificado con
+     * modo estricto). Y como el insert es UNA SOLA sentencia multi-fila, un evento con
+     * amount: 1e20 se llevaba puesto el LOTE ENTERO de hasta 50 — que es exactamente lo que
+     * el comentario de enteroAcotado() dice estar previniendo.
+     *
+     * De ahi que el techo sea "chico" y no el maximo de la columna:
+     *   - 999999999999.99 es un billon de pesos en un pedido de ecommerce. Sobra por varios
+     *     ordenes de magnitud, y cualquier valor por encima es basura, no un dato;
+     *   - es exactamente representable en un double (999999999999.99 * 100 entra en los 53
+     *     bits de mantisa), asi que la comparacion mide lo que dice medir;
+     *   - al quedar ordenes de magnitud debajo del tope de la columna, ademas le saca el
+     *     combustible al desborde del SUM(amount) del rollup diario de `empresa-api`.
+     */
+    const MAX_AMOUNT = 999999999999.99;
 
     /**
      * Memoria de "existe la tabla", por request. Tres estados y los tres importan:
@@ -114,6 +134,13 @@ class BuyerTrackingHelper
      * @var array
      */
     private static $extenciones = [];
+
+    /**
+     * Avisos de configuracion ya dados en este proceso, indexados por clave. Ver avisarUnaVez.
+     *
+     * @var array
+     */
+    private static $avisos = [];
 
     /**
      * Registra un lote de eventos. Nunca tira: devuelve cuantas filas escribio.
@@ -135,6 +162,21 @@ class BuyerTrackingHelper
             $user_id = self::idPositivo($user_id);
 
             if (is_null($user_id)) {
+                /*
+                 * Descarte de CONFIGURACION, no de un evento: si el SPA manda eventos pero no
+                 * manda el commerce_id, no se va a capturar nada NUNCA, y sin esta linea eso
+                 * es indistinguible de "no hubo trafico". Ver avisarUnaVez.
+                 *
+                 * Se avisa solo si venian eventos: un cuerpo vacio no dice nada de la
+                 * configuracion (puede ser un healthcheck, un bot o un preflight raro).
+                 */
+                if (is_array($eventos) && !empty($eventos)) {
+                    self::avisarUnaVez(
+                        'commerce_id',
+                        'BuyerTrackingHelper: llegan eventos sin un commerce_id valido. No se captura nada.'
+                    );
+                }
+
                 return 0;
             }
 
@@ -168,11 +210,34 @@ class BuyerTrackingHelper
              * Si alguien viene a simplificar esto, es esto lo que tiene que leer primero.
              */
             if (!self::hayTabla()) {
+                /*
+                 * Estado ESPERADO durante la ventana de despliegue, pero que igual tiene que
+                 * poder verse: es la diferencia entre "todavia no llego el esquema" y "hace
+                 * tres semanas que no se captura nada y nadie sabe por que". Una vez por
+                 * proceso y en nivel info, no warning: ver avisarUnaVez.
+                 */
+                self::avisarUnaVez(
+                    'tabla',
+                    'BuyerTrackingHelper: la tabla '.self::TABLA.' no existe todavia en esta base. '
+                    .'No se captura nada hasta que llegue el esquema de empresa-api.'
+                );
+
                 return 0;
             }
 
             /** Guarda 3: el interruptor del comercio. Una query, memoizada por request. */
             if (!self::comercioTieneLaExtencion($user_id)) {
+                /*
+                 * Idem: el comercio no tiene prendida la extension. Es una decision valida y
+                 * frecuente, pero si el SPA igual esta mandando eventos hay algo desalineado
+                 * entre el interruptor del front y el del back, y conviene poder verlo.
+                 */
+                self::avisarUnaVez(
+                    'extencion:'.$user_id,
+                    'BuyerTrackingHelper: el comercio '.$user_id.' no tiene la extension '
+                    .self::SLUG_EXTENCION.'. Llegan eventos y se descartan todos.'
+                );
+
                 return 0;
             }
 
@@ -215,6 +280,59 @@ class BuyerTrackingHelper
         } catch (\Throwable $ignorada) {
             /* Si hasta el logger esta roto, no queda nada mas que hacer: lo que no puede
                pasar es que la navegacion del comprador se rompa por un evento de tracking. */
+        }
+    }
+
+    /**
+     * Deja constancia de un descarte de CONFIGURACION, una sola vez por proceso.
+     *
+     * -----------------------------------------------------------------------------------
+     * Por que existe este metodo
+     * -----------------------------------------------------------------------------------
+     * Las guardas que cortan por configuracion (falta la tabla, falta la extension, no viene
+     * el commerce_id) devolvian 0 sin decir una palabra. Eso es justo lo que el docblock de
+     * esta clase dice estar evitando: convierten "hace tres semanas que no se captura nada"
+     * en algo que nadie puede notar. La respuesta HTTP tiene que ser muda para el comprador;
+     * el log no.
+     *
+     * Dos decisiones, y las dos importan:
+     *
+     * 1. UNA VEZ POR PROCESO. Estos estados no cambian dentro de un request y duran dias o
+     *    semanas. Loguearlos por lote serian miles de lineas por dia en un comercio con
+     *    trafico, y ese ruido termina tapando las fallas de verdad — el mismo argumento por
+     *    el que existe la guarda Schema::hasTable en vez de dejarselo al try/catch.
+     *
+     * 2. NIVEL info, NO warning. warning y error quedan reservados para las fallas de
+     *    verdad (el catch de registrar()). Que la tabla no este todavia, o que un comercio
+     *    no tenga prendida la extension, son estados PREVISTOS del despliegue: reportarlos
+     *    como fallas seria mentir en el otro sentido, y ademas volveria inutil la unica
+     *    asercion que distingue "la guarda anda" de "el try/catch la tapa"
+     *    (ContratoConEmpresaApiTest, que fija que ese camino no genera warnings).
+     *
+     * NO se avisa por los descartes evento por evento (tipo invalido, uuid mal formado, un
+     * amount fuera de rango): esos si serian ruido, son normales y no significan que la
+     * captura este rota.
+     *
+     * Los descartes per-lote sin misterio (lote vacio, todas las filas descartadas) tampoco
+     * se avisan: no dicen nada que el operador pueda accionar.
+     *
+     * @param string $clave Identifica el aviso. Se avisa una vez por clave y por proceso.
+     * @param string $mensaje
+     * @return void
+     */
+    private static function avisarUnaVez($clave, $mensaje)
+    {
+        if (array_key_exists($clave, self::$avisos)) {
+            return;
+        }
+
+        self::$avisos[$clave] = true;
+
+        try {
+            Log::info($mensaje);
+        } catch (\Throwable $ignorada) {
+            /* Un logger roto no puede romper la navegacion del comprador. Mismo criterio que
+               registrarFalla(). */
         }
     }
 
@@ -284,6 +402,9 @@ class BuyerTrackingHelper
     {
         self::$hay_tabla = null;
         self::$extenciones = [];
+
+        /* Tambien los avisos: si no, el segundo caso del proceso no podria medir que se avisa. */
+        self::$avisos = [];
     }
 
     /**
