@@ -221,8 +221,9 @@ class CartOwnershipHelper
      *     y dejo un carrito sin dueño, B se lo lleva al loguearse.
      *   - **Que se lleva, exactamente**: no es solo "un carrito". lastCart le entrega el modelo
      *     completo via CartHelper::getFullModel, o sea tambien lo que escribe sync_checkout_fields:
-     *     `description` (las notas del pedido), `address_id`, `fecha_entrega` y
-     *     `payment_card_info_id`. Si A llego al formulario de checkout sin identificarse, ahi va su
+     *     `description` (las notas del pedido), `address_id`, `fecha_entrega`,
+     *     `payment_card_info_id` y tambien `payment_id` / `payment_status` (la referencia del pago
+     *     de Mercado Pago). Si A llego al formulario de checkout sin identificarse, ahi va su
      *     direccion de entrega y sus notas. Es una transferencia chica de datos personales, no solo
      *     la perdida de un carrito.
      *   - **Cuanto dura la ventana**: exactamente lo que dure la sesion, o sea `SESSION_LIFETIME`.
