@@ -64,55 +64,96 @@ class ArticleHelper
             }
         } else if (count($articles) >= 1 && !is_null($articles[0])) {
             /**
-             * Caso 4: visitante sin login — usar la lista de `position` más alta.
+             * Caso 4: nadie con lista propia — visitantes sin login, y compradores logueados
+             * sin vinculo a un Client del ERP (o con Client sin lista asignada).
              *
-             * 🔴 NO "simplificar" esto leyendo `online_configuration->online_price_type`: esa
-             * relación NO es la lista de precios de la tienda. Apunta a `online_price_types`, que
-             * define A QUIÉN se le muestran los precios, no CUÁL lista se usa. La consume
-             * `tienda-spa` en `src/mixins/generals.js::puede_ver_precios()` — y solo pesa cuando la
-             * tienda exige registro, porque esa función corta antes por `register_to_buy`.
+             * Para el LOGUEADO nada cambia: lista de `position` mas alta, como siempre
+             * (contrato compatible hacia atras).
              *
-             * El esquema de esas tablas no se puede abrir desde este repo (la tienda comparte la
-             * base del ERP), así que van las fuentes, verificadas el 12/8/2026 para la tarea 8:
-             *   - empresa-api/database/migrations/2023_04_12_162001_create_online_price_types_table.php
-             *     → la tabla es (id, name, slug): sin `user_id`, o sea catálogo global, y sin
-             *       ninguna columna que apunte a un `price_type`.
-             *   - empresa-api/database/seeders/OnlinePriceTypeSeeder.php
-             *     → sus únicas tres filas: `all`, `only_registered`,
-             *       `only_buyers_with_comerciocity_client`.
-             *
-             * Hoy NO existe forma de que el comercio elija qué lista ve el visitante anónimo: la
-             * elige este `orderBy('position','DESC')`. Agregar esa configuración exige una columna
-             * en `online_configurations` y el selector en el modal de configuración online de
-             * empresa-spa. Desde acá no corresponde: `tienda-api` no tiene `database/migrations` y
-             * el dueño del esquema de esa base es empresa-api. O sea que se resuelve desde el
-             * proyecto `empresa`, no desde este.
-             *
-             * Ojo también con `price_types.ocultar_al_publico` (columna original de
-             * empresa-api/database/migrations/2022_09_05_173919_create_price_types_table.php, que
-             * el comercio edita como el checkbox "Ocultar al publico" del ABM de listas): esta
-             * consulta NO la filtra, así que una lista marcada como oculta puede terminar siendo la
-             * del público si tiene la `position` más alta. Filtrarla cambiaría precios en tiendas ya
-             * publicadas, así que lo decide Lucas y no este helper.
-             *
-             * Las dos cosas están en la misma escalada, en el repo de contexto
-             * (`lucasgonzz/claude-comerciocity`), no en este repo:
+             * Para el ANONIMO, desde el 24/8/2026 (decision de Lucas, cierre de la escalada
              * prompts/escaladas/20260812-1034-s5-para-elegir-que-lista-de-precios-ve-el-visitante-a.json
+             * del repo de contexto lucasgonzz/claude-comerciocity):
+             *
+             *   (a) manda la configuracion de visibilidad que el SPA ya respeta en
+             *       src/mixins/generals.js::puede_ver_precios() — ver anonimo_puede_ver_precios().
+             *       Hasta hoy el backend mandaba los precios SIEMPRE y el ocultamiento era solo
+             *       cosmetico: cualquiera con las devtools los leia igual.
+             *   (b) una lista con `price_types.ocultar_al_publico` (el checkbox "Ocultar al
+             *       publico" del ABM de listas del ERP) jamas se le muestra, aunque tenga la
+             *       `position` mas alta: cae a la siguiente visible, y si el comercio tiene
+             *       listas pero ninguna queda visible, el anonimo se queda sin precios.
+             *
+             * 🔴 Sigue valiendo lo verificado el 12/8/2026: `online_configuration->online_price_type`
+             * NO es "que lista ve el anonimo" sino "QUIEN ve precios". La lista del anonimo la
+             * sigue eligiendo el orderBy('position','DESC') de aca abajo. Fuentes del esquema
+             * (la tienda comparte la base del ERP y este repo no tiene migraciones):
+             *   - empresa-api/database/migrations/2023_04_12_162001_create_online_price_types_table.php
+             *     → la tabla es (id, name, slug): catalogo global.
+             *   - empresa-api/database/seeders/OnlinePriceTypeSeeder.php → sus tres filas:
+             *     `all`, `only_registered`, `only_buyers_with_comerciocity_client`.
+             *   - empresa-api/database/migrations/2022_09_05_173919_create_price_types_table.php
+             *     → `ocultar_al_publico` es columna original de `price_types`.
              */
-            $price_types = PriceType::where('user_id', $articles[0]->user_id)
-                                    ->whereNotNull('position')
-                                    ->orderBy('position', 'DESC')
-                                    ->get();
-            if (count($price_types) >= 1) {
-                // La primera es la de posición más alta (precio público más caro)
-                $public_price_type = $price_types->first();
-                foreach ($articles as $article) {
-                    if (!is_null($article)) {
-                        $matched = $article->price_types->firstWhere('id', $public_price_type->id);
-                        if (!is_null($matched) && !is_null($matched->pivot->final_price)) {
-                            $article->final_price = $matched->pivot->final_price;
+
+            $es_anonimo = is_null($buyer);
+
+            if ($es_anonimo && !Self::anonimo_puede_ver_precios($commerce_id)) {
+
+                /* (a) La tienda exige registro y la configuracion dice que el visitante sin
+                   login no ve precios: no le viaja ninguno. */
+                $articles = Self::esconder_precios_al_anonimo($articles);
+
+            } else {
+
+                $price_types = PriceType::where('user_id', $articles[0]->user_id)
+                                        ->whereNotNull('position')
+                                        ->orderBy('position', 'DESC')
+                                        ->get();
+
+                $el_comercio_tiene_listas = count($price_types) >= 1;
+
+                if ($es_anonimo) {
+                    /* (b) Las ocultas al publico no juegan para el anonimo. Loose a proposito:
+                       NULL y 0 son "visible". */
+                    $price_types = $price_types->filter(function ($price_type) {
+                        return $price_type->ocultar_al_publico != 1;
+                    })->values();
+                }
+
+                if (count($price_types) >= 1) {
+                    // La primera es la de posición más alta (precio público más caro)
+                    $public_price_type = $price_types->first();
+                    foreach ($articles as $article) {
+                        if (!is_null($article)) {
+                            $matched = $article->price_types->firstWhere('id', $public_price_type->id);
+                            if (!is_null($matched) && !is_null($matched->pivot->final_price)) {
+                                $article->final_price = $matched->pivot->final_price;
+                            }
                         }
                     }
+
+                    if ($es_anonimo) {
+                        /* (b) Y tampoco viajan los pivots de las ocultas en el payload: "jamas
+                           se le muestra" incluye a las devtools. Sin riesgo para el SPA: no lee
+                           article.price_types en ningun camino de este caso (cero usos en
+                           tienda-spa/src, medido hoy; en el camino de rangos usa article.ranges,
+                           que arma set_ranges en el caso 1). */
+                        foreach ($articles as $article) {
+                            if (!is_null($article) && $article->relationLoaded('price_types')) {
+                                $article->setRelation('price_types', $article->price_types->filter(function ($price_type) {
+                                    return $price_type->ocultar_al_publico != 1;
+                                })->values());
+                            }
+                        }
+                    }
+
+                } else if ($es_anonimo && $el_comercio_tiene_listas) {
+
+                    /* (b) Hay listas pero todas ocultas al publico: el anonimo queda sin
+                       precios. Si el comercio directamente no tiene listas con position, en
+                       cambio, no se toca nada y vale lo que traiga la columna final_price,
+                       como siempre. */
+                    $articles = Self::esconder_precios_al_anonimo($articles);
                 }
             }
         }
@@ -129,6 +170,89 @@ class ArticleHelper
          */
         $articles = ClientOfferHelper::aplicar($articles);
 
+        return $articles;
+    }
+
+    /**
+     * Memo por request de anonimo_puede_ver_precios(), por comercio: checkPriceTypes() corre
+     * hasta cuatro veces en una misma respuesta de la home (featured, in_offer, novedades y
+     * last_uploads) y la configuracion no cambia en el medio. Mismo criterio que la memoria
+     * de ClientOfferHelper: cada query de mas se paga en todos los llamadores.
+     *
+     * @var array<int|string, bool>
+     */
+    private static $visibilidad_del_anonimo = [];
+
+    /**
+     * ¿La configuracion online del comercio deja ver precios a un visitante sin login?
+     *
+     * Espejo servidor de puede_ver_precios() de tienda-spa (src/mixins/generals.js) evaluado
+     * para el anonimo, con los mismos cortes y en el mismo orden (decision de Lucas,
+     * 24/8/2026):
+     *
+     *   1. `online_configurations.register_to_buy` falsy → la tienda no exige registro para
+     *      comprar → los precios son visibles para cualquiera, sin importar online_price_type
+     *      (el SPA corta igual, antes de mirar el slug).
+     *   2. `online_price_type.slug` 'only_registered' u 'only_buyers_with_comerciocity_client'
+     *      → el anonimo no ve precios.
+     *   3. Cualquier otro caso (slug 'all', o configuracion incompleta) → visibles, que es el
+     *      comportamiento historico.
+     *
+     * @param  int|string|null  $commerce_id
+     * @return bool
+     */
+    static function anonimo_puede_ver_precios($commerce_id) {
+        if (array_key_exists($commerce_id, Self::$visibilidad_del_anonimo)) {
+            return Self::$visibilidad_del_anonimo[$commerce_id];
+        }
+
+        $puede_ver = true;
+
+        $commerce = User::find($commerce_id);
+        $configuration = is_null($commerce) ? null : $commerce->online_configuration;
+
+        if (!is_null($configuration) && $configuration->register_to_buy && !is_null($configuration->online_price_type)) {
+            $puede_ver = !in_array($configuration->online_price_type->slug, [
+                'only_registered',
+                'only_buyers_with_comerciocity_client',
+            ]);
+        }
+
+        Self::$visibilidad_del_anonimo[$commerce_id] = $puede_ver;
+
+        return $puede_ver;
+    }
+
+    /**
+     * Los feature tests cambian la configuracion online entre requests del mismo proceso:
+     * la memo de arriba tiene que poder olvidarse (mismo patron que
+     * ClientOfferHelper::olvidarMemoria()).
+     */
+    static function olvidar_visibilidad_del_anonimo() {
+        Self::$visibilidad_del_anonimo = [];
+    }
+
+    /**
+     * Deja los articulos sin NINGUN precio para el visitante sin login: ni el resuelto, ni
+     * los de las columnas (final_price, price y de paso cost, que tampoco tiene por que
+     * viajar), ni los pivots de las listas. Se usa cuando la configuracion online del
+     * comercio dice que el anonimo no ve precios, y cuando todas las listas con position
+     * estan ocultas al publico.
+     *
+     * @param  mixed  $articles  Coleccion, paginador o array de articulos.
+     * @return mixed  Los mismos articulos, pelados de precios.
+     */
+    static function esconder_precios_al_anonimo($articles) {
+        foreach ($articles as $article) {
+            if (!is_null($article)) {
+                $article->final_price = null;
+                $article->price = null;
+                $article->cost = null;
+                if ($article->relationLoaded('price_types')) {
+                    $article->setRelation('price_types', $article->price_types->take(0));
+                }
+            }
+        }
         return $articles;
     }
 
