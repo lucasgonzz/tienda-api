@@ -83,6 +83,15 @@ class HomeHelper
         return $promociones_vinoteca;
     }
 
+    /**
+     * Novedades de la home: articulos NO borrados con movimiento de stock reciente,
+     * los mas nuevos primero (el orden lo da la query de movimientos, created_at DESC).
+     *
+     * Aca habia un whereNotNull('deleted_at') sobre la query del articulo que, contra el
+     * global scope de SoftDeletes de Article (deleted_at IS NULL), armaba una condicion
+     * imposible: la seccion Novedades llegaba SIEMPRE vacia a la tienda. Los borrados ya
+     * los excluye SoftDeletes solo, asi que no hace falta ninguna condicion extra.
+     */
     static function getNovedades($commerce_id) {
         $stock_movements = StockMovement::where('user_id', $commerce_id)
                                     ->orderBy('created_at', 'DESC')
@@ -93,14 +102,23 @@ class HomeHelper
         $articulos_novedades = collect();
 
         foreach ($stock_movements as $stock_movement) {
+
+            /* Un articulo con varios movimientos recientes es UNA novedad. Se saltea por id
+               y antes de la query: el contains($article) que habia aca comparaba instancias
+               enteras (con relaciones cargadas adentro) y encima pagaba la consulta aunque
+               el articulo ya estuviera en la lista. Nunca se noto porque con la condicion
+               imposible de arriba este loop no empujaba nada. */
+            if ($articulos_novedades->contains('id', $stock_movement->article_id)) {
+                continue;
+            }
+
             $article = Article::where('id', $stock_movement->article_id)
                             ->checkStock()
                             ->checkOnline()
                             ->withAll()
-                            ->whereNotNull('deleted_at')
                             ->first();
 
-            if (!is_null($article) && !$articulos_novedades->contains($article)) {
+            if (!is_null($article)) {
                 $articulos_novedades->push($article);
             }
         }
