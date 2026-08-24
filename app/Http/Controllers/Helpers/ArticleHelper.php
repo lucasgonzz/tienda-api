@@ -35,7 +35,26 @@ class ArticleHelper
 
         if (!is_null($commerce_id) && CommerceHelper::hasExtencion('lista_de_precios_por_rango_de_cantidad_vendida', null, $commerce_id)) {
 
-            $articles = Self::set_ranges($articles);
+            if (is_null($buyer) && !Self::anonimo_puede_ver_precios($commerce_id)) {
+
+                /* El camino de rangos tambien respeta la visibilidad (D1 del chequeo del
+                   24/8/2026): en el SPA este camino corre DENTRO de articlePriceEfectivo(),
+                   detras del mismo puede_ver_precios() que espeja
+                   anonimo_puede_ver_precios() — asi que con la tienda en modo restrictivo
+                   el anonimo tampoco recibe los rangos (ni se pagan sus queries).
+
+                   Los tramos NO se filtran por ocultar_al_publico cuando el anonimo SI ve
+                   precios: aunque cada tramo referencia una lista (price_type_id), los rangos
+                   son configuracion deliberada del comercio en el ABM de rangos por categoria
+                   — no la eleccion implicita por position que motivo ese checkbox — y sacar un
+                   tramo del medio dejaria la escala de cantidades con agujeros y cambiaria
+                   precios de tiendas publicadas sin que Lucas lo haya dictado. */
+                $articles = Self::esconder_precios_al_anonimo($articles);
+
+            } else {
+
+                $articles = Self::set_ranges($articles);
+            }
 
         } else if (!is_null($buyer) && $buyer->user->use_archivos_de_intercambio && !is_null($buyer->comercio_city_client) && !is_null($buyer->comercio_city_client->price_type)) {
 
@@ -202,25 +221,28 @@ class ArticleHelper
      * @return bool
      */
     static function anonimo_puede_ver_precios($commerce_id) {
-        if (array_key_exists($commerce_id, Self::$visibilidad_del_anonimo)) {
-            return Self::$visibilidad_del_anonimo[$commerce_id];
+        /* En consola (phpunit, tinker) se relee SIEMPRE, igual que las memorias de
+           ClientOfferHelper: un test que cambie online_configurations sin acordarse del
+           reset no puede quedar leyendo visibilidad vieja. En el request web la memo
+           manda, que es donde las queries repetidas se pagan. */
+        if (!array_key_exists($commerce_id, Self::$visibilidad_del_anonimo) || app()->runningInConsole()) {
+
+            $puede_ver = true;
+
+            $commerce = User::find($commerce_id);
+            $configuration = is_null($commerce) ? null : $commerce->online_configuration;
+
+            if (!is_null($configuration) && $configuration->register_to_buy && !is_null($configuration->online_price_type)) {
+                $puede_ver = !in_array($configuration->online_price_type->slug, [
+                    'only_registered',
+                    'only_buyers_with_comerciocity_client',
+                ]);
+            }
+
+            Self::$visibilidad_del_anonimo[$commerce_id] = $puede_ver;
         }
 
-        $puede_ver = true;
-
-        $commerce = User::find($commerce_id);
-        $configuration = is_null($commerce) ? null : $commerce->online_configuration;
-
-        if (!is_null($configuration) && $configuration->register_to_buy && !is_null($configuration->online_price_type)) {
-            $puede_ver = !in_array($configuration->online_price_type->slug, [
-                'only_registered',
-                'only_buyers_with_comerciocity_client',
-            ]);
-        }
-
-        Self::$visibilidad_del_anonimo[$commerce_id] = $puede_ver;
-
-        return $puede_ver;
+        return Self::$visibilidad_del_anonimo[$commerce_id];
     }
 
     /**
@@ -235,9 +257,14 @@ class ArticleHelper
     /**
      * Deja los articulos sin NINGUN precio para el visitante sin login: ni el resuelto, ni
      * los de las columnas (final_price, price y de paso cost, que tampoco tiene por que
-     * viajar), ni los pivots de las listas. Se usa cuando la configuracion online del
-     * comercio dice que el anonimo no ve precios, y cuando todas las listas con position
-     * estan ocultas al publico.
+     * viajar), ni los pivots de las listas, ni los rangos por cantidad. Se usa cuando la
+     * configuracion online del comercio dice que el anonimo no ve precios, y cuando todas
+     * las listas con position estan ocultas al publico.
+     *
+     * `ranges` queda como ARRAY VACIO y no sin setear: es la misma forma que set_ranges()
+     * ya deja hoy en los articulos sin rangos configurados, asi que el SPA ya convive con
+     * ella — el forEach de generals.js::articlePriceEfectivo() no itera (con undefined
+     * tiraria TypeError si algun camino llegara), y PriceRanges.vue renderiza vacio.
      *
      * @param  mixed  $articles  Coleccion, paginador o array de articulos.
      * @return mixed  Los mismos articulos, pelados de precios.
@@ -248,6 +275,7 @@ class ArticleHelper
                 $article->final_price = null;
                 $article->price = null;
                 $article->cost = null;
+                $article->ranges = [];
                 if ($article->relationLoaded('price_types')) {
                     $article->setRelation('price_types', $article->price_types->take(0));
                 }
