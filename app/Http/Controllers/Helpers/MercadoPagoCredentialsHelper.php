@@ -28,6 +28,20 @@ use Illuminate\Support\Facades\Log;
  *
  * Un comercio que nunca conecto por OAuth sigue cobrando por (2) exactamente igual que antes.
  * Uno que conecta pasa a cobrar por (1) sin que nadie tenga que migrar nada a mano.
+ *
+ * ── Las dos cosas que este repo agrega, sin tocar `credentials()` ────────────────────────────
+ *
+ * 1. `credentials_for_payment_method()`. En la tienda el COMPRADOR elige una fila de
+ *    `payment_methods`, y un comercio puede tener mas de una de tipo MercadoPago (no hay ningun
+ *    indice unico que lo impida). `credentials()` hace `first()` y no sabe cual eligieron, asi
+ *    que sin este metodo el backend cobraria siempre con la primera mientras el navegador
+ *    tokeniza con la public key de la elegida: la plata iria a la cuenta equivocada. El metodo
+ *    nuevo no cambia el orden — desempata DENTRO del paso (2), que es donde estaba la
+ *    ambiguedad. El ERP no tiene este problema porque no hay comprador eligiendo nada.
+ *
+ * 2. El `try/catch` de `QueryException` vive en `PlatformConnector::find_for_user_and_slug()`,
+ *    no aca: hay bases de clientes sin las tablas `platform_connectors` / `platforms`, y sin esa
+ *    guarda el listado publico de medios de pago responde 500. Ver el comentario del modelo.
  */
 class MercadoPagoCredentialsHelper
 {
@@ -92,6 +106,57 @@ class MercadoPagoCredentialsHelper
             'public_key'   => null,
             'origen'       => null,
         ];
+    }
+
+    /**
+     * Credenciales vigentes para cobrar la fila de `payment_methods` que eligio el comprador.
+     *
+     * 🔴 EXCLUSIVO DE ESTE REPO. `credentials()` arriba es identico caracter a caracter al de
+     * `empresa-api` y tiene que seguir siendolo: es el criterio compartido de que cuenta cobra.
+     * Este metodo NO lo cambia — lo envuelve, y solo desempata dentro del paso que ya era
+     * ambiguo.
+     *
+     * El caso que arregla (medido el 3/9/2026 en `tienda_testing_s5`): dos filas de tipo
+     * MercadoPago del mismo comercio, id 33 con `TOKEN-CUENTA-A` y id 34 con `TOKEN-CUENTA-B`,
+     * sin conector. `credentials()` filtra por comercio + tipo y hace `first()`, asi que devolvia
+     * `TOKEN-CUENTA-A` eligiera lo que eligiera el comprador. Mientras tanto el navegador
+     * arranca el SDK con la public key de la fila ELEGIDA
+     * (`tienda-spa/.../CardPaymentMethod.vue:66`): brick de la cuenta B, preferencia de la cuenta
+     * A. La plata a la cuenta equivocada.
+     *
+     * El orden:
+     *
+     * 1. Si hay conector conectado, gana el conector. No hay ambiguedad posible: el comercio
+     *    conecto UNA cuenta por OAuth y esa es la que cobra, elija la fila que elija el
+     *    comprador. (Y `PaymentMethodController@index` le pone a todas las filas la public key
+     *    del conector, asi que el navegador y el backend siguen apuntando a la misma cuenta.)
+     * 2. Si no hay conector, cobra LA FILA QUE ELIGIO EL COMPRADOR. Es el comportamiento
+     *    anterior a esta mision, y es el correcto.
+     * 3. Si esa fila no tiene token, lo que haya encontrado `credentials()` en `payment_methods`.
+     *    Ultima red: sin esto, un comercio con la primera fila cargada y la elegida vacia dejaria
+     *    de cobrar.
+     *
+     * @param int $user_id Comercio (owner).
+     * @param \App\PaymentMethod|null $payment_method Fila que eligio el comprador.
+     * @return array{access_token: string|null, public_key: string|null, origen: string|null}
+     */
+    public static function credentials_for_payment_method($user_id, $payment_method)
+    {
+        $credentials = self::credentials($user_id);
+
+        if ($credentials['origen'] === 'platform_connector') {
+            return $credentials;
+        }
+
+        if ($payment_method && !empty($payment_method->access_token)) {
+            return [
+                'access_token' => $payment_method->access_token,
+                'public_key'   => $payment_method->public_key,
+                'origen'       => 'payment_method_elegido',
+            ];
+        }
+
+        return $credentials;
     }
 
     /**

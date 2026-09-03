@@ -4,6 +4,8 @@ namespace App;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Conector OAuth de un comercio hacia una `Platform` (Mercado Pago, ML, Tienda Nube).
@@ -75,9 +77,34 @@ class PlatformConnector extends Model
     /**
      * Conector del comercio hacia una plataforma dada por slug, sin crearlo si no existe.
      *
-     * Copia exacta de `empresa-api`: mismo filtro, mismo `orderBy('id', 'DESC')` y mismo
-     * `first()`. El orden importa — si un comercio quedara con dos conectores para la misma
-     * plataforma, los dos repos tienen que elegir el mismo.
+     * Mismo filtro, mismo `orderBy('id', 'DESC')` y mismo `first()` que `empresa-api`. El orden
+     * importa — si un comercio quedara con dos conectores para la misma plataforma, los dos
+     * repos tienen que elegir el mismo.
+     *
+     * ── 🔴 Por que hay un try/catch que en `empresa-api` no esta ──────────────────────────────
+     *
+     * `platform_connectors` y `platforms` las crea una migracion de `empresa-api` de mayo de
+     * 2026, y `tienda-api` se despliega POR CLIENTE, independiente del ERP. O sea que hay bases
+     * de clientes andando, hoy, sin esas dos tablas. Medido el 3/9/2026 sobre las cuatro bases
+     * de cliente del MySQL local (`ferretotal`, `leudinox`, `golonorte_bien`,
+     * `pack_descartables`): ninguna las tiene, y las cuatro tienen `payment_methods`.
+     *
+     * Sin este catch, la consulta tira `QueryException` y sale sin atrapar hasta el controller:
+     *
+     *     GET /api/payment-methods/2600  ->  HTTP 500
+     *     SQLSTATE[42S02]: Base table or view not found: 1146
+     *     Table 'ferretotal.platform_connectors' doesn't exist
+     *
+     * Y ese endpoint lista TODOS los medios de pago, no solo Mercado Pago: el comercio se queda
+     * sin checkout entero por una tabla que su base nunca necesito. Es el escenario "tienda nueva
+     * + empresa vieja" que el plan de la mision daba por cubierto y no lo estaba.
+     *
+     * La asimetria es real y por eso el catch va de este lado nada mas: `empresa-api` es DUEÑO de
+     * esa migracion, asi que por construccion su base siempre tiene las tablas. Este repo no.
+     *
+     * No se atrapa mas ancho que `QueryException`, y lo que se atrapa se loguea con el SQLSTATE:
+     * si algun dia esto tapa un error de configuracion de verdad, el comercio sigue cobrando por
+     * `payment_methods` (que es como cobra hoy) pero queda el rastro para encontrarlo.
      *
      * @param int $user_id Comercio (owner) dueño del conector.
      * @param string $platform_slug Slug de `platforms` (ver constantes de `Platform`).
@@ -85,13 +112,23 @@ class PlatformConnector extends Model
      */
     public static function find_for_user_and_slug(int $user_id, string $platform_slug): ?self
     {
-        return static::with('platform')
-            ->where('user_id', $user_id)
-            ->whereHas('platform', function ($platform_query) use ($platform_slug) {
-                $platform_query->where('slug', $platform_slug);
-            })
-            ->orderBy('id', 'DESC')
-            ->first();
+        try {
+            return static::with('platform')
+                ->where('user_id', $user_id)
+                ->whereHas('platform', function ($platform_query) use ($platform_slug) {
+                    $platform_query->where('slug', $platform_slug);
+                })
+                ->orderBy('id', 'DESC')
+                ->first();
+        } catch (QueryException $e) {
+            Log::error(
+                'PlatformConnector::find_for_user_and_slug: no se pudo consultar el conector de "'.
+                $platform_slug.'" del comercio '.$user_id.' (SQLSTATE '.$e->getCode().'). '.
+                'El comercio sigue cobrando por payment_methods. Detalle: '.$e->getMessage()
+            );
+
+            return null;
+        }
     }
 
     /**

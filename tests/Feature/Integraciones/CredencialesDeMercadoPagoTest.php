@@ -3,6 +3,7 @@
 namespace Tests\Feature\Integraciones;
 
 use App\Http\Controllers\Helpers\MercadoPagoCredentialsHelper;
+use App\Http\Controllers\MercadoPagoController;
 use App\PaymentMethod;
 use App\PaymentMethodType;
 use App\Platform;
@@ -12,6 +13,7 @@ use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use ReflectionMethod;
 use Tests\TestCase;
 
 /**
@@ -71,19 +73,43 @@ class CredencialesDeMercadoPagoTest extends TestCase
      * Metodo de pago de tipo MercadoPago del comercio, con las credenciales cargadas a mano.
      * Es lo unico con lo que la tienda cobraba antes de esta mision.
      *
+     * @param string|null $access_token Token de la fila (null = fila sin credencial).
+     * @param string|null $public_key Public key de la fila.
+     * @param string $nombre Nombre visible, para distinguir dos filas en el mismo test.
      * @return \App\PaymentMethod
      */
-    private function paymentMethodMp()
-    {
+    private function paymentMethodMp(
+        $access_token = 'TOKEN-DE-PAYMENT-METHOD',
+        $public_key = 'PUBLIC-KEY-DE-PAYMENT-METHOD',
+        $nombre = 'Mercado Pago'
+    ) {
         $payment_method = new PaymentMethod;
-        $payment_method->name                   = 'Mercado Pago';
+        $payment_method->name                   = $nombre;
         $payment_method->user_id                = $this->comercio->id;
         $payment_method->payment_method_type_id = $this->tipoMercadoPago()->id;
-        $payment_method->public_key             = 'PUBLIC-KEY-DE-PAYMENT-METHOD';
-        $payment_method->access_token           = 'TOKEN-DE-PAYMENT-METHOD';
+        $payment_method->public_key             = $public_key;
+        $payment_method->access_token           = $access_token;
         $payment_method->save();
 
         return $payment_method;
+    }
+
+    /**
+     * El access token con el que `preference()` va a armar la preferencia.
+     *
+     * Se invoca por reflexion el metodo que `MercadoPagoController` tiene separado justamente
+     * para esto: el resto de `preference()` termina en `$preference->save()`, que sale a la red.
+     *
+     * @param \App\PaymentMethod|null $elegido Fila que eligio el comprador.
+     * @return string|null
+     */
+    private function tokenConQueCobraPreference($elegido)
+    {
+        $controller = new MercadoPagoController();
+        $metodo = new ReflectionMethod($controller, 'access_token_para_cobrar');
+        $metodo->setAccessible(true);
+
+        return $metodo->invoke($controller, $this->comercio->id, $elegido);
     }
 
     /**
@@ -297,4 +323,202 @@ class CredencialesDeMercadoPagoTest extends TestCase
         $this->assertStringNotContainsString('refresh_token', $cuerpo);
         $this->assertStringNotContainsString('client_secret', $cuerpo);
     }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | Defecto 1: una base sin `platform_connectors` no puede tumbar el checkout
+    |---------------------------------------------------------------------------------------------
+    */
+
+    /**
+     * 🔴 Si la tabla de conectores no existe, resolver el conector devuelve null — no explota.
+     *
+     * Las tablas `platform_connectors` / `platforms` las crea una migracion de `empresa-api` de
+     * mayo de 2026, y `tienda-api` se despliega por cliente, independiente del ERP: hay bases de
+     * clientes andando sin ellas (medido sobre las cuatro del MySQL local: ninguna las tiene).
+     * Sin la guarda, `GET /api/payment-methods/{id}` responde 500 con
+     * "SQLSTATE[42S02] ... Table 'x.platform_connectors' doesn't exist", y ese endpoint lista
+     * TODOS los medios de pago: el comercio se queda sin checkout entero.
+     *
+     * Se apunta un modelo a una tabla que no existe en vez de borrar la de verdad: `RENAME TABLE`
+     * y `DROP` hacen commit implicito en MySQL y romperian el `DatabaseTransactions` de toda la
+     * clase. Late static binding hace que `find_for_user_and_slug()` corra contra la tabla falsa.
+     *
+     * @return void
+     */
+    public function test_el_conector_devuelve_null_si_no_existe_la_tabla()
+    {
+        $conector = ConectorConTablaInexistente::find_for_user_and_slug(
+            $this->comercio->id,
+            Platform::SLUG_MERCADO_PAGO
+        );
+
+        $this->assertNull($conector, 'Sin tabla de conectores hay que devolver null, no propagar la QueryException.');
+    }
+
+    /**
+     * Y con el conector en null, el helper cae a `payment_methods`: el comercio cobra igual que
+     * antes de esta mision. Es la otra mitad de la composicion que evita el 500.
+     *
+     * @return void
+     */
+    public function test_sin_conector_resoluble_el_comercio_sigue_cobrando()
+    {
+        $this->paymentMethodMp();
+
+        $credenciales = MercadoPagoCredentialsHelper::credentials($this->comercio->id);
+
+        $this->assertSame('TOKEN-DE-PAYMENT-METHOD', $credenciales['access_token']);
+        $this->assertSame('payment_method', $credenciales['origen']);
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | Defecto 2: con dos filas de MercadoPago, cobra la que eligio el comprador
+    |---------------------------------------------------------------------------------------------
+    */
+
+    /**
+     * 🔴 Sin conector, cobra LA FILA QUE ELIGIO EL COMPRADOR, no la primera.
+     *
+     * Nada impide dos filas de tipo MercadoPago del mismo comercio: la tabla no tiene mas indice
+     * que el PRIMARY. `credentials($user_id)` hace `first()` y no sabe cual eligieron, asi que
+     * devolvia siempre la cuenta A. Mientras tanto el navegador arranca el SDK con la public key
+     * de la fila elegida (`CardPaymentMethod.vue:66`): brick de la cuenta B, preferencia de la
+     * cuenta A, y la plata a la cuenta equivocada.
+     *
+     * @return void
+     */
+    public function test_sin_conector_cobra_la_fila_que_eligio_el_comprador()
+    {
+        $this->paymentMethodMp('TOKEN-CUENTA-A', 'PK-A', 'MP cuenta A');
+        $cuenta_b = $this->paymentMethodMp('TOKEN-CUENTA-B', 'PK-B', 'MP cuenta B');
+
+        $credenciales = MercadoPagoCredentialsHelper::credentials_for_payment_method($this->comercio->id, $cuenta_b);
+
+        $this->assertSame('TOKEN-CUENTA-B', $credenciales['access_token'], 'Se cobro con una cuenta distinta de la que eligio el comprador.');
+        $this->assertSame('PK-B', $credenciales['public_key'], 'La public key tiene que ser la de la misma cuenta que el token.');
+        $this->assertSame('payment_method_elegido', $credenciales['origen']);
+    }
+
+    /**
+     * Con conector conectado no hay ambiguedad: el comercio conecto UNA cuenta por OAuth y esa
+     * gana, elija la fila que elija el comprador. (Y el listado le pone a todas las filas la
+     * public key del conector, asi que el navegador apunta a la misma cuenta.)
+     *
+     * @return void
+     */
+    public function test_el_conector_le_gana_a_la_fila_elegida()
+    {
+        $cuenta_b = $this->paymentMethodMp('TOKEN-CUENTA-B', 'PK-B', 'MP cuenta B');
+        $this->conectorMp();
+
+        $credenciales = MercadoPagoCredentialsHelper::credentials_for_payment_method($this->comercio->id, $cuenta_b);
+
+        $this->assertSame('TOKEN-DEL-CONECTOR', $credenciales['access_token']);
+        $this->assertSame('platform_connector', $credenciales['origen']);
+    }
+
+    /**
+     * Ultima red: si la fila elegida quedo sin token, se cobra con lo que haya encontrado
+     * `credentials()` en `payment_methods`. Sin esto, un comercio con la primera fila cargada y
+     * la elegida vacia dejaria de cobrar.
+     *
+     * @return void
+     */
+    public function test_si_la_fila_elegida_no_tiene_token_cae_a_la_ultima_red()
+    {
+        $this->paymentMethodMp('TOKEN-CUENTA-A', 'PK-A', 'MP cuenta A');
+        $sin_token = $this->paymentMethodMp(null, 'PK-B', 'MP cuenta B sin token');
+
+        $credenciales = MercadoPagoCredentialsHelper::credentials_for_payment_method($this->comercio->id, $sin_token);
+
+        $this->assertSame('TOKEN-CUENTA-A', $credenciales['access_token']);
+        $this->assertSame('payment_method', $credenciales['origen']);
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | Defecto 5: el endpoint que cobra
+    |---------------------------------------------------------------------------------------------
+    */
+
+    /**
+     * La preferencia se arma con el token del CONECTOR cuando el comercio esta conectado.
+     * Es el objetivo entero de la mision del lado de la tienda.
+     *
+     * @return void
+     */
+    public function test_preference_cobra_con_el_token_del_conector()
+    {
+        $elegido = $this->paymentMethodMp();
+        $this->conectorMp();
+
+        $this->assertSame('TOKEN-DEL-CONECTOR', $this->tokenConQueCobraPreference($elegido));
+    }
+
+    /**
+     * Sin conector, la preferencia se arma con el token de la fila elegida (defecto 2, ahora
+     * mirado desde el endpoint que cobra de verdad).
+     *
+     * @return void
+     */
+    public function test_preference_cobra_con_la_fila_elegida_cuando_no_hay_conector()
+    {
+        $this->paymentMethodMp('TOKEN-CUENTA-A', 'PK-A', 'MP cuenta A');
+        $cuenta_b = $this->paymentMethodMp('TOKEN-CUENTA-B', 'PK-B', 'MP cuenta B');
+
+        $this->assertSame('TOKEN-CUENTA-B', $this->tokenConQueCobraPreference($cuenta_b));
+    }
+
+    /**
+     * La ultima red, desde el endpoint: la fila elegida sin token no deja al comercio sin cobrar.
+     *
+     * @return void
+     */
+    public function test_preference_cae_a_la_ultima_red_si_la_fila_elegida_no_tiene_token()
+    {
+        $this->paymentMethodMp('TOKEN-CUENTA-A', 'PK-A', 'MP cuenta A');
+        $sin_token = $this->paymentMethodMp(null, 'PK-B', 'MP cuenta B sin token');
+
+        $this->assertSame('TOKEN-CUENTA-A', $this->tokenConQueCobraPreference($sin_token));
+    }
+
+    /**
+     * Sin credencial por ningun lado, `preference` responde 422 y no revienta.
+     *
+     * Antes de esta mision la linea era `PaymentMethod::find(...)->access_token` y el metodo
+     * moria con "Call to a member function on null" (500) o le pasaba null al SDK. Ahora dice
+     * que pasa, en una ruta que es PUBLICA.
+     *
+     * @return void
+     */
+    public function test_preference_responde_422_cuando_no_hay_credencial()
+    {
+        $sin_token = $this->paymentMethodMp(null, 'PK-SIN-TOKEN', 'MP sin credencial');
+
+        $respuesta = $this->postJson('/api/mercado-pago/preference', [
+            'payment_method' => [
+                'id'      => $sin_token->id,
+                'user_id' => $this->comercio->id,
+            ],
+            'cupon'         => null,
+            'delivery_zone' => null,
+            'articles'      => [],
+        ]);
+
+        $respuesta->assertStatus(422);
+        $this->assertStringNotContainsString('access_token', $respuesta->getContent());
+    }
+}
+
+/**
+ * Conector apuntado a una tabla que no existe, para reproducir sin DDL una base de cliente sin
+ * `platform_connectors`. Late static binding hace que `find_for_user_and_slug()` —heredado sin
+ * tocar— corra contra esta tabla y dispare la misma `QueryException` (SQLSTATE 42S02) que se
+ * midio sobre `ferretotal`.
+ */
+class ConectorConTablaInexistente extends PlatformConnector
+{
+    protected $table = 'platform_connectors_que_no_existe';
 }
