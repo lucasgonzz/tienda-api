@@ -125,6 +125,13 @@ Route::get('/payment-methods/{commerce_id}',
 Route::post('/mercado-pago/preference',
 	'MercadoPagoController@preference'
 );
+// Webhook de Mercado Pago (mision mercado-pago-cobro-demo): Mercado Pago avisa aca que un pago
+// cambio. Publica y sin auth porque la llama Mercado Pago, no el comprador; y fuera del grupo web
+// para que no la frene el CSRF. No confia en el body: consulta el pago a la API de Mercado Pago con
+// la credencial del comercio que viene en `?commerce_id=` (ver MercadoPagoController@webhook).
+Route::post('/mercado-pago/webhook',
+	'MercadoPagoController@webhook'
+);
 
 // Payway
 Route::post('/payway/token',
