@@ -101,6 +101,26 @@ class MercadoPagoController extends Controller
 
         $preference->save();
 
+        // `Entity::save()` NO tira ante un 4xx de Mercado Pago: devuelve false y deja el detalle en
+        // `$preference->error`. Sin mirarlo, esto respondia 201 con `preference_id: null` y el boton
+        // de la tienda quedaba muerto sin ninguna señal. Los tres campos que esta mision agrega
+        // (`auto_return`, `back_urls`, `notification_url`) son justamente los que MP valida.
+        if (!empty($preference->error)) {
+            $error = $preference->error;
+            $mensaje = isset($error->message) ? (string) $error->message : 'sin detalle';
+
+            Log::error('MercadoPagoController@preference: Mercado Pago rechazo la preferencia', [
+                'commerce_id' => $this->commerce->id,
+                'cart_id'     => $cart ? $cart->id : null,
+                'message'     => $mensaje,
+                'causes'      => isset($error->causes) ? $error->causes : null,
+            ]);
+
+            return response()->json([
+                'message' => 'Mercado Pago rechazo la preferencia de pago: '.$mensaje,
+            ], 422);
+        }
+
         Log::info('MercadoPagoController@preference: preferencia creada', [
             'commerce_id'   => $this->commerce->id,
             'cart_id'       => $cart ? $cart->id : null,
@@ -245,14 +265,18 @@ class MercadoPagoController extends Controller
         $tipo        = $request->input('type', $request->input('topic'));
         $payment_id  = $request->input('data.id', $request->query('data_id', $request->input('id')));
 
-        if ($tipo !== 'payment' || empty($payment_id) || $commerce_id <= 0) {
+        // El id va concatenado en una URL que se consulta CON EL TOKEN DEL COMERCIO: solo digitos.
+        // Sin esto, `data.id=search?external_reference=55` o `../../merchant_orders/123` harian un
+        // GET autenticado a otro recurso y su respuesta se leeria como si fuera un pago.
+        if ($tipo !== 'payment' || empty($payment_id) || $commerce_id <= 0 || !ctype_digit((string) $payment_id)) {
             return response()->json(['ignorado' => true, 'motivo' => 'no es una notificacion de pago completa'], 200);
         }
 
         $access_token = MercadoPagoCredentialsHelper::access_token($commerce_id);
 
         if (empty($access_token)) {
-            Log::error('MercadoPagoController@webhook: llego un pago para un comercio sin credencial de Mercado Pago', [
+            // warning y no error: la ruta es publica y cualquiera puede mandar un commerce_id inventado.
+            Log::warning('MercadoPagoController@webhook: llego un pago para un comercio sin credencial de Mercado Pago', [
                 'commerce_id' => $commerce_id,
                 'payment_id'  => $payment_id,
             ]);
@@ -308,6 +332,18 @@ class MercadoPagoController extends Controller
             return response()->json(['ignorado' => true, 'motivo' => 'carrito de otro comercio'], 200);
         }
 
+        if ($this->ya_tiene_otro_pago_aprobado($cart, $pago)) {
+            Log::warning('MercadoPagoController@webhook: el carrito ya tiene un pago aprobado, no se pisa con otro que no lo esta', [
+                'commerce_id'       => $commerce_id,
+                'cart_id'           => $cart->id,
+                'payment_id_actual' => $cart->payment_id,
+                'payment_id_nuevo'  => $payment_id,
+                'status_nuevo'      => isset($pago['status']) ? $pago['status'] : null,
+            ]);
+
+            return response()->json(['ignorado' => true, 'motivo' => 'ya hay un pago aprobado'], 200);
+        }
+
         $cart->payment_id     = isset($pago['id']) ? $pago['id'] : $payment_id;
         $cart->payment_status = isset($pago['status']) ? $pago['status'] : null;
         $cart->save();
@@ -329,12 +365,33 @@ class MercadoPagoController extends Controller
             'status'      => $cart->payment_status,
         ]);
 
-        return response()->json([
-            'ok'       => true,
-            'cart_id'  => $cart->id,
-            'order_id' => $cart->order_id,
-            'status'   => $cart->payment_status,
-        ], 200);
+        // Solo `ok`: la ruta es publica y Mercado Pago no lee el cuerpo. Los ids quedan en el log.
+        return response()->json(['ok' => true], 200);
+    }
+
+    /**
+     * Un carrito que ya tiene un pago APROBADO no se pisa con la notificacion de OTRO pago que no lo
+     * esta. El caso: la primera tarjeta del comprador se rechaza (pago A) y la segunda se aprueba
+     * (pago B); si la notificacion de A llega despues que la de B (reintento de MP tras un 500
+     * nuestro, o llegada desordenada), sin esta guarda el pedido quedaba con `payment_id = A` y
+     * `payment_status = rejected`, y como el webhook es el unico camino que ata el pago al pedido en
+     * el flujo de Mercado Pago, nadie lo corregia. Para el MISMO pago las notificaciones siguen
+     * siendo idempotentes: siempre se consulta el estado actual y se vuelve a escribir.
+     *
+     * @param \App\Cart $cart
+     * @param array $pago El pago tal como lo devuelve la API de Mercado Pago.
+     * @return bool
+     */
+    protected function ya_tiene_otro_pago_aprobado(Cart $cart, array $pago)
+    {
+        if ($cart->payment_status !== 'approved' || empty($cart->payment_id)) {
+            return false;
+        }
+
+        $es_el_mismo_pago = isset($pago['id']) && (string) $pago['id'] === (string) $cart->payment_id;
+        $viene_aprobado   = isset($pago['status']) && $pago['status'] === 'approved';
+
+        return !$es_el_mismo_pago && !$viene_aprobado;
     }
 
     /**

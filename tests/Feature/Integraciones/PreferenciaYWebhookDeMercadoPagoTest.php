@@ -3,6 +3,7 @@
 namespace Tests\Feature\Integraciones;
 
 use App\Cart;
+use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\MercadoPagoController;
 use App\Order;
 use App\OrderStatus;
@@ -145,13 +146,30 @@ class PreferenciaYWebhookDeMercadoPagoTest extends TestCase
      * @param string $url_del_request Con que URL llego el request de la preferencia.
      * @return array<string, mixed>
      */
-    private function datosDePreferencia($cart, $url_del_request = 'https://api-tienda.test/api/mercado-pago/preference')
+    private function datosDePreferencia($cart, $url_del_request = 'https://api-tienda.test/api/mercado-pago/preference', array $server = [])
     {
         $controller = new MercadoPagoController();
         $metodo = new ReflectionMethod($controller, 'datos_de_preferencia');
         $metodo->setAccessible(true);
 
-        return $metodo->invoke($controller, Request::create($url_del_request, 'POST'), $this->comercio, $cart);
+        $request = Request::create($url_del_request, 'POST', [], [], [], $server);
+
+        return $metodo->invoke($controller, $request, $this->comercio, $cart);
+    }
+
+    /**
+     * Como llega un request en el shared hosting: Laravel servido desde `/public/index.php`, sin
+     * reescritura. Es lo que hace que `$request->root()` termine en `/public`.
+     *
+     * @return array<string, string>
+     */
+    private function servidorConPublic()
+    {
+        return [
+            'SCRIPT_NAME'     => '/public/index.php',
+            'SCRIPT_FILENAME' => '/home/x/tienda/api/public/index.php',
+            'PHP_SELF'        => '/public/index.php',
+        ];
     }
 
     /**
@@ -207,16 +225,16 @@ class PreferenciaYWebhookDeMercadoPagoTest extends TestCase
         $this->comercio->online = 'https://tienda.test/';
         $cart = $this->carrito();
 
-        $datos = $this->datosDePreferencia($cart, 'https://api-tienda.test/public/api/mercado-pago/preference');
+        $datos = $this->datosDePreferencia($cart, 'https://api-tienda.test/public/api/mercado-pago/preference', $this->servidorConPublic());
 
         $this->assertSame('https://tienda.test/pago-exitoso', $datos['back_urls']['success']);
         $this->assertSame('https://tienda.test/pago-pendiente', $datos['back_urls']['pending']);
         $this->assertSame('https://tienda.test/pago-rechazado', $datos['back_urls']['failure']);
         $this->assertSame('approved', $datos['auto_return']);
         $this->assertSame(
-            'https://api-tienda.test/api/mercado-pago/webhook?commerce_id='.$this->comercio->id,
+            'https://api-tienda.test/public/api/mercado-pago/webhook?commerce_id='.$this->comercio->id,
             $datos['notification_url'],
-            'El webhook tiene que apuntar a este mismo backend, con el comercio en la query.'
+            'En el shared hosting Laravel vive bajo /public y el webhook tiene que llevar ese mismo prefijo: es la URL que acaba de funcionar para pedir la preferencia.'
         );
         $this->assertSame((string) $cart->id, $datos['external_reference']);
         $this->assertSame($cart->id, $datos['metadata']['cart_id']);
@@ -322,7 +340,8 @@ class PreferenciaYWebhookDeMercadoPagoTest extends TestCase
             'data'   => ['id' => (string) self::PAYMENT_ID_REAL],
         ]);
 
-        $respuesta->assertStatus(200)->assertJson(['ok' => true, 'cart_id' => $cart->id, 'status' => 'approved']);
+        $respuesta->assertStatus(200)->assertJson(['ok' => true]);
+        $this->assertArrayNotHasKey('cart_id', $respuesta->json(), 'La ruta es publica: no devuelve ids internos.');
 
         $cart->refresh();
         $order->refresh();
@@ -497,5 +516,109 @@ class PreferenciaYWebhookDeMercadoPagoTest extends TestCase
             ->assertStatus(500);
 
         $this->assertNull($cart->refresh()->payment_id, 'Con Mercado Pago caido no se escribe nada.');
+    }
+
+    /**
+     * Con nginx reescribiendo `/public` (VPS), el request llega limpio y el webhook sale limpio.
+     *
+     * @return void
+     */
+    public function test_sin_public_en_el_request_el_webhook_sale_sin_public()
+    {
+        $this->enProduccion();
+        $this->comercio->online = 'https://tienda.test';
+
+        $datos = $this->datosDePreferencia($this->carrito());
+
+        $this->assertSame(
+            'https://api-tienda.test/api/mercado-pago/webhook?commerce_id='.$this->comercio->id,
+            $datos['notification_url']
+        );
+    }
+
+    /**
+     * El caso positivo de `carrito_del_pago()`: el carrito que esta sesion creo (lo registra
+     * `CartOwnershipHelper::registrar`, como hace `CartController@store`) llega como referencia.
+     * Es el corazon de la mision: sin esto el webhook no tiene a que pedido atarle el pago.
+     *
+     * @return void
+     */
+    public function test_el_carrito_de_esta_sesion_si_se_usa_como_referencia()
+    {
+        $cart = $this->carrito();
+        CartOwnershipHelper::registrar($cart->id);
+
+        $controller = new MercadoPagoController();
+        $metodo = new ReflectionMethod($controller, 'carrito_del_pago');
+        $metodo->setAccessible(true);
+
+        $request = Request::create('/api/mercado-pago/preference', 'POST', ['cart_id' => $cart->id]);
+        $resuelto = $metodo->invoke($controller, $request);
+
+        $this->assertNotNull($resuelto);
+        $this->assertSame($cart->id, $resuelto->id);
+
+        $datos = $this->datosDePreferencia($resuelto);
+        $this->assertSame((string) $cart->id, $datos['external_reference']);
+    }
+
+    /**
+     * El id del pago viaja en una URL autenticada con el token del comercio: solo digitos. Cualquier
+     * otra cosa se ignora sin salir a la red.
+     *
+     * @return void
+     */
+    public function test_un_id_de_pago_que_no_es_numerico_se_ignora_sin_salir_a_la_red()
+    {
+        $this->paymentMethodMp();
+        Http::fake();
+
+        $this->postJson('/api/mercado-pago/webhook?commerce_id='.$this->comercio->id.'&type=payment', [
+            'type' => 'payment',
+            'data' => ['id' => 'search?external_reference=55'],
+        ])->assertStatus(200)->assertJson(['ignorado' => true]);
+
+        $this->postJson('/api/mercado-pago/webhook?commerce_id='.$this->comercio->id.'&type=payment', [
+            'type' => 'payment',
+            'data' => ['id' => '../../merchant_orders/123'],
+        ])->assertStatus(200)->assertJson(['ignorado' => true]);
+
+        Http::assertNothingSent();
+    }
+
+    /**
+     * Un carrito con un pago APROBADO no se pisa con la notificacion de OTRO pago rechazado (la
+     * primera tarjeta rechazada llegando despues que la segunda aprobada). El mismo pago aprobado
+     * si se vuelve a escribir: es idempotente.
+     *
+     * @return void
+     */
+    public function test_un_pago_aprobado_no_se_pisa_con_otro_pago_rechazado()
+    {
+        $this->paymentMethodMp();
+        $cart = $this->carrito(['payment_id' => self::PAYMENT_ID_REAL, 'payment_status' => 'approved']);
+
+        $rechazado = self::PAYMENT_ID_REAL - 1;
+        $pago = $this->pagoDeMercadoPago($cart, 'rejected');
+        $pago['id'] = $rechazado;
+
+        Http::fake([
+            MercadoPagoController::API_PAGOS.$rechazado => Http::response($pago, 200),
+            MercadoPagoController::API_PAGOS.self::PAYMENT_ID_REAL => Http::response($this->pagoDeMercadoPago($cart), 200),
+        ]);
+
+        $this->postJson('/api/mercado-pago/webhook?commerce_id='.$this->comercio->id.'&type=payment&data.id='.$rechazado, [
+            'type' => 'payment',
+            'data' => ['id' => (string) $rechazado],
+        ])->assertStatus(200)->assertJson(['ignorado' => true, 'motivo' => 'ya hay un pago aprobado']);
+
+        $cart->refresh();
+        $this->assertSame(self::PAYMENT_ID_REAL, (int) $cart->payment_id, 'El pago aprobado tiene que quedar.');
+        $this->assertSame('approved', $cart->payment_status);
+
+        // El mismo pago aprobado, notificado de nuevo, se procesa igual (idempotente).
+        $this->postJson($this->urlDelWebhook(), ['type' => 'payment', 'data' => ['id' => (string) self::PAYMENT_ID_REAL]])
+            ->assertStatus(200)
+            ->assertJson(['ok' => true]);
     }
 }
