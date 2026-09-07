@@ -127,7 +127,37 @@ class MercadoPagoController extends Controller
             'preference_id' => $preference->id,
         ]);
 
-        return response()->json(['preference_id' => $preference->id], 201);
+        // `init_point` es la URL del Checkout Pro de ESTA preferencia: con ella la tienda manda al
+        // comprador derecho a Mercado Pago (`window.location.href`) en el mismo click con el que
+        // confirma el pedido. Antes solo se devolvia el `preference_id`, y el SPA tenia que cargar
+        // el SDK de Mercado Pago y dejar que dibujara SU boton, que aparecia recien despues de
+        // elegir el medio de pago: dos clicks y una espera en el medio para hacer una sola cosa.
+        //
+        // 🔴 Se agrega, no reemplaza: `preference_id` se sigue devolviendo porque un SPA no
+        // desplegado todavia es el que lo lee, y los dos lados nunca llegan a produccion el mismo
+        // dia. `sandbox_init_point` viaja para las credenciales de prueba, donde `init_point`
+        // apunta al checkout productivo y no sirve.
+        return response()->json($this->respuesta_de_preferencia($preference), 201);
+    }
+
+    /**
+     * Lo que se le contesta al SPA cuando la preferencia se creo bien.
+     *
+     * Esta afuera de `preference()` por el mismo motivo que `access_token_para_cobrar()`: es la
+     * unica parte de la respuesta que se puede probar sin salir a la red, porque
+     * `$preference->save()` hace un POST a api.mercadopago.com. Los tests la invocan por
+     * reflexion con un objeto que imita la preferencia ya guardada.
+     *
+     * @param object $preference La preferencia del SDK, despues de `save()`.
+     * @return array<string, mixed>
+     */
+    protected function respuesta_de_preferencia($preference)
+    {
+        return [
+            'preference_id'      => isset($preference->id) ? $preference->id : null,
+            'init_point'         => isset($preference->init_point) ? $preference->init_point : null,
+            'sandbox_init_point' => isset($preference->sandbox_init_point) ? $preference->sandbox_init_point : null,
+        ];
     }
 
     /**

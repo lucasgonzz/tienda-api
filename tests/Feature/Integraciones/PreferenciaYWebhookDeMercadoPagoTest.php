@@ -158,6 +158,21 @@ class PreferenciaYWebhookDeMercadoPagoTest extends TestCase
     }
 
     /**
+     * Invoca `respuesta_de_preferencia()` por reflexion.
+     *
+     * @param object $preference La preferencia del SDK, imitada (despues de `save()`).
+     * @return array<string, mixed>
+     */
+    private function respuestaDePreferencia($preference)
+    {
+        $controller = new MercadoPagoController();
+        $metodo = new ReflectionMethod($controller, 'respuesta_de_preferencia');
+        $metodo->setAccessible(true);
+
+        return $metodo->invoke($controller, $preference);
+    }
+
+    /**
      * Como llega un request en el shared hosting: Laravel servido desde `/public/index.php`, sin
      * reescritura. Es lo que hace que `$request->root()` termine en `/public`.
      *
@@ -620,5 +635,56 @@ class PreferenciaYWebhookDeMercadoPagoTest extends TestCase
         $this->postJson($this->urlDelWebhook(), ['type' => 'payment', 'data' => ['id' => (string) self::PAYMENT_ID_REAL]])
             ->assertStatus(200)
             ->assertJson(['ok' => true]);
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | La respuesta de la preferencia (mision `checkout-tienda-mp-directo`, 7/9/2026)
+    |---------------------------------------------------------------------------------------------
+    */
+
+    /**
+     * La tienda manda al comprador a Mercado Pago con `window.location.href = init_point`, en el
+     * mismo click con el que confirma el pedido. Sin este campo el SPA tendria que volver a cargar
+     * el SDK y esperar a que dibuje su propio boton, que es justamente lo que esta mision saco.
+     */
+    public function test_la_respuesta_de_la_preferencia_lleva_el_init_point()
+    {
+        $preference = (object) [
+            'id'                 => '163250661-abc-123',
+            'init_point'         => 'https://www.mercadopago.com.ar/checkout/v1/redirect?pref_id=163250661-abc-123',
+            'sandbox_init_point' => 'https://sandbox.mercadopago.com.ar/checkout/v1/redirect?pref_id=163250661-abc-123',
+        ];
+
+        $respuesta = $this->respuestaDePreferencia($preference);
+
+        $this->assertSame('163250661-abc-123', $respuesta['preference_id']);
+        $this->assertSame($preference->init_point, $respuesta['init_point']);
+        $this->assertSame($preference->sandbox_init_point, $respuesta['sandbox_init_point']);
+    }
+
+    /**
+     * 🔴 `preference_id` se sigue devolviendo SIEMPRE. Es lo unico que lee el SPA que todavia no
+     * se desplego, y los dos lados de la tienda nunca llegan a produccion el mismo dia: si esta
+     * clave desapareciera, el medio de pago dominante quedaria muerto en esa ventana.
+     */
+    public function test_la_respuesta_sigue_trayendo_el_preference_id_para_el_spa_viejo()
+    {
+        $respuesta = $this->respuestaDePreferencia((object) ['id' => 'solo-el-id']);
+
+        $this->assertArrayHasKey('preference_id', $respuesta);
+        $this->assertSame('solo-el-id', $respuesta['preference_id']);
+    }
+
+    /**
+     * Una preferencia sin `init_point` (Mercado Pago no lo devolvio) no rompe la respuesta: viaja
+     * en null y el SPA cae al SDK, que es lo que hacia antes de esta mision.
+     */
+    public function test_una_preferencia_sin_init_point_responde_null_y_no_rompe()
+    {
+        $respuesta = $this->respuestaDePreferencia((object) ['id' => 'sin-init-point']);
+
+        $this->assertNull($respuesta['init_point']);
+        $this->assertNull($respuesta['sandbox_init_point']);
     }
 }
