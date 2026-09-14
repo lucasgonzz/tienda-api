@@ -7,9 +7,11 @@ use App\Cart;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
+use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
 use App\Http\Controllers\Helpers\StringHelper;
+use App\Http\Controllers\Helpers\ZipnovaEsquemaHelper;
 use App\Jobs\BroadcastOrderCreated;
 use App\Jobs\SendOrderEmails;
 use App\Order;
@@ -39,8 +41,15 @@ class OrderController extends Controller
 
         $orders = Order::where('buyer_id', $buyer_id)
                         ->orderBy('created_at', 'DESC')
-                        ->withAll()
-                        ->paginate(6);
+                        ->withAll();
+
+        // El envío generado en Zipnova (estado, correo, seguimiento) para "Mis pedidos". Solo
+        // cuando la tabla existe: la crea empresa-api y hay bases de clientes sin ella.
+        if (ZipnovaEsquemaHelper::tabla_envios()) {
+            $orders->with('envio');
+        }
+
+        $orders = $orders->paginate(6);
         return response()->json(['orders' => $orders], 200);
     }
 
@@ -89,6 +98,11 @@ class OrderController extends Controller
         $order = Order::where('user_id', $commerce_id)
                         ->orderBy('id', 'DESC')
                         ->with('articles', 'buyer.comercio_city_client', 'promociones_vinoteca');
+
+        // Mismo criterio que index(): el envío de Zipnova solo si la tabla existe.
+        if (ZipnovaEsquemaHelper::tabla_envios()) {
+            $order->with('envio');
+        }
 
         if (!is_null($buyer_id)) {
             $order = $order->where('buyer_id', $buyer_id);
@@ -150,8 +164,29 @@ class OrderController extends Controller
                 return response()->json(['error' => 'No hay comprador identificado para este pedido'], 401);
             }
 
+            // Envío por correo (misión zipnova-envios): un pedido con opción de Zipnova y sin la
+            // dirección completa no se puede despachar desde el ERP, así que se corta acá, antes
+            // de crear nada. El SPA valida lo mismo antes de llegar; esto es la última guarda.
+            $faltantes_del_destino = EnvioCartHelper::faltantes_del_destino($cart);
+
+            if (count($faltantes_del_destino) > 0) {
+                return response()->json([
+                    'codigo'  => 'destino',
+                    'message' => 'Faltan datos de la dirección de entrega para generar el envío.',
+                    'errors'  => array_fill_keys($faltantes_del_destino, ['Este dato es obligatorio para el envío.']),
+                ], 422);
+            }
+
+            // Si el carrito va por Zipnova, la dirección del pedido es el destino del envío en
+            // texto (el ERP viejo y los mails la muestran tal cual); si no, lo que resolvió
+            // get_address() como siempre.
+            $address = EnvioCartHelper::direccion_en_texto($cart);
+            if (is_null($address)) {
+                $address = $this->get_address($request);
+            }
+
             Log::info('Fecha entrega carrito: '.$cart->fecha_entrega);
-        	$order = Order::create([
+        	$order = Order::create(array_merge([
                 'num'                       => $this->num('orders', $request->commerce_id),
                 'buyer_id'                  => $buyer_id,
                 'seller_id'                 => $request->seller_id ? $request->seller_id : null,
@@ -172,8 +207,10 @@ class OrderController extends Controller
                 'address_id'                => 0,
                 'total'                     => $cart->total,
                 'fecha_entrega'             => $cart->fecha_entrega,
-                'address'                   => $this->get_address($request),
-        	]);
+                'address'                   => $address,
+        	// Las columnas envio_* copiadas del carrito, solo si el esquema está y el carrito va
+        	// por Zipnova (vacío en cualquier otro caso: el create de siempre no cambia).
+        	], EnvioCartHelper::atributos_para_pedido($cart)));
 
             Log::info('order address:');
             Log::info($order->address);

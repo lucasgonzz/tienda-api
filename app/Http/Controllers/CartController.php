@@ -6,6 +6,7 @@ use App\Cart;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
+use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Order;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -262,6 +263,13 @@ class CartController extends Controller
     /**
      * Copia al carrito los campos del paso de checkout (entrega, pago, notas, etc.).
      *
+     * Al final sincroniza el envío por correo (`$data['envio']`, misión zipnova-envios): si el
+     * comprador eligió una opción de Zipnova, el servidor la re-cotiza cuando hace falta y deja el
+     * precio en `carts.envio_precio`; si eligió retiro o una zona propia, limpia esas columnas.
+     * Va acá y no después de adjuntar los artículos a propósito: un 422 de envío se lanza ANTES
+     * del `save()`, así que no deja el carrito a medias. En una base sin las columnas de envío
+     * el helper no hace nada (`ZipnovaEsquemaHelper`).
+     *
      * @param \App\Cart $cart
      * @param array $data Payload del carrito enviado por tienda-spa
      * @return void
@@ -277,5 +285,7 @@ class CartController extends Controller
         $cart->cupon_id             = isset($data['cupon_id']) ? $data['cupon_id'] : null;
         $cart->description          = isset($data['description']) ? $data['description'] : null;
         $cart->fecha_entrega        = !empty($data['fecha_entrega']) ? $data['fecha_entrega'] : null;
+
+        EnvioCartHelper::sincronizar($cart, is_array($data) ? $data : []);
     }
 }
