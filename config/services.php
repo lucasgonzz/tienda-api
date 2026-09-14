@@ -52,7 +52,12 @@ return [
     // ese header viaja el token. Mismo bloque que empresa-api (App\Services\Zipnova\ZipnovaClient).
     'zipnova' => [
         'base_url'         => env('ZIPNOVA_BASE_URL', 'https://api.zipnova.com.ar/v2'),
-        'timeout'          => (int) env('ZIPNOVA_TIMEOUT', 20),
+        // Más corto que en el ERP (20 s): acá cotiza un endpoint público y un worker PHP
+        // colgado esperando a Zipnova es un worker menos para todos los compradores.
+        'timeout'          => (int) env('ZIPNOVA_TIMEOUT', 10),
+        // Sin reintento ante 429: el límite de Zipnova es por IP del servidor (compartida por
+        // todas las tiendas del shared) y dormir 5 s por comprador frenaría al cliente entero.
+        'reintento_429'    => (bool) env('ZIPNOVA_REINTENTO_429', false),
         'guzzle_verify'    => env('ZIPNOVA_GUZZLE_VERIFY_SSL', true),
         'guzzle_ca_bundle' => env('ZIPNOVA_GUZZLE_CA_BUNDLE', ''),
     ],
