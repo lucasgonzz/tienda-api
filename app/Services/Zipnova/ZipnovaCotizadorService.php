@@ -116,11 +116,21 @@ class ZipnovaCotizadorService
 
         $cotizacion = ZipnovaQuoteNormalizer::normalizar($respuesta, $envio_gratis);
 
-        // Zipnova devuelve el destino resuelto; si no lo hizo, queda lo que mandó el comprador
-        // para que el snapshot del carrito siempre tenga con qué comparar.
-        if (is_null($cotizacion['zipcode']) || $cotizacion['zipcode'] === '') {
-            $cotizacion['zipcode'] = (string) $zipcode;
-        }
+        // Una opción de retiro sin sucursales nunca se podría completar (el envío en Zipnova
+        // exige el point_id): no se le ofrece al comprador.
+        $cotizacion['opciones'] = array_values(array_filter($cotizacion['opciones'], function ($opcion) {
+            if (empty($opcion['es_punto_de_retiro'])) {
+                return true;
+            }
+
+            return isset($opcion['puntos_de_retiro']) && is_array($opcion['puntos_de_retiro']) && count($opcion['puntos_de_retiro']) > 0;
+        }));
+
+        // El CP es SIEMPRE el que mandó el comprador, ya limpio, y no el eco de Zipnova: es lo
+        // que el carrito compara en cada guardado y contra la dirección, y Zipnova puede
+        // devolverlo normalizado distinto ("X5000ABC" -> "5000"). Localidad y provincia sí vienen
+        // resueltas por Zipnova; si no las mandó, quedan las del comprador.
+        $cotizacion['zipcode'] = (string) $zipcode;
         if (is_null($cotizacion['city']) && isset($destination['city'])) {
             $cotizacion['city'] = $destination['city'];
         }

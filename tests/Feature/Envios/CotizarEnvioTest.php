@@ -216,6 +216,53 @@ class CotizarEnvioTest extends TestCase
         });
     }
 
+    public function test_descarta_las_opciones_de_retiro_que_vienen_sin_sucursales()
+    {
+        $this->conectorZipnova($this->comercio);
+
+        /* La misma fixture, con la opción de retiro sin sucursales: nunca se podría completar
+           (el envío en Zipnova exige el point_id), así que no se le ofrece al comprador. */
+        $sin_sucursales = $this->fixture('zipnova_quote.json');
+        foreach ($sin_sucursales['all_results'] as $i => $resultado) {
+            if ($resultado['service_type']['code'] === 'pickup_point') {
+                $sin_sucursales['all_results'][$i]['pickup_points'] = [];
+            }
+        }
+        Http::fake([self::URL_QUOTE => Http::response($sin_sucursales, 200)]);
+
+        $respuesta = $this->postJson(self::RUTA, [
+            'commerce_id' => $this->comercio->id,
+            'zipcode'     => '5000',
+            'articles'    => [['id' => $this->articulo->id, 'amount' => 1]],
+        ]);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame([
+            self::KEY_DOMICILIO_CORREO_ARG,
+            self::KEY_DOMICILIO_ANDREANI,
+        ], array_column($respuesta->json('opciones'), 'key'), 'solo las de domicilio');
+    }
+
+    public function test_el_codigo_postal_de_la_respuesta_es_el_del_comprador_limpio_y_no_el_eco_de_zipnova()
+    {
+        $this->conectorZipnova($this->comercio);
+        /* La fixture ecoa "5000" en destination.zipcode; el comprador escribió un CPA con ruido. */
+        $this->zipnovaCotiza();
+
+        $respuesta = $this->postJson(self::RUTA, [
+            'commerce_id' => $this->comercio->id,
+            'zipcode'     => ' x5000-abc ',
+            'articles'    => [['id' => $this->articulo->id, 'amount' => 1]],
+        ]);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame('X5000ABC', $respuesta->json('zipcode'));
+
+        Http::assertSent(function ($request) {
+            return $request->data()['destination']['zipcode'] === 'X5000ABC';
+        });
+    }
+
     /*
     |---------------------------------------------------------------------------------------------
     | Modo `cart_id`

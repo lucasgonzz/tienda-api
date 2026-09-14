@@ -49,7 +49,9 @@ class EnvioController extends Controller
     {
         $validator = Validator::make($request->all(), [
             'commerce_id'       => 'required|integer',
-            'zipcode'           => 'required|string|min:4|max:8',
+            // El largo real (4 a 8) se exige DESPUÉS de limpiar: "x5000-abc" o "5000 " son
+            // entradas legítimas del teclado del teléfono; acá solo se frena el abuso.
+            'zipcode'           => 'required|string|max:20',
             'city'              => 'nullable|string|max:120',
             'state'             => 'nullable|string|max:120',
             'cart_id'           => 'nullable|integer',
