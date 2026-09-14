@@ -115,7 +115,10 @@ class CartController extends Controller
         if (env('APP_ENV') == 'local') {
             // sleep(3);
         }
-    	$cart = Cart::create([
+        // `new` y no `create`: los campos del checkout (incluido el envío por correo, que puede
+        // cortar con 422) se sincronizan ANTES del primer INSERT. Con `create` cada 422 de envío
+        // dejaba un carrito vacío huérfano en la base.
+    	$cart = new Cart([
     		'buyer_id'          => $this->buyerId(),
             'user_id'           => $request->commerce_id,
     	]);

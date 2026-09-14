@@ -699,6 +699,27 @@ class CarritoConEnvioTest extends TestCase
         Http::assertSentCount(1);
     }
 
+    public function test_un_422_de_envio_al_crear_el_carrito_no_deja_un_carrito_huerfano()
+    {
+        $this->zipnovaCotiza();
+
+        $carritos_antes = Cart::where('user_id', $this->comercio->id)->count();
+
+        $respuesta = $this->postJson('/api/carts', [
+            'commerce_id' => $this->comercio->id,
+            'cart'        => [
+                'articles'             => [$this->lineaDelPayload($this->articulo, 2)],
+                'promociones_vinoteca' => [],
+                'deliver'              => 1,
+                'envio'                => $this->envioDelPayload(['opcion_key' => '3|standard_delivery|carrier_pickup']),
+            ],
+        ]);
+
+        $respuesta->assertStatus(422);
+        $this->assertSame('opcion_envio', $respuesta->json('codigo'));
+        $this->assertSame($carritos_antes, Cart::where('user_id', $this->comercio->id)->count(), 'ningún carrito quedó en la base');
+    }
+
     /*
     |---------------------------------------------------------------------------------------------
     | 4. El pedido
