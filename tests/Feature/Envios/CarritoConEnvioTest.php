@@ -995,7 +995,15 @@ class CarritoConEnvioTest extends TestCase
         $this->assertSame((string) $shipment['id'], $pedido['envio']['proveedor_envio_id'], 'el envío más nuevo, no el cancelado');
         $this->assertSame('Procesando', $pedido['envio']['status_name']);
         $this->assertSame('https://tracking.zipnova.com/987654', $pedido['envio']['tracking_url']);
-        $this->assertArrayNotHasKey('respuesta', $pedido['envio'], 'el payload completo de Zipnova no viaja al comprador');
+        $this->assertSame('Andreani', $pedido['envio']['carrier_name']);
+        $this->assertNotEmpty($pedido['envio']['estimated_delivery']);
+
+        /* Lo que es del comercio o de Zipnova no viaja al comprador. */
+        foreach (['respuesta', 'account_id', 'external_id', 'delivery_id', 'bultos', 'error_message'] as $oculta) {
+            $this->assertArrayNotHasKey($oculta, $pedido['envio'], 'el envío de "Mis pedidos" no puede traer '.$oculta);
+        }
+        $this->assertStringNotContainsString('detalle tecnico', $respuesta->getContent());
+        $this->assertStringNotContainsString('CC-400-1234', $respuesta->getContent(), 'el external_id no viaja');
 
         /* Y el pedido de la página de gracias también lo trae. */
         $actual = $this->actingAs($comprador, 'buyer')->json('GET', '/api/orders/current/'.$this->comercio->id)->assertStatus(200);

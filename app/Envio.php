@@ -56,14 +56,25 @@ class Envio extends Model
     protected $guarded = [];
 
     /**
-     * El payload completo de Zipnova no viaja al comprador: trae el depósito de origen del
-     * comercio (dirección, teléfono, documento) y datos internos de la cuenta que no tienen por
-     * qué salir por una API pública. Lo que "Mis pedidos" necesita está en las columnas planas.
+     * Lo que NO viaja al comprador. "Mis pedidos" necesita el estado, el correo, el seguimiento y
+     * la fecha estimada; todo lo demás es del comercio o de Zipnova:
+     *   - `respuesta`: el payload completo, con el depósito de origen (dirección, teléfono,
+     *     documento) y datos internos de la cuenta;
+     *   - `account_id`, `external_id`, `delivery_id`: identificadores de la cuenta de Zipnova
+     *     y del remito, que solo sirven para operar desde el ERP;
+     *   - `bultos`: lo que se declaró a Zipnova (peso y medidas), que es del comercio;
+     *   - `error_message`: el detalle técnico de un envío que no se pudo crear, que se le muestra
+     *     al comercio en el modal del pedido y no al comprador.
      *
      * @var array<int, string>
      */
     protected $hidden = [
         'respuesta',
+        'account_id',
+        'external_id',
+        'delivery_id',
+        'bultos',
+        'error_message',
     ];
 
     /**
