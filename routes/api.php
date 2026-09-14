@@ -143,6 +143,16 @@ Route::get('/delivery-zones/{commerce_id}',
 	'DeliveryZoneController@index'
 );
 
+// Envíos por correo (Zipnova, misión zipnova-envios). Pública a propósito: el comprador cotiza
+// con su código postal desde la ficha del artículo y desde el carrito, antes de identificarse.
+// Cada llamada le cuesta al comercio una consulta a Zipnova, por eso lleva throttle propio; en
+// modo `cart_id` el controller exige además que el carrito sea de esta sesión. El precio que
+// devuelve es informativo: el que se cobra lo re-cotiza el servidor al elegir la opción
+// (EnvioCartHelper) y queda en carts.envio_precio.
+Route::post('/envios/cotizar',
+	'EnvioController@cotizar'
+)->middleware('throttle:30,1');
+
 
 // Buyer Messages
 // ->only(): de los metodos REST, BuyerMessageController implementa solo index() y store() (tiene
