@@ -5,6 +5,7 @@ namespace Tests\Feature\Envios;
 use App\Cart;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ZipnovaEsquemaHelper;
+use App\PriceType;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
@@ -260,6 +261,35 @@ class CotizarEnvioTest extends TestCase
 
         Http::assertSent(function ($request) {
             return $request->data()['destination']['zipcode'] === 'X5000ABC';
+        });
+    }
+
+    public function test_el_valor_declarado_usa_el_precio_de_la_lista_publica_del_comercio()
+    {
+        $this->conectorZipnova($this->comercio);
+        $this->zipnovaCotiza();
+
+        /* Lista de mostrador (position más alta) con otro precio que la columna final_price:
+           es lo que la tienda muestra, y por eso lo que se declara. Prueba de paso que la
+           carga acotada (`with('price_types')`) le alcanza a checkPriceTypes(). */
+        $lista = new PriceType;
+        $lista->name     = 'Lista Mostrador Envios Test';
+        $lista->position = 20;
+        $lista->user_id  = $this->comercio->id;
+        $lista->save();
+
+        $this->articulo->price_types()->attach($lista->id, ['final_price' => 2500]);
+
+        $this->postJson(self::RUTA, [
+            'commerce_id' => $this->comercio->id,
+            'zipcode'     => '5000',
+            'articles'    => [['id' => $this->articulo->id, 'amount' => 2]],
+        ])->assertStatus(200);
+
+        Http::assertSent(function ($request) {
+            $this->assertSame(5000.0, (float) $request->data()['declared_value'], '2 × 2500 de la lista, no 2 × 1000 de la columna');
+
+            return true;
         });
     }
 

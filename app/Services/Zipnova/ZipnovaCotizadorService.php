@@ -174,9 +174,15 @@ class ZipnovaCotizadorService
             return ['lineas' => [], 'subtotal' => 0.0];
         }
 
+        // Solo `price_types`: es lo que `checkPriceTypes()` necesita para resolver el precio en
+        // sus cuatro casos (la lista del comprador, la pública por `position`, y el pivot para
+        // los rangos). `withAll()` traería 13 relaciones (imágenes, descripciones, variantes...)
+        // que una cotización no mira. `sub_category`/`category` las carga `set_ranges()` a
+        // demanda, solo en los comercios con rangos por cantidad. Las columnas de dimensiones
+        // (peso, alto, ancho, profundidad, requires_shipping, free_shipping) son de la fila.
         $articulos = Article::where('user_id', (int) $commerce_id)
             ->whereIn('id', array_keys($cantidades))
-            ->withAll()
+            ->with('price_types')
             ->get();
 
         if (count($articulos) === 0) {
