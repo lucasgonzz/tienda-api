@@ -45,4 +45,16 @@ return [
         'redirect' => env('GOOGLE_URL'),
     ],
 
+    // API de Zipnova (envíos por correo), misión zipnova-envios 14/9/2026. Acá NO hay credenciales:
+    // cada comercio conecta su cuenta desde el ERP y el token viaja cifrado en platform_connectors.
+    // Solo el host (configurable sin tocar código) y las opciones SSL: el PHP de wamp no valida el
+    // certificado si no se le pasa el bundle, y desactivar la verificación no es opción porque en
+    // ese header viaja el token. Mismo bloque que empresa-api (App\Services\Zipnova\ZipnovaClient).
+    'zipnova' => [
+        'base_url'         => env('ZIPNOVA_BASE_URL', 'https://api.zipnova.com.ar/v2'),
+        'timeout'          => (int) env('ZIPNOVA_TIMEOUT', 20),
+        'guzzle_verify'    => env('ZIPNOVA_GUZZLE_VERIFY_SSL', true),
+        'guzzle_ca_bundle' => env('ZIPNOVA_GUZZLE_CA_BUNDLE', ''),
+    ],
+
 ];
