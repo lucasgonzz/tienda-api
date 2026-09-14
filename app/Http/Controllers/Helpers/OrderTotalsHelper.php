@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Cupon;
+use App\Http\Controllers\Helpers\EnvioCartHelper;
 
 /**
  * Calcula el desglose de totales de un pedido, replicando exactamente la cadena que ve el comprador
@@ -164,11 +165,23 @@ class OrderTotalsHelper
             }
         }
 
-        // 3. Envio.
+        // 3. Envio. Por correo (Zipnova, mision zipnova-envios) o por zona propia del comercio,
+        //    nunca los dos: EnvioCartHelper los deja excluyentes en el carrito, y si un pedido
+        //    trajera ambos manda el correo, que es el precio que el servidor cotizo y cobro.
         $delivery_label = null;
         $delivery_amount = null;
 
-        if (!is_null($order->delivery_zone)) {
+        $envio_por_correo = EnvioCartHelper::opcion_de($order);
+
+        if (!is_null($envio_por_correo)) {
+            // `envio_precio` es lo que pago el comprador: 0 cuando el comercio absorbio el envio.
+            $delivery_amount = is_numeric($order->envio_precio) ? (float) $order->envio_precio : 0.0;
+            $delivery_label = 'Envio por '.EnvioCartHelper::etiqueta_de_opcion($envio_por_correo);
+            if (!empty($envio_por_correo['envio_gratis'])) {
+                $delivery_label .= ' - gratis';
+            }
+            $total = $total + $delivery_amount;
+        } elseif (!is_null($order->delivery_zone)) {
             $delivery_amount = (float) $order->delivery_zone->price;
             $delivery_label = 'Envio a '.$order->delivery_zone->name;
             $total = $total + $delivery_amount;

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Cart;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
+use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Http\Controllers\Helpers\MercadoPagoCredentialsHelper;
 use App\Http\Controllers\Helpers\OnlinePaymentHelper;
 use App\Order;
@@ -78,9 +79,11 @@ class MercadoPagoController extends Controller
         // Crea un objeto de preferencia
         $preference = new \MercadoPago\Preference();
 
-        $online_payment_helper = new OnlinePaymentHelper($this->commerce, $this->payment_method);
+        // El carrito se resuelve ANTES de armar los items: el envio por correo se cobra con lo que
+        // el servidor dejo en carts.envio_precio, y eso sale del carrito, no del body.
+        $cart = $this->carrito_del_pago($request);
 
-        $articles = $online_payment_helper->setPrices($request->cupon, $request->delivery_zone, $request->articles);
+        $articles = $this->articulos_a_cobrar($request, $cart);
 
         $items = [];
         foreach ($articles as $article) {
@@ -92,8 +95,6 @@ class MercadoPagoController extends Controller
             $items[] = $item;
         }
         $preference->items = $items;
-
-        $cart = $this->carrito_del_pago($request);
 
         foreach ($this->datos_de_preferencia($request, $this->commerce, $cart) as $campo => $valor) {
             $preference->{$campo} = $valor;
@@ -138,6 +139,32 @@ class MercadoPagoController extends Controller
         // dia. `sandbox_init_point` viaja para las credenciales de prueba, donde `init_point`
         // apunta al checkout productivo y no sirve.
         return response()->json($this->respuesta_de_preferencia($preference), 201);
+    }
+
+    /**
+     * Los items que se le cobran al comprador (articulos, cupon y envio), listos para la preferencia.
+     *
+     * Esta afuera de `preference()` por el mismo motivo que `datos_de_preferencia()`: es lo que se
+     * puede probar sin salir a la red. Lo que agrega la mision zipnova-envios es el envio por correo:
+     *
+     * 🔴 Si el carrito va por Zipnova (`EnvioCartHelper::precio_para_cobrar()` no es null), el
+     * envio se cobra con `carts.envio_precio` —el precio que el servidor cotizo al elegir la
+     * opcion— y la `delivery_zone` del body se IGNORA aunque venga: la zona y el correo son
+     * excluyentes y un body con las dos es un estado viejo del SPA. Si el carrito no va por
+     * Zipnova (o no se mando `cart_id`), vale la zona del body como siempre.
+     *
+     * @param Request $request cupon, delivery_zone, articles.
+     * @param \App\Cart|null $cart Carrito que se paga, si se pudo resolver.
+     * @return array<int, array{name: string, amount: mixed, final_price: mixed}>
+     */
+    protected function articulos_a_cobrar(Request $request, $cart)
+    {
+        $online_payment_helper = new OnlinePaymentHelper($this->commerce, $this->payment_method);
+
+        $envio_precio = EnvioCartHelper::precio_para_cobrar($cart);
+        $delivery_zone = is_null($envio_precio) ? $request->delivery_zone : null;
+
+        return $online_payment_helper->setPrices($request->cupon, $delivery_zone, $request->articles, $envio_precio);
     }
 
     /**

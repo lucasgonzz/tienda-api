@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\GoogleLoginHelper;
+use App\Services\Zipnova\ZipnovaCotizadorService;
 use App\User;
 use App\Workday;
 use Illuminate\Http\Request;
@@ -96,7 +97,19 @@ class CommerceController extends Controller
             $commerce->configuration->show_google_login = GoogleLoginHelper::isAvailable($commerce_id);
         }
 
-        return response()->json(['commerce' => $this->proyectar($commerce)], 200);
+        $publico = $this->proyectar($commerce);
+
+        // Envios por correo (Zipnova, mision zipnova-envios): dos claves ADITIVAS y calculadas,
+        // fuera de la lista blanca porque no son columnas de `users`. `envios_zipnova` dice si el
+        // comprador puede cotizar con su codigo postal en esta tienda; `envios_zipnova_config`
+        // trae solo `envio_gratis_desde` (para mostrarlo como incentivo). Nunca el token ni la
+        // cuenta: SerializacionDeSecretosTest lo vigila. Y nunca un 500: un cliente cuya base
+        // todavia no tiene el esquema, o cuyo conector no se puede descifrar, ve `false`.
+        if (!is_null($publico)) {
+            $publico = array_merge($publico, ZipnovaCotizadorService::disponibilidad_publica($commerce_id));
+        }
+
+        return response()->json(['commerce' => $publico], 200);
     }
 
     /**

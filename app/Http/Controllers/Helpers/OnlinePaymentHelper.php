@@ -12,7 +12,24 @@ class OnlinePaymentHelper {
         $this->payment_method = $payment_method;
     }
 
-    function setPrices($cupon, $delivery_zone, $articles) {
+    /**
+     * Arma los items que se le cobran al comprador en la pasarela: los articulos con el recargo
+     * del comercio y del medio de pago, el cupon aplicado, y el envio.
+     *
+     * El envio puede venir de dos lados, nunca de los dos a la vez:
+     *   - `$delivery_zone`: la zona propia del comercio, tal como la manda el SPA (flujo viejo).
+     *   - `$envio_precio`: el envio por correo (Zipnova, mision zipnova-envios), leido por el
+     *     controller de `carts.envio_precio` — del carrito, NUNCA del body — y agregado solo si es
+     *     mayor a cero (0 = el comercio absorbio el envio). El parametro es opcional para que los
+     *     otros llamadores (PaywayController) sigan igual.
+     *
+     * @param array|null $cupon
+     * @param array|null $delivery_zone
+     * @param array $articles
+     * @param float|null $envio_precio
+     * @return array
+     */
+    function setPrices($cupon, $delivery_zone, $articles, $envio_precio = null) {
         $index = 0;
         if (!is_null($cupon)) {
             if (!is_null($cupon['amount'])) {
@@ -77,6 +94,13 @@ class OnlinePaymentHelper {
                 'name'          => 'Envio',
                 'amount'        => 1,
                 'final_price'   => $delivery_zone['price'],
+            ];
+        }
+        if (!is_null($envio_precio) && is_numeric($envio_precio) && (float) $envio_precio > 0) {
+            $articles[] = [
+                'name'          => 'Envio',
+                'amount'        => 1,
+                'final_price'   => round((float) $envio_precio, 2),
             ];
         }
         return $articles;

@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\OnlineConfiguration;
+use App\Services\Zipnova\EnvioDestinoHelper;
 use Carbon\Carbon;
 
 /**
@@ -91,11 +93,35 @@ class OrderMailDataHelper
     /**
      * Forma de entrega en texto listo para imprimir.
      *
+     * Con envio por correo (Zipnova, mision zipnova-envios) el tipo nombra al correo y el detalle
+     * es la direccion del destino en una linea: `orders.address` ya la trae asi
+     * (OrderController@store la escribe con EnvioDestinoHelper::como_texto), y si un pedido viejo
+     * no la tuviera se arma desde `envio_destino`.
+     *
      * @param \App\Order $order
-     * @return array ['tipo' => 'Envio a domicilio'|'Retiro por el local', 'detalle' => string|null]
+     * @return array ['tipo' => 'Envio a domicilio'|'Envio a domicilio por X (Zipnova)'|'Retiro en sucursal de X (Zipnova)'|'Retiro por el local', 'detalle' => string|null]
      */
     static function entrega($order) {
         if ($order->deliver) {
+            $envio_por_correo = EnvioCartHelper::opcion_de($order);
+
+            if (!is_null($envio_por_correo)) {
+                $carrier = isset($envio_por_correo['carrier_name']) && trim((string) $envio_por_correo['carrier_name']) !== ''
+                    ? trim((string) $envio_por_correo['carrier_name'])
+                    : 'correo';
+
+                $detalle = empty($order->address) ? null : $order->address;
+                if (is_null($detalle) && is_array($order->envio_destino)) {
+                    $texto = EnvioDestinoHelper::como_texto($order->envio_destino);
+                    $detalle = $texto === '' ? null : $texto;
+                }
+
+                return [
+                    'tipo'    => (!empty($envio_por_correo['es_punto_de_retiro']) ? 'Retiro en sucursal de ' : 'Envio a domicilio por ').$carrier.' (Zipnova)',
+                    'detalle' => $detalle,
+                ];
+            }
+
             return [
                 'tipo'    => 'Envio a domicilio',
                 'detalle' => empty($order->address) ? null : $order->address,
