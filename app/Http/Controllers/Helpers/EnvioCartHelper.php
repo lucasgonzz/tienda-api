@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Cart;
 use App\Envio;
+use App\PromocionVinoteca;
 use App\Services\Zipnova\EnvioDestinoHelper;
 use App\Services\Zipnova\SinArticulosException;
 use App\Services\Zipnova\SinZipnovaException;
@@ -11,6 +12,7 @@ use App\Services\Zipnova\UbicacionException;
 use App\Services\Zipnova\ZipnovaCotizadorService;
 use App\Services\Zipnova\ZipnovaException;
 use App\Services\Zipnova\ZipnovaQuoteNormalizer;
+use Carbon\Carbon;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\Log;
 
@@ -25,17 +27,26 @@ use Illuminate\Support\Facades\Log;
  * mail y el que va a la preferencia de Mercado Pago: una sola fuente para la plata del envío.
  *
  * No se re-cotiza en cada guardado del carrito (el SPA lo guarda seguido): solo cuando cambió la
- * opción, el código postal o las líneas (hash de artículo + variante + cantidad). Con lo mismo, se
- * conserva el snapshot y solo se actualizan la dirección y la sucursal elegida.
+ * opción, el código postal o las líneas (hash de artículo + variante + cantidad, y de cada
+ * promoción de vinoteca con su cantidad), o cuando la cotización guardada tiene más de
+ * `HORAS_DE_VIGENCIA`. Con lo mismo, se conserva el snapshot y solo se actualizan la dirección y
+ * la sucursal elegida.
+ *
+ * 🔴 Y el precio queda atado a las líneas que se cotizaron: cualquier camino que cambie las
+ * líneas sin pasar por acá (`update_article_amount`) invalida la cotización
+ * (`invalidar_cotizacion`), y `OrderController@store` compara el hash del snapshot con las
+ * líneas reales del carrito antes de crear el pedido (`motivo_para_recotizar`). Sin eso, un
+ * carrito de 100 unidades cotizado con envío gratis por umbral y bajado a 1 unidad se pagaba con
+ * envío gratis.
  *
  * ── Dónde corre ───────────────────────────────────────────────────────────────────────────────
  *
  * Desde `CartController::sync_checkout_fields()`, en `store` y en `update`, ANTES del `save()` y
  * antes de que el controller vuelva a adjuntar los artículos. Por eso las líneas salen del
  * payload (`articles[].id` + `pivot.amount`) y no de `$cart->articles`, que a esa altura está
- * vacío (store) o viejo (update); los artículos se cargan de la base por el comercio del carrito
- * y el precio lo resuelve el servidor (ver `ZipnovaCotizadorService::lineas_desde_articulos`). Y
- * por eso un 422 de acá no deja nada escrito: se lanza antes del `save()`.
+ * vacío (store) o viejo (update); los artículos y las promociones se cargan de la base por el
+ * comercio del carrito y el precio lo resuelve el servidor. Y por eso un 422 de acá no deja nada
+ * escrito: se lanza antes del `save()`.
  *
  * ── Compatibilidad ────────────────────────────────────────────────────────────────────────────
  *
@@ -44,14 +55,23 @@ use Illuminate\Support\Facades\Log;
  * master; un SPA viejo nunca manda `envio`, así que para él tampoco cambia nada.
  *
  * Los 422 llevan `codigo` para que el SPA sepa qué mostrar:
- *   `opcion_envio`  la key ya no está en la cotización nueva (trae `opciones` frescas)
- *   `destino`       faltan datos de la dirección (`errors: {campo: [mensaje]}`)
+ *   `opcion_envio`  la key ya no está en la cotización nueva (trae `opciones` frescas), o el
+ *                   carrito cambió / la cotización venció al crear el pedido
+ *   `destino`       faltan datos de la dirección (`errors: {campo: [mensaje]}`), o la sucursal
+ *                   elegida no es de la opción
  *   `sin_zipnova` / `sin_articulos` / `ubicacion` / `zipnova` (502): mismos que el cotizador
  */
 class EnvioCartHelper
 {
     /** Proveedor que se escribe en `orders.envio_proveedor`. */
     const PROVEEDOR = Envio::PROVEEDOR_ZIPNOVA;
+
+    /**
+     * Horas durante las que vale una cotización guardada en el carrito. Zipnova marca cada
+     * cotización con `estimation_expires_at` (un día en la práctica); pasado eso el precio puede
+     * haber cambiado y hay que volver a pedirla.
+     */
+    const HORAS_DE_VIGENCIA = 24;
 
     /** Etiquetas de los campos del destino, para los mensajes del 422. */
     const ETIQUETAS_DESTINO = [
@@ -115,15 +135,16 @@ class EnvioCartHelper
             self::fallar('opcion_envio', 'Falta el código postal para cotizar el envío. Volvé a cotizar.');
         }
 
-        $items_hash = self::hash_de_lineas($lineas_request);
+        $items_hash = self::hash_de_partes(self::partes_del_request($data));
 
         $opcion = is_array($cart->envio_opcion) ? $cart->envio_opcion : null;
         $cotizacion = is_array($cart->envio_cotizacion) ? $cart->envio_cotizacion : null;
 
         $vigente = !is_null($opcion) && !is_null($cotizacion)
             && isset($opcion['key']) && (string) $opcion['key'] === $opcion_key
-            && isset($cotizacion['zipcode']) && (string) $cotizacion['zipcode'] === $zipcode
-            && isset($cotizacion['items_hash']) && (string) $cotizacion['items_hash'] === $items_hash;
+            && self::zipcode_del_snapshot($cotizacion) === $zipcode
+            && isset($cotizacion['items_hash']) && (string) $cotizacion['items_hash'] === $items_hash
+            && !self::snapshot_vencido($cotizacion);
 
         if (!$vigente) {
             $cotizacion = self::cotizar($cart, $lineas_request, $data, $zipcode, $envio);
@@ -135,6 +156,9 @@ class EnvioCartHelper
                 ]);
             }
 
+            // El CP del snapshot es el que mandó el comprador ya limpio, no el eco de Zipnova:
+            // es contra lo que se compara en cada guardado y contra la dirección.
+            $cotizacion['zipcode'] = $zipcode;
             $cotizacion['items_hash'] = $items_hash;
             $cart->envio_cotizacion = $cotizacion;
         }
@@ -151,6 +175,13 @@ class EnvioCartHelper
             if (is_null($point_id) && isset($opcion['point_id'])) {
                 $point_id = self::entero_positivo($opcion['point_id']);
             }
+            // La sucursal tiene que ser una de las que Zipnova ofreció para ESTA opción: un
+            // point_id de otro correo (o inventado) haría fallar la creación del envío en el ERP.
+            if (!is_null($point_id) && !self::sucursal_de_la_opcion($opcion, $point_id)) {
+                self::fallar('destino', 'Elegí una sucursal de la lista.', [
+                    'errors' => ['point_id' => ['La sucursal elegida no es de esta forma de envío.']],
+                ]);
+            }
         } else {
             $point_id = null;
         }
@@ -159,6 +190,59 @@ class EnvioCartHelper
         $cart->envio_opcion = $opcion;
         $cart->envio_precio = isset($opcion['precio']) && is_numeric($opcion['precio']) ? round((float) $opcion['precio'], 2) : 0.0;
         $cart->envio_destino = self::destino_validado($envio, $zipcode, $es_punto_de_retiro, $point_id);
+    }
+
+    /**
+     * Deja el carrito sin cotización ni opción, conservando la dirección, y lo guarda. Para los
+     * caminos que cambian las líneas SIN pasar por `sincronizar()` (`update_article_amount`):
+     * el precio guardado ya no corresponde a lo que hay en el carrito, y el próximo `cart/save`
+     * del SPA (que manda `envio.opcion_key`) vuelve a cotizar con las líneas nuevas.
+     *
+     * @param Cart $cart
+     * @return bool True si había una opción y se invalidó.
+     */
+    public static function invalidar_cotizacion(Cart $cart)
+    {
+        if (!ZipnovaEsquemaHelper::disponible() || is_null(self::opcion_de($cart))) {
+            return false;
+        }
+
+        $cart->envio_cotizacion = null;
+        $cart->envio_opcion = null;
+        $cart->envio_precio = null;
+        $cart->save();
+
+        return true;
+    }
+
+    /**
+     * Por qué el pedido NO puede crearse con la cotización guardada, o null si está bien.
+     *
+     * Es la última guarda antes del `Order::create`: el snapshot tiene que corresponder a las
+     * líneas REALES del carrito (hash de `article_cart` + `cart_promocion_vinoteca`) y no haber
+     * vencido. No se re-cotiza acá: en el flujo de Mercado Pago la preferencia ya viajó con el
+     * precio, así que lo único honesto es cortar y que el comprador vuelva a elegir.
+     *
+     * @param Cart $cart
+     * @return string|null `'lineas'` si cambió el carrito, `'vencida'` si pasó la vigencia.
+     */
+    public static function motivo_para_recotizar(Cart $cart)
+    {
+        if (is_null(self::opcion_de($cart))) {
+            return null;
+        }
+
+        $cotizacion = is_array($cart->envio_cotizacion) ? $cart->envio_cotizacion : [];
+
+        if (!isset($cotizacion['items_hash']) || (string) $cotizacion['items_hash'] !== self::hash_del_carrito($cart)) {
+            return 'lineas';
+        }
+
+        if (self::snapshot_vencido($cotizacion)) {
+            return 'vencida';
+        }
+
+        return null;
     }
 
     /**
@@ -194,9 +278,8 @@ class EnvioCartHelper
 
     /**
      * Campos que le faltan al destino del carrito para poder crear el pedido. Vacío cuando no
-     * aplica (sin opción de correo) o cuando está completo. Es la última guarda antes del
-     * `Order::create`: un pedido con opción de correo y sin dirección no se puede despachar
-     * desde el ERP.
+     * aplica (sin opción de correo) o cuando está completo. Un pedido con opción de correo y sin
+     * dirección no se puede despachar desde el ERP.
      *
      * @param Cart $cart
      * @return array Lista de campos (claves de ETIQUETAS_DESTINO).
@@ -209,11 +292,7 @@ class EnvioCartHelper
             return [];
         }
 
-        $destino = is_array($cart->envio_destino) ? EnvioDestinoHelper::normalizar($cart->envio_destino) : [];
-
-        if (count($destino) === 0) {
-            return EnvioDestinoHelper::faltantes(EnvioDestinoHelper::normalizar([]), !empty($opcion['es_punto_de_retiro']));
-        }
+        $destino = is_array($cart->envio_destino) ? EnvioDestinoHelper::normalizar($cart->envio_destino) : EnvioDestinoHelper::normalizar([]);
 
         return EnvioDestinoHelper::faltantes($destino, !empty($opcion['es_punto_de_retiro']));
     }
@@ -296,6 +375,54 @@ class EnvioCartHelper
     }
 
     /**
+     * Hash de las líneas REALES del carrito (pivots de artículos y de promociones), en el mismo
+     * formato que el del payload, para compararlo con `envio_cotizacion.items_hash`.
+     *
+     * @param Cart $cart
+     * @return string md5
+     */
+    public static function hash_del_carrito(Cart $cart)
+    {
+        $partes = [];
+
+        foreach ($cart->articles()->get() as $articulo) {
+            $amount = self::cantidad(isset($articulo->pivot->amount) ? $articulo->pivot->amount : null);
+            if ($amount < 1) {
+                continue;
+            }
+            $partes[] = self::parte_de_articulo(
+                (int) $articulo->id,
+                self::entero_positivo(isset($articulo->pivot->variant_id) ? $articulo->pivot->variant_id : null),
+                $amount
+            );
+        }
+
+        foreach ($cart->promociones_vinoteca()->get() as $promo) {
+            $amount = self::cantidad(isset($promo->pivot->amount) ? $promo->pivot->amount : null);
+            if ($amount < 1) {
+                continue;
+            }
+            $partes[] = self::parte_de_promocion((int) $promo->id, $amount);
+        }
+
+        return self::hash_de_partes($partes);
+    }
+
+    /**
+     * Hash de una lista de partes (`id|variante|cantidad` y `promo:id|cantidad`), ordenada, para
+     * saber si hace falta re-cotizar. El precio no entra: un cambio de precio no cambia el paquete.
+     *
+     * @param array $partes
+     * @return string md5
+     */
+    public static function hash_de_partes(array $partes)
+    {
+        sort($partes);
+
+        return md5(implode(',', $partes));
+    }
+
+    /**
      * Deja el carrito sin envío por correo. Solo se llama con el esquema disponible.
      *
      * @param Cart $cart
@@ -322,7 +449,7 @@ class EnvioCartHelper
     protected static function cotizar(Cart $cart, array $lineas_request, array $data, $zipcode, array $envio)
     {
         $armado = ZipnovaCotizadorService::lineas_desde_articulos((int) $cart->user_id, $lineas_request);
-        $subtotal = $armado['subtotal'] + self::subtotal_de_promociones($data);
+        $subtotal = $armado['subtotal'] + self::subtotal_de_promociones((int) $cart->user_id, $data);
 
         try {
             return ZipnovaCotizadorService::cotizar(
@@ -359,10 +486,11 @@ class EnvioCartHelper
      *
      * Un destino totalmente vacío no es un error: el SPA guarda el carrito varias veces antes de
      * llegar al formulario de dirección. Uno a medias sí lo es (422 `destino`), y el código postal
-     * tiene que ser el cotizado: el envío se pagó para ese CP.
+     * tiene que ser el cotizado: el envío se pagó para ese CP. Se comparan los dos limpios
+     * (`zipcode_limpio`): "x5000-abc" y "X5000ABC" son el mismo CPA.
      *
      * @param array $envio
-     * @param string $zipcode
+     * @param string $zipcode Ya limpio.
      * @param bool $es_punto_de_retiro
      * @param int|null $point_id
      * @return array|null
@@ -373,21 +501,24 @@ class EnvioCartHelper
             return null;
         }
 
-        $destino = EnvioDestinoHelper::normalizar($envio['destino']);
+        $crudo = $envio['destino'];
+
+        // El CP se limpia ANTES de normalizar: `normalizar()` (espejo) solo saca espacios y
+        // recorta a 8, y "x5000-abc" recortado a 8 perdería la última letra.
+        $cp_del_destino = ZipnovaCotizadorService::zipcode_limpio(isset($crudo['codigo_postal']) ? $crudo['codigo_postal'] : null);
+        $crudo['codigo_postal'] = $cp_del_destino === '' ? $zipcode : $cp_del_destino;
+
+        $destino = EnvioDestinoHelper::normalizar($crudo);
         $destino['point_id'] = $es_punto_de_retiro ? $point_id : null;
 
         if (self::destino_vacio($destino)) {
             return null;
         }
 
-        if (is_null($destino['codigo_postal'])) {
-            $destino['codigo_postal'] = $zipcode;
-        }
-
         $faltantes = EnvioDestinoHelper::faltantes($destino, $es_punto_de_retiro);
         $errores = self::errores_de_destino($faltantes);
 
-        if (strtoupper((string) $destino['codigo_postal']) !== $zipcode) {
+        if (ZipnovaCotizadorService::zipcode_limpio($destino['codigo_postal']) !== $zipcode) {
             $errores['codigo_postal'] = ['El código postal de la dirección no es el que cotizaste. Volvé a cotizar con el nuevo.'];
         }
 
@@ -416,6 +547,29 @@ class EnvioCartHelper
     }
 
     /**
+     * True si la sucursal está entre las que Zipnova ofreció para la opción. Sin lista (Zipnova
+     * no mandó sucursales) no hay contra qué validar y se acepta.
+     *
+     * @param array $opcion
+     * @param int $point_id
+     * @return bool
+     */
+    protected static function sucursal_de_la_opcion(array $opcion, $point_id)
+    {
+        if (!isset($opcion['puntos_de_retiro']) || !is_array($opcion['puntos_de_retiro']) || count($opcion['puntos_de_retiro']) === 0) {
+            return true;
+        }
+
+        foreach ($opcion['puntos_de_retiro'] as $punto) {
+            if (is_array($punto) && isset($punto['point_id']) && (int) $punto['point_id'] === (int) $point_id) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * `{campo: [mensaje]}` a partir de la lista de faltantes, con la forma de los `errors` de
      * Laravel para que el SPA los muestre igual que cualquier validación.
      *
@@ -435,8 +589,41 @@ class EnvioCartHelper
     }
 
     /**
-     * Las líneas del payload: id, variante y cantidad de cada artículo (las promociones de
-     * vinoteca no viajan como ítems, no tienen peso ni medidas).
+     * El CP guardado en el snapshot, limpio. Un snapshot escrito por una versión anterior (con el
+     * eco de Zipnova) se compara igual: limpio contra limpio.
+     *
+     * @param array $cotizacion
+     * @return string
+     */
+    protected static function zipcode_del_snapshot(array $cotizacion)
+    {
+        return ZipnovaCotizadorService::zipcode_limpio(isset($cotizacion['zipcode']) ? $cotizacion['zipcode'] : null);
+    }
+
+    /**
+     * True si la cotización guardada tiene más de `HORAS_DE_VIGENCIA` (o no tiene fecha).
+     *
+     * @param array $cotizacion
+     * @return bool
+     */
+    protected static function snapshot_vencido(array $cotizacion)
+    {
+        if (!isset($cotizacion['quoted_at']) || !is_string($cotizacion['quoted_at']) || $cotizacion['quoted_at'] === '') {
+            return true;
+        }
+
+        try {
+            $quoted_at = Carbon::parse($cotizacion['quoted_at']);
+        } catch (\Throwable $e) {
+            return true;
+        }
+
+        return $quoted_at->lt(now()->subHours(self::HORAS_DE_VIGENCIA));
+    }
+
+    /**
+     * Las líneas de artículos del payload: id, variante y cantidad (las promociones de vinoteca
+     * no viajan como ítems, no tienen peso ni medidas).
      *
      * @param array $data
      * @return array `[['id' => int, 'variant_id' => int|null, 'amount' => int], ...]`
@@ -454,7 +641,7 @@ class EnvioCartHelper
                 continue;
             }
             $pivot = isset($article['pivot']) && is_array($article['pivot']) ? $article['pivot'] : [];
-            $amount = isset($pivot['amount']) && is_numeric($pivot['amount']) ? (int) ceil((float) $pivot['amount']) : 1;
+            $amount = self::cantidad(isset($pivot['amount']) ? $pivot['amount'] : null);
             if ($amount < 1) {
                 continue;
             }
@@ -469,50 +656,121 @@ class EnvioCartHelper
     }
 
     /**
-     * Hash de las líneas (`artículo|variante|cantidad`, ordenado) para saber si hace falta
-     * re-cotizar. El precio no entra: un cambio de precio no cambia el paquete.
-     *
-     * @param array $lineas Ver `lineas_del_request`.
-     * @return string md5
-     */
-    public static function hash_de_lineas(array $lineas)
-    {
-        $partes = [];
-
-        foreach ($lineas as $linea) {
-            $partes[] = $linea['id'] . '|' . (is_null($linea['variant_id']) ? '' : $linea['variant_id']) . '|' . $linea['amount'];
-        }
-        sort($partes);
-
-        return md5(implode(',', $partes));
-    }
-
-    /**
-     * Lo que suman las promociones de vinoteca del payload: son ítems pagos del carrito y
-     * cuentan para el valor declarado y el envío gratis, aunque no viajen como bultos. El precio
-     * sale del payload porque es exactamente lo que `CartHelper::attach_promociones_vinoteca()`
-     * guarda.
+     * Las promociones de vinoteca del payload: id y cantidad.
      *
      * @param array $data
-     * @return float
+     * @return array `[['id' => int, 'amount' => int], ...]`
      */
-    protected static function subtotal_de_promociones(array $data)
+    protected static function promociones_del_request(array $data)
     {
-        $suma = 0.0;
+        $promos = [];
 
         if (!isset($data['promociones_vinoteca']) || !is_array($data['promociones_vinoteca'])) {
-            return $suma;
+            return $promos;
         }
 
         foreach ($data['promociones_vinoteca'] as $promo) {
-            if (!is_array($promo) || !isset($promo['final_price']) || !is_numeric($promo['final_price'])) {
+            if (!is_array($promo) || !isset($promo['id']) || !is_numeric($promo['id'])) {
                 continue;
             }
-            $amount = isset($promo['pivot']['amount']) && is_numeric($promo['pivot']['amount']) ? (float) $promo['pivot']['amount'] : 1;
-            $suma += (float) $promo['final_price'] * $amount;
+            $amount = self::cantidad(isset($promo['pivot']['amount']) ? $promo['pivot']['amount'] : null);
+            if ($amount < 1) {
+                continue;
+            }
+            $promos[] = ['id' => (int) $promo['id'], 'amount' => $amount];
+        }
+
+        return $promos;
+    }
+
+    /**
+     * Las partes del hash a partir del payload: artículos y promociones, mismo formato que
+     * `hash_del_carrito()`.
+     *
+     * @param array $data
+     * @return array
+     */
+    protected static function partes_del_request(array $data)
+    {
+        $partes = [];
+
+        foreach (self::lineas_del_request($data) as $linea) {
+            $partes[] = self::parte_de_articulo($linea['id'], $linea['variant_id'], $linea['amount']);
+        }
+        foreach (self::promociones_del_request($data) as $promo) {
+            $partes[] = self::parte_de_promocion($promo['id'], $promo['amount']);
+        }
+
+        return $partes;
+    }
+
+    /**
+     * Lo que suman las promociones de vinoteca: son ítems pagos del carrito y cuentan para el
+     * valor declarado y el envío gratis, aunque no viajen como bultos. El precio sale de la BASE
+     * (`promocion_vinotecas.final_price`, por el comercio del carrito), no del payload: con el
+     * precio del navegador cualquiera llegaba al umbral de envío gratis inflando una promo.
+     *
+     * @param int $commerce_id
+     * @param array $data
+     * @return float
+     */
+    protected static function subtotal_de_promociones($commerce_id, array $data)
+    {
+        $promos = self::promociones_del_request($data);
+
+        if (count($promos) === 0) {
+            return 0.0;
+        }
+
+        $cantidades = [];
+        foreach ($promos as $promo) {
+            $cantidades[$promo['id']] = (isset($cantidades[$promo['id']]) ? $cantidades[$promo['id']] : 0) + $promo['amount'];
+        }
+
+        $suma = 0.0;
+        $de_la_base = PromocionVinoteca::where('user_id', (int) $commerce_id)
+            ->whereIn('id', array_keys($cantidades))
+            ->get(['id', 'final_price']);
+
+        foreach ($de_la_base as $promo) {
+            if (is_numeric($promo->final_price)) {
+                $suma += (float) $promo->final_price * $cantidades[(int) $promo->id];
+            }
         }
 
         return round($suma, 2);
+    }
+
+    /**
+     * @param int $id
+     * @param int|null $variant_id
+     * @param int $amount
+     * @return string `id|variante|cantidad`
+     */
+    protected static function parte_de_articulo($id, $variant_id, $amount)
+    {
+        return $id . '|' . (is_null($variant_id) ? '' : $variant_id) . '|' . $amount;
+    }
+
+    /**
+     * @param int $id
+     * @param int $amount
+     * @return string `promo:id|cantidad`
+     */
+    protected static function parte_de_promocion($id, $amount)
+    {
+        return 'promo:' . $id . '|' . $amount;
+    }
+
+    /**
+     * Cantidad entera de una línea (los pivots son double): hacia arriba, 0 si no es numérica.
+     *
+     * @param mixed $valor
+     * @return int
+     */
+    protected static function cantidad($valor)
+    {
+        return is_numeric($valor) ? (int) ceil((float) $valor) : 0;
     }
 
     /**

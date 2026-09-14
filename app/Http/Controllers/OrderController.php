@@ -164,9 +164,30 @@ class OrderController extends Controller
                 return response()->json(['error' => 'No hay comprador identificado para este pedido'], 401);
             }
 
-            // Envío por correo (misión zipnova-envios): un pedido con opción de Zipnova y sin la
-            // dirección completa no se puede despachar desde el ERP, así que se corta acá, antes
-            // de crear nada. El SPA valida lo mismo antes de llegar; esto es la última guarda.
+            // Envío por correo (misión zipnova-envios): el precio guardado tiene que ser el de
+            // las líneas REALES del carrito y no haber vencido. Si un camino cambió las líneas
+            // sin re-cotizar (o pasaron las 24 horas), se corta ANTES de crear el pedido y sin
+            // re-cotizar acá: en el flujo de Mercado Pago la preferencia ya viajó con el precio,
+            // así que lo único honesto es que el comprador vuelva a elegir la forma de envío.
+            $motivo = EnvioCartHelper::motivo_para_recotizar($cart);
+
+            if (!is_null($motivo)) {
+                Log::warning('OrderController@store: el envío del carrito no corresponde a sus líneas, se pide volver a elegir', [
+                    'cart_id' => $cart->id,
+                    'motivo'  => $motivo,
+                ]);
+
+                return response()->json([
+                    'codigo'  => 'opcion_envio',
+                    'message' => $motivo === 'vencida'
+                        ? 'La cotización del envío venció: volvé a elegir la forma de envío'
+                        : 'Cambió el carrito: volvé a elegir la forma de envío',
+                ], 422);
+            }
+
+            // Y un pedido con opción de Zipnova y sin la dirección completa no se puede despachar
+            // desde el ERP, así que también se corta acá. El SPA valida lo mismo antes de llegar;
+            // esto es la última guarda.
             $faltantes_del_destino = EnvioCartHelper::faltantes_del_destino($cart);
 
             if (count($faltantes_del_destino) > 0) {

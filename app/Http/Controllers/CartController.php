@@ -228,6 +228,12 @@ class CartController extends Controller
 
         CartHelper::set_total($cart);
 
+        // Este camino cambia las lineas SIN pasar por sync_checkout_fields: el precio de envio
+        // por correo que quedo guardado se cotizo para OTRAS cantidades (un carrito de 100
+        // unidades con envio gratis por umbral, bajado a 1, seguia gratis). Se invalida la
+        // cotizacion —la direccion queda— y el proximo cart/save del SPA vuelve a cotizar.
+        EnvioCartHelper::invalidar_cotizacion($cart);
+
         $cart = CartHelper::getFullModel($cart->id);
         return response()->json(['cart' => $cart], 200);
     }

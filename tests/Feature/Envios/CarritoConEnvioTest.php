@@ -5,6 +5,7 @@ namespace Tests\Feature\Envios;
 use App\Cart;
 use App\Envio;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Http\Controllers\Helpers\OrderMailDataHelper;
 use App\Http\Controllers\Helpers\OrderTotalsHelper;
 use App\Http\Controllers\Helpers\ZipnovaEsquemaHelper;
@@ -12,8 +13,10 @@ use App\Http\Controllers\MercadoPagoController;
 use App\Order;
 use App\PaymentMethod;
 use App\PaymentMethodType;
+use App\PromocionVinoteca;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use ReflectionMethod;
 use Tests\TestCase;
@@ -459,6 +462,245 @@ class CarritoConEnvioTest extends TestCase
 
     /*
     |---------------------------------------------------------------------------------------------
+    | 3 bis. El precio queda atado a las líneas cotizadas
+    |---------------------------------------------------------------------------------------------
+    */
+
+    public function test_update_article_amount_invalida_la_cotizacion_y_el_proximo_save_vuelve_a_cotizar()
+    {
+        $this->zipnovaCotiza();
+
+        $cart = $this->crearCarritoPorApi();
+        Http::assertSentCount(1);
+
+        /* El botón "Actualizar" de la ficha: cambia el pivot sin pasar por sync_checkout_fields. */
+        $this->withSession(['carritos_propios' => [$cart->id]])
+            ->putJson('/api/carts/update-article-amount/'.$cart->id, ['id' => $this->articulo->id, 'amount' => 7])
+            ->assertStatus(200);
+
+        $cart->refresh();
+        $this->assertNull($cart->envio_opcion, 'la opción cotizada para 2 unidades ya no vale');
+        $this->assertNull($cart->envio_cotizacion);
+        $this->assertNull($cart->envio_precio);
+        $this->assertSame('Juan', $cart->envio_destino['nombre'], 'la dirección se conserva');
+        $this->assertSame(7000.0, (float) $cart->total);
+
+        /* El próximo cart/save del SPA manda la key de nuevo: se cotiza con las 7 unidades. */
+        $this->actualizarCarrito($cart, [
+            'articles' => [$this->lineaDelPayload($this->articulo, 7)],
+        ])->assertStatus(200);
+
+        Http::assertSentCount(2);
+        Http::assertSent(function ($request) {
+            return count($request->data()['items']) === 7;
+        });
+
+        $cart->refresh();
+        $this->assertSame(self::KEY_DOMICILIO_CORREO_ARG, $cart->envio_opcion['key']);
+        $this->assertSame(self::PRECIO_DOMICILIO_CORREO_ARG, (float) $cart->envio_precio);
+    }
+
+    public function test_el_pedido_no_se_crea_si_las_lineas_del_carrito_no_son_las_cotizadas()
+    {
+        $this->zipnovaCotiza();
+        $this->asegurarEstadoSinConfirmar();
+
+        $cart = $this->crearCarritoPorApi();
+
+        /* Cualquier camino que toque las líneas por afuera del helper: acá, directo en la base. */
+        DB::table('article_cart')->where('cart_id', $cart->id)->update(['amount' => 1]);
+
+        $comprador = $this->compradorDe($this->comercio);
+        $pedidos_antes = Order::where('user_id', $this->comercio->id)->count();
+
+        $respuesta = $this->withSession(['carritos_propios' => [$cart->id], 'checkout_buyer_id' => $comprador->id])
+            ->postJson('/api/orders', ['cart_id' => $cart->id, 'commerce_id' => $this->comercio->id]);
+
+        $respuesta->assertStatus(422);
+        $this->assertSame('opcion_envio', $respuesta->json('codigo'));
+        $this->assertSame('Cambió el carrito: volvé a elegir la forma de envío', $respuesta->json('message'));
+        $this->assertSame($pedidos_antes, Order::where('user_id', $this->comercio->id)->count(), 'no se creó ningún pedido');
+
+        /* Sin re-cotizar acá: en el flujo de Mercado Pago la preferencia ya viajó con el precio. */
+        Http::assertSentCount(1);
+    }
+
+    public function test_el_envio_gratis_por_umbral_no_sobrevive_a_bajar_la_cantidad()
+    {
+        /* El abuso: 100 unidades superan el umbral → envío gratis; bajar a 1 con "Actualizar";
+           confirmar. Antes el pedido salía con envío gratis para una sola unidad. */
+        $this->conectorZipnova($this->comercio, ['envio_gratis_desde' => 50000]);
+        $this->zipnovaCotiza();
+        $this->asegurarEstadoSinConfirmar();
+
+        $cart = $this->crearCarritoPorApi(['articles' => [$this->lineaDelPayload($this->articulo, 100)]]);
+        $this->assertSame(0.0, (float) $cart->envio_precio, '100 × 1000 ≥ 50000: gratis');
+        $this->assertTrue($cart->envio_opcion['envio_gratis']);
+
+        $this->withSession(['carritos_propios' => [$cart->id]])
+            ->putJson('/api/carts/update-article-amount/'.$cart->id, ['id' => $this->articulo->id, 'amount' => 1])
+            ->assertStatus(200);
+
+        $cart->refresh();
+        $this->assertNull($cart->envio_precio, 'la cotización gratis quedó invalidada');
+
+        /* El SPA guarda antes de confirmar: se re-cotiza con 1 unidad y ya no es gratis. */
+        $this->actualizarCarrito($cart, ['articles' => [$this->lineaDelPayload($this->articulo, 1)]])->assertStatus(200);
+
+        $cart->refresh();
+        $this->assertFalse($cart->envio_opcion['envio_gratis']);
+        $this->assertSame(self::PRECIO_DOMICILIO_CORREO_ARG, (float) $cart->envio_precio);
+
+        $comprador = $this->compradorDe($this->comercio);
+        $order_id = $this->withSession(['carritos_propios' => [$cart->id], 'checkout_buyer_id' => $comprador->id])
+            ->postJson('/api/orders', ['cart_id' => $cart->id, 'commerce_id' => $this->comercio->id])
+            ->assertStatus(201)
+            ->json('order_id');
+
+        $this->assertSame(self::PRECIO_DOMICILIO_CORREO_ARG, (float) Order::find($order_id)->envio_precio, 'el pedido paga el envío de 1 unidad');
+    }
+
+    public function test_una_cotizacion_de_mas_de_24_horas_se_vuelve_a_pedir()
+    {
+        $this->zipnovaCotiza();
+
+        $cart = $this->crearCarritoPorApi();
+        Http::assertSentCount(1);
+
+        /* Un día y una hora después, el mismo guardado de siempre: la cotización venció. */
+        $this->travel(25)->hours();
+
+        $this->actualizarCarrito($cart)->assertStatus(200);
+
+        Http::assertSentCount(2);
+        $this->assertNotSame(
+            Cart::find($cart->id)->envio_cotizacion['quoted_at'],
+            $cart->envio_cotizacion['quoted_at'],
+            'el snapshot se renovó'
+        );
+    }
+
+    public function test_el_pedido_no_se_crea_con_una_cotizacion_vencida()
+    {
+        $this->zipnovaCotiza();
+        $this->asegurarEstadoSinConfirmar();
+
+        $cart = $this->crearCarritoPorApi();
+        $comprador = $this->compradorDe($this->comercio);
+
+        $this->travel(25)->hours();
+
+        $respuesta = $this->withSession(['carritos_propios' => [$cart->id], 'checkout_buyer_id' => $comprador->id])
+            ->postJson('/api/orders', ['cart_id' => $cart->id, 'commerce_id' => $this->comercio->id]);
+
+        $respuesta->assertStatus(422);
+        $this->assertSame('opcion_envio', $respuesta->json('codigo'));
+        $this->assertStringContainsString('venció', $respuesta->json('message'));
+    }
+
+    public function test_las_promociones_de_vinoteca_cuentan_con_el_precio_de_la_base_y_entran_en_el_hash()
+    {
+        /* Umbral de 3000. Artículo 1 × 1000 + promo 1 × 500 (en la base) = 1500: no es gratis.
+           El body trae la promo a 99999: si ese precio contara, sería gratis. */
+        $this->conectorZipnova($this->comercio, ['envio_gratis_desde' => 3000]);
+        $this->zipnovaCotiza();
+
+        $promo = PromocionVinoteca::create([
+            'name'        => 'Promo Envios Test',
+            'user_id'     => $this->comercio->id,
+            'final_price' => 500,
+            'online'      => 1,
+        ]);
+
+        $linea_promo = function ($amount) use ($promo) {
+            return [
+                'id'                    => $promo->id,
+                'name'                  => $promo->name,
+                'final_price'           => 99999,
+                'cost'                  => null,
+                'is_promocion_vinoteca' => true,
+                'pivot'                 => ['amount' => $amount, 'notes' => null],
+            ];
+        };
+
+        $cart = $this->crearCarritoPorApi([
+            'articles'             => [$this->lineaDelPayload($this->articulo, 1)],
+            'promociones_vinoteca' => [$linea_promo(1)],
+        ]);
+
+        $this->assertFalse($cart->envio_opcion['envio_gratis'], '1500 < 3000 con el precio de la base');
+        $this->assertSame(self::PRECIO_DOMICILIO_CORREO_ARG, (float) $cart->envio_precio);
+        Http::assertSent(function ($request) {
+            $this->assertSame(1500.0, (float) $request->data()['declared_value'], 'el subtotal declarado usa el precio de la base de la promo');
+
+            return true;
+        });
+
+        /* Mismos artículos, la promo pasa a 2 unidades: cambia el hash y se re-cotiza. */
+        $this->actualizarCarrito($cart, [
+            'articles'             => [$this->lineaDelPayload($this->articulo, 1)],
+            'promociones_vinoteca' => [$linea_promo(2)],
+        ])->assertStatus(200);
+
+        Http::assertSentCount(2);
+
+        /* Y el hash del snapshot es el de las líneas reales del carrito (artículos + promos). */
+        $cart->refresh();
+        $this->assertSame(EnvioCartHelper::hash_del_carrito($cart), $cart->envio_cotizacion['items_hash']);
+    }
+
+    public function test_una_sucursal_que_no_es_de_la_opcion_es_422_destino()
+    {
+        $this->zipnovaCotiza();
+
+        $respuesta = $this->postJson('/api/carts', [
+            'commerce_id' => $this->comercio->id,
+            'cart'        => [
+                'articles'             => [$this->lineaDelPayload($this->articulo, 2)],
+                'promociones_vinoteca' => [],
+                'deliver'              => 1,
+                'envio'                => $this->envioDelPayload([
+                    'opcion_key' => self::KEY_RETIRO_CORREO_ARG,
+                    'point_id'   => 999,
+                    'destino'    => $this->destinoCompleto(['calle' => null, 'numero' => null]),
+                ]),
+            ],
+        ]);
+
+        $respuesta->assertStatus(422);
+        $this->assertSame('destino', $respuesta->json('codigo'));
+        $this->assertArrayHasKey('point_id', $respuesta->json('errors'));
+    }
+
+    public function test_el_codigo_postal_se_compara_limpio_en_el_snapshot_y_en_la_direccion()
+    {
+        $this->zipnovaCotiza();
+
+        /* El comprador escribe el CPA con guión y minúsculas en los dos lados. */
+        $cart = $this->crearCarritoPorApi([
+            'envio' => $this->envioDelPayload([
+                'zipcode' => 'x5000-abc',
+                'destino' => $this->destinoCompleto(['codigo_postal' => 'x5000-abc']),
+            ]),
+        ]);
+
+        $this->assertSame('X5000ABC', $cart->envio_cotizacion['zipcode'], 'el snapshot guarda el CP limpio del comprador, no el eco de Zipnova');
+        $this->assertSame('X5000ABC', $cart->envio_destino['codigo_postal']);
+        $this->assertSame(self::PRECIO_DOMICILIO_CORREO_ARG, (float) $cart->envio_precio);
+
+        /* El mismo guardado, con el CP escrito distinto: es el mismo CP, no se re-cotiza. */
+        $this->actualizarCarrito($cart, [
+            'envio' => $this->envioDelPayload([
+                'zipcode' => 'X5000 ABC',
+                'destino' => $this->destinoCompleto(['codigo_postal' => 'x5000abc']),
+            ]),
+        ])->assertStatus(200);
+
+        Http::assertSentCount(1);
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
     | 4. El pedido
     |---------------------------------------------------------------------------------------------
     */
@@ -706,6 +948,8 @@ class CarritoConEnvioTest extends TestCase
             'proveedor'             => 'zipnova',
             'proveedor_envio_id'    => (string) $shipment['id'],
             'external_id'           => $shipment['external_id'],
+            'account_id'            => (string) $shipment['account_id'],
+            'delivery_id'           => $shipment['delivery_id'],
             'carrier_id'            => (string) $shipment['carrier']['id'],
             'carrier_name'          => $shipment['carrier']['name'],
             'service_type'          => $shipment['service_type'],
@@ -714,6 +958,9 @@ class CarritoConEnvioTest extends TestCase
             'tracking_url'          => $shipment['tracking'],
             'tracking_external_url' => $shipment['tracking_external'],
             'carrier_tracking_id'   => $shipment['carrier_tracking_id'],
+            'estimated_delivery'    => $shipment['delivery_time']['estimated_delivery'],
+            'bultos'                => $shipment['packages'],
+            'error_message'         => 'detalle tecnico que es del comercio',
             'respuesta'             => $shipment,
         ]);
 
