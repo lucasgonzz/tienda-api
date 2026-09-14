@@ -295,6 +295,60 @@ class CotizarEnvioTest extends TestCase
 
     /*
     |---------------------------------------------------------------------------------------------
+    | Caché de cotizaciones
+    |---------------------------------------------------------------------------------------------
+    */
+
+    public function test_dos_cotizaciones_iguales_llaman_a_zipnova_una_sola_vez()
+    {
+        $this->conectorZipnova($this->comercio);
+        $this->zipnovaCotiza();
+
+        $body = [
+            'commerce_id' => $this->comercio->id,
+            'zipcode'     => '5000',
+            'articles'    => [['id' => $this->articulo->id, 'amount' => 2]],
+        ];
+
+        $primera = $this->postJson(self::RUTA, $body)->assertStatus(200);
+        $segunda = $this->postJson(self::RUTA, $body)->assertStatus(200);
+
+        Http::assertSentCount(1);
+        $this->assertSame($primera->json('opciones'), $segunda->json('opciones'), 'la segunda sale de la caché con las mismas opciones');
+
+        /* Otro CP es otra cotización. */
+        $this->postJson(self::RUTA, array_merge($body, ['zipcode' => '3260']))->assertStatus(200);
+        Http::assertSentCount(2);
+
+        /* Otra cantidad también. */
+        $this->postJson(self::RUTA, array_merge($body, ['articles' => [['id' => $this->articulo->id, 'amount' => 3]]]))->assertStatus(200);
+        Http::assertSentCount(3);
+    }
+
+    public function test_una_falla_de_zipnova_no_se_cachea()
+    {
+        $this->conectorZipnova($this->comercio);
+
+        Http::fake([
+            self::URL_QUOTE => Http::sequence()
+                ->push(['message' => 'boom'], 500)
+                ->push($this->fixture('zipnova_quote.json'), 200),
+        ]);
+
+        $body = [
+            'commerce_id' => $this->comercio->id,
+            'zipcode'     => '5000',
+            'articles'    => [['id' => $this->articulo->id, 'amount' => 1]],
+        ];
+
+        $this->postJson(self::RUTA, $body)->assertStatus(502);
+        $this->postJson(self::RUTA, $body)->assertStatus(200);
+
+        Http::assertSentCount(2);
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
     | Modo `cart_id`
     |---------------------------------------------------------------------------------------------
     */

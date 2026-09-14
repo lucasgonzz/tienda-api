@@ -7,6 +7,7 @@ use App\Cart;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
 use App\Http\Controllers\Helpers\ZipnovaEsquemaHelper;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -43,6 +44,12 @@ class ZipnovaCotizadorService
 {
     /** Tope de líneas que se aceptan en una cotización (Zipnova acepta hasta 1000 ítems; 50 líneas sobran). */
     const MAX_LINEAS = 50;
+
+    /** Cuánto vive una cotización en caché: diez minutos. */
+    const SEGUNDOS_DE_CACHE = 600;
+
+    /** Prefijo de las claves de caché de cotizaciones. */
+    const PREFIJO_CACHE = 'zipnova-cotizacion:';
 
     /**
      * Cotiza y devuelve la lista normalizada de opciones.
@@ -104,15 +111,7 @@ class ZipnovaCotizadorService
 
         $client = new ZipnovaClient($credentials['basic'], $credentials['account_id']);
 
-        try {
-            $respuesta = $client->quote($payload);
-        } catch (ZipnovaException $e) {
-            if ($e->esDeUbicacion()) {
-                throw new UbicacionException($e->getMessage(), $e->getStatus(), $e->getBody(), $e);
-            }
-
-            throw $e;
-        }
+        $respuesta = self::respuesta_de_zipnova($client, $payload, self::clave_de_cache((int) $commerce_id, $payload, $envio_gratis));
 
         $cotizacion = ZipnovaQuoteNormalizer::normalizar($respuesta, $envio_gratis);
 
@@ -142,6 +141,101 @@ class ZipnovaCotizadorService
         $cotizacion['quoted_at'] = now()->toIso8601String();
 
         return $cotizacion;
+    }
+
+    /**
+     * La respuesta cruda de `POST /shipments/quote`, con caché de `SEGUNDOS_DE_CACHE`.
+     *
+     * Por qué se cachea: el rate limit de Zipnova (500 cotizaciones por minuto) es por IP DEL
+     * SERVIDOR, y en el shared hosting esa IP la comparten todas las tiendas. Cada comprador que
+     * escribe su CP en la ficha, después en el carrito y después elige una opción pide la misma
+     * cotización tres veces; con la caché se la pide una. Solo se guarda una respuesta con
+     * resultados (una vacía o rara no se repite diez minutos) y una falla nunca se cachea. Si la
+     * caché misma falla (permisos del storage), se cotiza igual y queda el rastro en el log.
+     *
+     * @param ZipnovaClient $client
+     * @param array $payload
+     * @param string $clave
+     * @return array
+     * @throws UbicacionException|ZipnovaException
+     */
+    protected static function respuesta_de_zipnova(ZipnovaClient $client, array $payload, $clave)
+    {
+        $cacheada = null;
+        try {
+            $cacheada = Cache::get($clave);
+        } catch (\Throwable $e) {
+            Log::warning('ZipnovaCotizadorService: no se pudo leer la caché de cotizaciones: ' . $e->getMessage());
+        }
+
+        if (is_array($cacheada) && self::es_una_cotizacion($cacheada)) {
+            return $cacheada;
+        }
+
+        try {
+            $respuesta = $client->quote($payload);
+        } catch (ZipnovaException $e) {
+            if ($e->esDeUbicacion()) {
+                throw new UbicacionException($e->getMessage(), $e->getStatus(), $e->getBody(), $e);
+            }
+
+            throw $e;
+        }
+
+        if (self::es_una_cotizacion($respuesta)) {
+            try {
+                Cache::put($clave, $respuesta, self::SEGUNDOS_DE_CACHE);
+            } catch (\Throwable $e) {
+                Log::warning('ZipnovaCotizadorService: no se pudo escribir la caché de cotizaciones: ' . $e->getMessage());
+            }
+        }
+
+        return $respuesta;
+    }
+
+    /**
+     * Clave de caché de una cotización: comercio + depósito + destino + ítems (peso, medidas y
+     * descripción de cada uno, o sea lo que Zipnova realmente cotiza) + valor declarado + envío
+     * gratis. La cola va hasheada para que la clave sirva en cualquier driver (memcached no
+     * acepta espacios ni claves largas, y la localidad viene escrita por el comprador).
+     *
+     * @param int $commerce_id
+     * @param array $payload El body que se le manda a Zipnova.
+     * @param bool $envio_gratis
+     * @return string
+     */
+    public static function clave_de_cache($commerce_id, array $payload, $envio_gratis)
+    {
+        $destination = isset($payload['destination']) && is_array($payload['destination']) ? $payload['destination'] : [];
+        $zipcode = isset($destination['zipcode']) ? (string) $destination['zipcode'] : '';
+
+        $partes = [
+            isset($payload['origin_id']) ? (string) $payload['origin_id'] : 'auto',
+            $zipcode,
+            isset($destination['city']) ? mb_strtolower(trim((string) $destination['city'])) : '',
+            isset($destination['state']) ? mb_strtolower(trim((string) $destination['state'])) : '',
+            md5(json_encode(isset($payload['items']) ? $payload['items'] : [])),
+            isset($payload['declared_value']) ? (string) $payload['declared_value'] : '0',
+            $envio_gratis ? '1' : '0',
+        ];
+
+        return self::PREFIJO_CACHE . (int) $commerce_id . ':' . $zipcode . ':' . md5(implode('|', $partes));
+    }
+
+    /**
+     * True si la respuesta tiene la forma de una cotización (con resultados, aunque sea vacíos).
+     *
+     * @param mixed $respuesta
+     * @return bool
+     */
+    protected static function es_una_cotizacion($respuesta)
+    {
+        if (!is_array($respuesta)) {
+            return false;
+        }
+
+        return (isset($respuesta['all_results']) && is_array($respuesta['all_results']))
+            || (isset($respuesta['results']) && is_array($respuesta['results']));
     }
 
     /**

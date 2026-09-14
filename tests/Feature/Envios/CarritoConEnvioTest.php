@@ -258,7 +258,7 @@ class CarritoConEnvioTest extends TestCase
         Http::assertSentCount(2);
     }
 
-    public function test_al_elegir_otra_opcion_re_cotiza_y_guarda_su_precio()
+    public function test_al_elegir_otra_opcion_re_cotiza_desde_la_cache_y_guarda_su_precio()
     {
         $this->zipnovaCotiza();
 
@@ -268,7 +268,10 @@ class CarritoConEnvioTest extends TestCase
             'envio' => $this->envioDelPayload(['opcion_key' => self::KEY_DOMICILIO_ANDREANI]),
         ])->assertStatus(200);
 
-        Http::assertSentCount(2);
+        /* Mismas líneas y mismo CP: la cotización sale de la caché de diez minutos, sin volver a
+           pegarle a Zipnova (el rate limit es por IP del servidor, compartida por todas las
+           tiendas del shared). La opción nueva se busca igual en esa lista. */
+        Http::assertSentCount(1);
 
         $cart->refresh();
         $this->assertSame(self::KEY_DOMICILIO_ANDREANI, $cart->envio_opcion['key']);
