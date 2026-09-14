@@ -72,6 +72,11 @@ class PlatformConnector extends Model
         'expires_at'    => 'datetime',
         'access_token'  => 'encrypted',
         'refresh_token' => 'encrypted',
+        // Preferencias no secretas de la plataforma, por comercio (Zipnova: depósito de origen,
+        // bulto por defecto, envío gratis). La columna la crea `empresa-api`
+        // (`2026_09_14_100000_add_extra_config_to_platform_connectors_table`); en una base donde
+        // todavía no existe, el cast no se evalúa porque el atributo nunca llega.
+        'extra_config'  => 'array',
     ];
 
     /**

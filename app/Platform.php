@@ -30,6 +30,13 @@ class Platform extends Model
      */
     public const SLUG_MERCADO_PAGO = 'mercado_pago';
 
+    /**
+     * Slug persistido para Zipnova (ex Zippin), el agregador de correos con el que la tienda
+     * cotiza el envío por código postal (misión zipnova-envios, 14/9/2026). Mismo valor que en
+     * `empresa-api`: el conector lo escribe el ERP y la tienda solo lo lee.
+     */
+    public const SLUG_ZIPNOVA = 'zipnova';
+
     protected $guarded = [];
 
     /**
