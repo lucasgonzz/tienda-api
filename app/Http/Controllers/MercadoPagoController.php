@@ -83,7 +83,7 @@ class MercadoPagoController extends Controller
         // el servidor dejo en carts.envio_precio, y eso sale del carrito, no del body.
         $cart = $this->carrito_del_pago($request);
 
-        $articles = $this->articulos_a_cobrar($request, $cart);
+        $articles = $this->articulos_a_cobrar($request, $this->commerce, $this->payment_method, $cart);
 
         $items = [];
         foreach ($articles as $article) {
@@ -154,12 +154,14 @@ class MercadoPagoController extends Controller
      * Zipnova (o no se mando `cart_id`), vale la zona del body como siempre.
      *
      * @param Request $request cupon, delivery_zone, articles.
+     * @param \App\User $commerce Comercio que cobra (con su online_configuration).
+     * @param \App\PaymentMethod $payment_method Fila de `payment_methods` que eligio el comprador.
      * @param \App\Cart|null $cart Carrito que se paga, si se pudo resolver.
      * @return array<int, array{name: string, amount: mixed, final_price: mixed}>
      */
-    protected function articulos_a_cobrar(Request $request, $cart)
+    protected function articulos_a_cobrar(Request $request, $commerce, $payment_method, $cart)
     {
-        $online_payment_helper = new OnlinePaymentHelper($this->commerce, $this->payment_method);
+        $online_payment_helper = new OnlinePaymentHelper($commerce, $payment_method);
 
         $envio_precio = EnvioCartHelper::precio_para_cobrar($cart);
         $delivery_zone = is_null($envio_precio) ? $request->delivery_zone : null;
