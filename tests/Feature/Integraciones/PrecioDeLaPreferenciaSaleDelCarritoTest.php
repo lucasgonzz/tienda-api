@@ -4,8 +4,11 @@ namespace Tests\Feature\Integraciones;
 
 use App\Article;
 use App\Cart;
+use App\Combo;
 use App\Cupon;
 use App\DeliveryZone;
+use App\Http\Controllers\Helpers\CartHelper;
+use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\MercadoPagoController;
 use App\PaymentMethod;
 use App\PaymentMethodType;
@@ -100,6 +103,88 @@ class PrecioDeLaPreferenciaSaleDelCarritoTest extends TestCase
         $cart->articles()->attach($this->articulo->id, array_merge(['amount' => 1], $pivot));
 
         return $cart->fresh();
+    }
+
+    /**
+     * Cuelga del carrito un combo NUEVO del comercio, con su precio congelado en el pivote
+     * `cart_combo` — que es de donde tiene que salir lo que se cobra, igual que en las otras dos
+     * colecciones.
+     *
+     * `num` va siempre: es NOT NULL sin default en el esquema que crea `empresa-api`.
+     *
+     * @param \App\Cart $cart
+     * @param float $price
+     * @param int|float $amount
+     * @return \App\Combo
+     */
+    private function conCombo(Cart $cart, $price, $amount = 1)
+    {
+        $combo = Combo::create([
+            'num'     => random_int(100000, 999999),
+            'name'    => 'Combo de prueba',
+            'user_id' => $this->comercio->id,
+            'price'   => $price,
+            'cost'    => 0,
+            'online'  => 1,
+        ]);
+
+        $cart->combos()->attach($combo->id, ['price' => $price, 'amount' => $amount, 'cost' => 0]);
+
+        return $combo;
+    }
+
+    /**
+     * Lo que Mercado Pago le va a cobrar al comprador: la suma de `final_price * amount` de todos
+     * los items de la preferencia.
+     *
+     * @param array $items
+     * @return float
+     */
+    private function sumaDeLosItems(array $items)
+    {
+        return array_sum(array_map(function ($item) {
+            return $item['final_price'] * $item['amount'];
+        }, $items));
+    }
+
+    /**
+     * El total que el servidor le calculó al carrito: lo que el comprador vio en pantalla y
+     * confirmó.
+     *
+     * Se recalcula con el mismo `CartHelper::set_total()` que corre en cada escritura del carrito
+     * en vez de leer la columna a mano, porque el invariante que estos casos clavan es
+     * exactamente "lo que suma ESE método es lo que se cobra".
+     *
+     * @param \App\Cart $cart
+     * @return float
+     */
+    private function totalDelCarrito(Cart $cart)
+    {
+        CartHelper::set_total($cart);
+
+        return (float) $cart->fresh()->total;
+    }
+
+    /**
+     * Los dos recargos que `OnlinePaymentHelper::getArticlePrice()` aplica arriba del precio del
+     * carrito (el del comercio y el del medio de pago) están en cero en este escenario.
+     *
+     * Sin esto, "la suma de la preferencia es igual a `cart.total`" no sería un invariante sino
+     * una coincidencia: con un recargo del 10% la preferencia tiene que valer MÁS que el carrito,
+     * y el caso fallaría por un motivo que no es el que está probando. Esto lo denuncia acá.
+     *
+     * @return void
+     */
+    private function assertSinRecargos()
+    {
+        $this->assertNull(
+            $this->comercio->online_configuration->online_price_surchage,
+            'El comercio sembrado del slot no puede tener recargo online: el invariante de este caso lo compara 1 a 1 con cart.total.'
+        );
+        $this->assertNull(
+            $this->payment_method->surchage,
+            'El medio de pago que arma el setUp no puede tener recargo.'
+        );
     }
 
     /**
@@ -317,5 +402,139 @@ class PrecioDeLaPreferenciaSaleDelCarritoTest extends TestCase
 
         $this->assertCount(1, $items, 'El artículo borrado tiene que seguir cobrándose, no desaparecer.');
         $this->assertSame(1500.0, (float) $items[0]['final_price']);
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | La TERCERA colección: los combos (misión `combos-y-rangos-de-precio`, 16/9/2026)
+    |---------------------------------------------------------------------------------------------
+    |
+    | 🔴 EL MISMO BUG DE `test_las_promociones_de_vinoteca_entran_en_lo_que_se_cobra`, UNA
+    | COLECCIÓN DESPUÉS. La misión de combos agregó `cart.combos` y enseñó a
+    | `CartHelper::set_total()` a sumarla (`:549-553`), pero no volvió a este lugar: la preferencia
+    | se seguía armando con `array_merge($articles, $promociones)`. Carrito de $6.000 ($1.000 de
+    | artículo + $5.000 de combo), preferencia por $1.000 — y el pedido nace igual en el ERP por
+    | $6.000, con el stock de los componentes descontado. Cobrar de menos, en silencio.
+    |
+    | Que se haya repetido con la colección nueva es el dato que importa: el docblock del punto 1
+    | describía este caso exacto y aun así pasó. Por eso estos casos NO se escriben con números
+    | fijos sino con el invariante —la suma de los items de la preferencia es igual a
+    | `cart.total`—, que es la única forma en que la CUARTA colección comprable se vuelva roja sola
+    | el día que alguien la agregue y se olvide de acá.
+    */
+
+    /**
+     * 🔴 EL INVARIANTE, Y ES EL CASO QUE JUSTIFICA ESTE ARREGLO: lo que suma
+     * `CartHelper::set_total()` es exactamente lo que se le cobra al comprador.
+     *
+     * Escrito así y no con un `assertSame(6000.0, ...)` a propósito: si mañana el combo cambia de
+     * precio, o el carrito gana una cuarta colección, el número fijo habría que ir a tocarlo a
+     * mano y el invariante no.
+     *
+     * @return void
+     */
+    public function test_los_combos_entran_en_lo_que_se_cobra()
+    {
+        $this->assertTrue(ComboEsquemaHelper::disponible(),
+            'La base del slot tiene que tener el esquema de combos para que este caso mida algo.');
+        $this->assertSinRecargos();
+
+        $cart = $this->carritoCon(['price' => 1000]);
+        $this->conCombo($cart, 5000);
+
+        $cart = $cart->fresh();
+
+        $total_del_carrito = $this->totalDelCarrito($cart);
+
+        // Contraprueba: si `set_total()` no sumara el combo, el caso de abajo daría verde contra
+        // dos números igual de chicos y no probaría nada.
+        $this->assertSame(6000.0, $total_del_carrito,
+            'El escenario arranca con el combo dentro de cart.total: $1.000 de artículo + $5.000 de combo.');
+
+        $items = $this->articulosACobrar(Request::create('/api/mercado-pago/preference', 'POST'), $cart->fresh());
+
+        $this->assertCount(2, $items, 'El artículo Y el combo, las dos líneas.');
+        $this->assertSame($total_del_carrito, $this->sumaDeLosItems($items),
+            'EL INVARIANTE: la preferencia de Mercado Pago cobra lo mismo que el carrito que el comprador confirmó.');
+    }
+
+    /**
+     * 🔴 El carrito de SOLO un combo, que es el peor caso de este defecto: sin artículos, la
+     * preferencia no quedaba en "cobra de menos" sino en CERO ITEMS — o sea, una compra entera
+     * regalada, o el rechazo de Mercado Pago por una preferencia vacía.
+     *
+     * Es un carrito perfectamente normal: la home de la tienda lista los combos en su propia
+     * sección y nada obliga al comprador a agregar además un artículo suelto.
+     *
+     * @return void
+     */
+    public function test_un_carrito_de_solo_un_combo_no_arma_una_preferencia_vacia()
+    {
+        $this->assertSinRecargos();
+
+        $cart = Cart::create(['user_id' => $this->comercio->id, 'buyer_id' => null]);
+        $this->conCombo($cart, 7500, 2);
+
+        $cart = $cart->fresh();
+
+        $total_del_carrito = $this->totalDelCarrito($cart);
+        $this->assertSame(15000.0, $total_del_carrito, '2 x $7.500 de combo, sin un solo artículo.');
+
+        $items = $this->articulosACobrar(Request::create('/api/mercado-pago/preference', 'POST'), $cart->fresh());
+
+        $this->assertNotEmpty($items, 'Un carrito de solo combos no puede armar una preferencia vacía.');
+        $this->assertSame($total_del_carrito, $this->sumaDeLosItems($items),
+            'El invariante también vale cuando el combo es lo único que hay.');
+        $this->assertSame(2.0, (float) $items[0]['amount'],
+            'La cantidad sale del pivote del carrito: cobrar 1 de 2 es la misma fuga por otra puerta.');
+    }
+
+    /**
+     * El precio sale del PIVOTE del carrito —el precio congelado cuando el comprador lo agregó—,
+     * nunca del catálogo. Si el comercio le cambia el precio al combo mientras el comprador tiene
+     * el carrito abierto, se cobra lo que se le mostró.
+     *
+     * Mismo criterio que las otras dos colecciones, y la razón por la que el `$mapear` de
+     * `articulos_a_cobrar()` lee `$item->pivot->price` y no `$item->price`.
+     *
+     * @return void
+     */
+    public function test_el_precio_del_combo_sale_del_pivote_del_carrito_no_del_catalogo()
+    {
+        $this->assertSinRecargos();
+
+        $cart = Cart::create(['user_id' => $this->comercio->id, 'buyer_id' => null]);
+        $combo = $this->conCombo($cart, 5000);
+
+        // El comercio le sube el precio en el ABM del ERP después de que el comprador lo agregó.
+        $combo->price = 99999;
+        $combo->save();
+
+        $items = $this->articulosACobrar(Request::create('/api/mercado-pago/preference', 'POST'), $cart->fresh());
+
+        $this->assertCount(1, $items);
+        $this->assertSame(5000.0, (float) $items[0]['final_price'],
+            'Se cobra el precio congelado en cart_combo, no el nuevo precio del catálogo.');
+    }
+
+    /**
+     * Y el tercer punto del docblock de `articulos_a_cobrar()` aplicado a los combos: `Combo` usa
+     * SoftDeletes igual que `Article` y `PromocionVinoteca`, así que un combo dado de baja
+     * mientras el comprador tiene el carrito abierto se esfumaría del cobro sin el `withTrashed()`.
+     *
+     * @return void
+     */
+    public function test_un_combo_borrado_despues_de_agregarlo_sigue_cobrando_lo_que_el_carrito_ya_tenia()
+    {
+        $cart = Cart::create(['user_id' => $this->comercio->id, 'buyer_id' => null]);
+        $combo = $this->conCombo($cart, 5000);
+
+        $combo->delete();
+        $this->assertNotNull($combo->fresh()->deleted_at, 'Confirmar que de verdad quedó soft-deleted.');
+
+        $items = $this->articulosACobrar(Request::create('/api/mercado-pago/preference', 'POST'), $cart->fresh());
+
+        $this->assertCount(1, $items, 'El combo borrado tiene que seguir cobrándose, no desaparecer.');
+        $this->assertSame(5000.0, (float) $items[0]['final_price']);
     }
 }
