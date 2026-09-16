@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Article;
 use App\ArticlePriceTypeGroup;
 use App\Cart;
+use App\Combo;
 use App\Cupon;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ClientOfferHelper;
@@ -82,6 +83,74 @@ class CartHelper {
                                         ]);
             // }
             
+        }
+    }
+
+    /**
+     * Cuelga del carrito los combos del payload (mision combos-y-rangos-de-precio, 16/9/2026).
+     *
+     * ── EL PRECIO SALE DE LA BASE, NO DEL PAYLOAD, Y ES A PROPOSITO ──────────────────────────
+     * `attach_promociones_vinoteca()` —el molde de este metodo— usa `$promo['final_price']`, o sea
+     * el numero que mando el navegador. Eso es el agujero PREEXISTENTE de este repo ("el cliente
+     * fija el precio"), documentado en `get_price()`, y su arreglo es otra mision. Pero una
+     * coleccion NUEVA no tiene por que nacer con el agujero adentro: `combos.price` es un precio
+     * fijo, igual para todos los compradores, sin listas ni recargos de por medio, asi que
+     * resolverlo del lado del servidor cuesta UNA query para todo el carrito.
+     *
+     * Y de paso cierra dos cosas mas, con el mismo `where`: un combo de OTRO comercio y un combo
+     * que no esta publicado (`online = 0`) no se pueden meter en el carrito. El comercio sale del
+     * CARRITO (`$cart->user_id`, que lo escribio el servidor) y no del payload — mismo criterio
+     * que `attachArticles`.
+     *
+     * Un combo del payload que no matchee nada de eso se saltea en silencio, como hace
+     * `attachArticles` con las lineas que no le corresponden.
+     *
+     * @param  \App\Cart  $cart
+     * @param  array|null  $combos
+     * @return void
+     */
+    static function attach_combos($cart, $combos) {
+
+        if (!ComboEsquemaHelper::disponible()) {
+            return;
+        }
+
+        if (is_null($combos) || !is_array($combos) || count($combos) == 0) {
+            return;
+        }
+
+        $ids = [];
+
+        foreach ($combos as $combo) {
+            if (isset($combo['id']) && is_numeric($combo['id'])) {
+                $ids[] = (int) $combo['id'];
+            }
+        }
+
+        if (count($ids) == 0) {
+            return;
+        }
+
+        $modelos = Combo::whereIn('id', array_unique($ids))
+                        ->where('user_id', $cart->user_id)
+                        ->where('online', 1)
+                        ->get()
+                        ->keyBy('id');
+
+        foreach ($combos as $combo) {
+
+            if (!isset($combo['id']) || !$modelos->has((int) $combo['id'])) {
+                continue;
+            }
+
+            $modelo = $modelos->get((int) $combo['id']);
+
+            $cart->combos()->attach($modelo->id, [
+                                        'price'     => $modelo->price,
+                                        'cost'      => $modelo->cost,
+                                        'amount'    => isset($combo['pivot']['amount']) ? $combo['pivot']['amount'] : 1,
+                                        'notes'     => isset($combo['pivot']['notes']) ? $combo['pivot']['notes'] : null,
+                                    ]);
         }
     }
 
@@ -353,7 +422,15 @@ class CartHelper {
         }
 
         foreach ($cart->promociones_vinoteca as $promo) {
-            $total += $promo->pivot->price * $promo->pivot->amount; 
+            $total += $promo->pivot->price * $promo->pivot->amount;
+        }
+
+        /* La tercera coleccion comprable. Detras de la guarda: sin `cart_combo` esta linea seria
+           "Base table or view not found" en el medio del checkout. */
+        if (ComboEsquemaHelper::disponible()) {
+            foreach ($cart->combos as $combo) {
+                $total += $combo->pivot->price * $combo->pivot->amount;
+            }
         }
 
         $cart->total = $total;
@@ -531,6 +608,17 @@ class CartHelper {
         $model->articles = ArticleHelper::setArticlesVariants($model->articles);
         $model->articles = ArticleHelper::checkPriceTypes($model->articles);
         $model->promociones_vinoteca = ArticleHelper::set_promociones_vinoteca($model->promociones_vinoteca);
+
+        /* Los combos vuelven marcados igual que las promos, para que el SPA sepa a que coleccion
+           pertenece cada linea del carrito. `final_price` es `price` con el nombre que el SPA ya
+           usa para todo lo comprable. */
+        if (ComboEsquemaHelper::disponible()) {
+            foreach ($model->combos as $combo) {
+                $combo->is_combo = true;
+                $combo->final_price = $combo->price;
+            }
+        }
+
         $model = Self::check_repetidos($model);
 
         return $model;

@@ -39,15 +39,32 @@ class HomeController extends Controller
             // Novedades son los que han tenido movimiento de stock en las ultimas 2 semanas
             $novedades = HomeHelper::getNovedades($request->commerce_id);
 
+            /*
+             * Las dos colecciones nuevas de la mision combos-y-rangos-de-precio (16/9/2026).
+             * Son ADITIVAS y nada de lo que ya viajaba cambio de nombre ni de forma.
+             *
+             * Las dos pueden venir vacias sin que eso sea un error, y por dos motivos distintos:
+             *   - `articulos_con_rangos`: el comercio no cargo ningun tramo de precio.
+             *   - `combos`: no hay combos con "Mostrar en la tienda" prendido, O esta base
+             *     todavia no tiene el esquema de combos porque el release de empresa no llego
+             *     (ver `ComboEsquemaHelper`). Los dos casos se ven igual desde afuera, a
+             *     proposito: el SPA esconde la seccion y listo.
+             */
+            $articulos_con_rangos = HomeHelper::get_articulos_con_rangos($request->commerce_id);
+            $combos = HomeHelper::get_combos($request->commerce_id);
+
             $featured = ArticleHelper::checkPriceTypes($featured);
             $in_offer = ArticleHelper::checkPriceTypes($in_offer);
             $novedades = ArticleHelper::checkPriceTypes($novedades);
+            $articulos_con_rangos = ArticleHelper::checkPriceTypes($articulos_con_rangos);
             return response()->json([
-                                        'articles' => $last_uploads, 
-                                        'featured'  => $featured, 
+                                        'articles' => $last_uploads,
+                                        'featured'  => $featured,
                                         'promociones_vinoteca'  => $promociones_vinoteca,
                                         'in_offer'  => $in_offer,
                                         'novedades' => $novedades,
+                                        'articulos_con_rangos' => $articulos_con_rangos,
+                                        'combos'    => $combos,
                                     ], 200);
         } 
         return response()->json(['articles' => $last_uploads], 200);

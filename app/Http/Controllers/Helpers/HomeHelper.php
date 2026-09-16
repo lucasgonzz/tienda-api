@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Article;
+use App\Combo;
 use App\Icon;
 use App\PromocionVinoteca;
 use App\StockMovement;
@@ -81,6 +82,68 @@ class HomeHelper
             $promocion_vinoteca->is_promocion_vinoteca = true;
         }
         return $promociones_vinoteca;
+    }
+
+    /**
+     * Los combos publicados del comercio, para la seccion propia de la home.
+     *
+     * 🔴 `ComboEsquemaHelper::disponible()` va PRIMERO y devuelve coleccion vacia: sin la columna
+     * `online` este metodo seria "Unknown column 'online'" y la home entera caeria en 500. Es el
+     * caso real de un cliente que actualiza la tienda antes que el ERP.
+     *
+     * `online = 1` es el check "Mostrar en la tienda" del ABM de empresa, y su default es 0: ningun
+     * cliente ve combos aparecer en su ecommerce sin haberlos prendido.
+     *
+     * Las dos claves que se agregan a cada combo son el contrato con `tienda-spa`:
+     *   - `is_combo`, para que el carrito sepa a que coleccion pertenece la linea (igual que
+     *     `is_promocion_vinoteca`).
+     *   - `final_price`, que es `price` con otro nombre: el SPA lee el precio de todo lo comprable
+     *     por `final_price`, asi que la tarjeta del combo no necesita un caso aparte.
+     *
+     * @param  int  $commerce_id
+     * @return \Illuminate\Support\Collection
+     */
+    static function get_combos($commerce_id) {
+        if (!ComboEsquemaHelper::disponible()) {
+            return collect();
+        }
+
+        $combos = Combo::where('user_id', $commerce_id)
+                            ->where('online', 1)
+                            ->withAll()
+                            ->orderBy('id', 'DESC')
+                            ->get();
+
+        foreach ($combos as $combo) {
+            $combo->is_combo = true;
+            $combo->final_price = $combo->price;
+        }
+
+        return $combos;
+    }
+
+    /**
+     * Los articulos que tienen al menos un tramo de precio por cantidad, para la seccion
+     * "Comprando mas, pagas menos" de la home (debajo de Novedades).
+     *
+     * Mismo shape que `novedades`: los mismos `checkStock` / `checkOnline` / `withAll`, y el
+     * `checkPriceTypes` se lo aplica el controller, como a todas las demas colecciones.
+     *
+     * @param  int  $commerce_id
+     * @return \Illuminate\Database\Eloquent\Collection|\Illuminate\Support\Collection
+     */
+    static function get_articulos_con_rangos($commerce_id) {
+        if (!ArticlePriceRangeHelper::hay_tabla()) {
+            return collect();
+        }
+
+        return Article::where('user_id', $commerce_id)
+                        ->whereHas('article_price_ranges')
+                        ->checkStock()
+                        ->checkOnline()
+                        ->withAll()
+                        ->orderBy('created_at', 'DESC')
+                        ->get();
     }
 
     /**

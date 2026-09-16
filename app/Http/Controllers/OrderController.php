@@ -6,6 +6,7 @@ use App\Buyer;
 use App\Cart;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartHelper;
+use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
@@ -102,6 +103,12 @@ class OrderController extends Controller
         // Mismo criterio que index(): el envío de Zipnova solo si la tabla existe.
         if (ZipnovaEsquemaHelper::tabla_envios()) {
             $order->with('envio');
+        }
+
+        // Y los combos, con el mismo criterio y por el mismo motivo (misión
+        // combos-y-rangos-de-precio): acá el `withAll()` no participa, así que va a mano.
+        if (ComboEsquemaHelper::disponible()) {
+            $order->with('combos.articles.images');
         }
 
         if (!is_null($buyer_id)) {
@@ -246,6 +253,10 @@ class OrderController extends Controller
             
             OrderHelper::attachArticles($cart, $order, $request->dolar_blue);
             OrderHelper::attachPromocionesVinoteca($cart, $order, $request->dolar_blue);
+            // Los combos del carrito viajan al pedido igual que las promos (mision
+            // combos-y-rangos-de-precio). Si esta base no tiene `order_combo` el helper no hace
+            // nada y el pedido se crea como siempre.
+            OrderHelper::attachCombos($cart, $order);
             OrderHelper::updateCurrentCart($cart, $order);
             OrderHelper::deleteOrderCart($cart);
 

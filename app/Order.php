@@ -2,6 +2,7 @@
 
 namespace App;
 
+use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use Illuminate\Database\Eloquent\Model;
 
 class Order extends Model
@@ -29,6 +30,12 @@ class Order extends Model
      */
     function scopeWithAll($query) {
         $query->with('articles.images', 'buyer', 'payment_method', 'delivery_zone', 'cupons', 'order_status', 'articles.article_properties.article_property_values', 'articles.article_properties.article_property_type', 'articles.article_variants.article_property_values.article_property_type', 'articles.discounts');
+
+        /* Mismo criterio que `envio`, y la misma guarda: `order_combo` la crea `empresa-api`.
+           Ver `ComboEsquemaHelper`. */
+        if (ComboEsquemaHelper::disponible()) {
+            $query->with('combos.articles.images');
+        }
     }
 
     /**
@@ -44,6 +51,19 @@ class Order extends Model
 
     function promociones_vinoteca() {
         return $this->belongsToMany('App\PromocionVinoteca')->withPivot('amount', 'price', 'notes');
+    }
+
+    /**
+     * Los combos del pedido.
+     *
+     * 🔴 La tabla va EXPLICITA. Por convención Laravel armaría `combo_order` (alfabético), y la
+     * que crea `empresa-api` —calcada de `order_promocion_vinoteca`— se llama `order_combo`. Sin
+     * este parámetro la relación apunta a una tabla que no existe en ninguna base.
+     *
+     * 🔴 Nunca se toca sin preguntarle antes a `ComboEsquemaHelper::disponible()`.
+     */
+    function combos() {
+        return $this->belongsToMany('App\Combo', 'order_combo', 'order_id', 'combo_id')->withPivot('amount', 'price', 'notes');
     }
 
     function articles() {

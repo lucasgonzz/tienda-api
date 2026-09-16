@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Cupon;
+use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
 
 /**
@@ -78,7 +79,49 @@ class OrderTotalsHelper
             }
         }
 
+        // Los combos son items pagos del pedido igual que los articulos y las promos, asi que
+        // entran en el listado del mail y en el subtotal. Detras de la guarda de esquema: sin
+        // `order_combo` este acceso dispararia un lazy load contra una tabla que no existe.
+        if (ComboEsquemaHelper::disponible() && !is_null($order->combos)) {
+            foreach ($order->combos as $combo) {
+                $unit_price = Self::unitPrice($combo->pivot);
+
+                $lines[] = [
+                    'name'       => $combo->name,
+                    'code'       => null,
+                    // El detalle de la receta en el mail: "1x Taladro, 2x Mecha". Es lo unico que
+                    // identifica a un combo, que no tiene imagen ni codigo propios.
+                    'variant'    => Self::comboDescription($combo),
+                    'notes'      => isset($combo->pivot->notes) ? $combo->pivot->notes : null,
+                    'amount'     => (int) $combo->pivot->amount,
+                    'unit_price' => $unit_price,
+                    'line_total' => $unit_price * (float) $combo->pivot->amount,
+                ];
+            }
+        }
+
         return $lines;
+    }
+
+    /**
+     * La receta del combo en texto: "1x Taladro, 2x Mecha".
+     *
+     * @param  \App\Combo  $combo
+     * @return string|null
+     */
+    static function comboDescription($combo) {
+        if (!isset($combo->articles) || is_null($combo->articles) || count($combo->articles) == 0) {
+            return null;
+        }
+
+        $partes = [];
+
+        foreach ($combo->articles as $article) {
+            $cantidad = isset($article->pivot->amount) ? (int) $article->pivot->amount : 1;
+            $partes[] = $cantidad.'x '.$article->name;
+        }
+
+        return implode(', ', $partes);
     }
 
     /**
