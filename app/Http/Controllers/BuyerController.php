@@ -286,7 +286,9 @@ class BuyerController extends Controller
 		}
 
 		$validator = Validator::make($request->all(), [
-			'zipcode' => 'required|string|max:20',
+			// Mismo largo mínimo que EnvioController::cotizar (el CP ya cotizado con éxito, así
+			// que 4 es válido siempre): sin esto se podía guardar un CP de un solo caracter.
+			'zipcode' => 'required|string|min:4|max:20',
 			'city'    => 'nullable|string|max:120',
 			'state'   => 'nullable|string|max:120',
 		]);
