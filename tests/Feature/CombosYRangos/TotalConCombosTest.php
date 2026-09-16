@@ -208,4 +208,37 @@ class TotalConCombosTest extends TestCase
         $this->assertSame((self::TRAMO_5 * 5) + self::PRECIO_PROMO,
             $this->totalGuardado((int) $respuesta->json('cart.id')));
     }
+
+    /**
+     * 🔴 UN COMBO REPETIDO EN EL PAYLOAD SE CUELGA UNA SOLA VEZ.
+     *
+     * Medido antes del arreglo: dos entradas con el mismo `combo_id` en el body dejaban 2 filas en
+     * `cart_combo` y un total de 18.000 donde iban 9.000. Cobra de MAS, asi que no es una fuga de
+     * plata — pero es plata mal cobrada igual, y es exactamente la forma de bug que
+     * `CartHelper::check_repetidos()` existe para tapar en la coleccion de articulos.
+     *
+     * ⚠️ Las dos aserciones hacen falta y no son la misma. Deduplicar las FILAS es facil de hacer
+     * tarde —`check_repetidos()` corre dentro de `getFullModel()`, o sea despues de `set_total()`—
+     * y hacerlo tarde deja las filas bien y el TOTAL mal, que es la mitad que importa. Por eso el
+     * arreglo vive en `attach_combos()` y por eso acá se mira tambien `carts.total`.
+     */
+    public function test_un_combo_repetido_en_el_payload_se_cuelga_una_sola_vez()
+    {
+        $combo = $this->combo($this->comercio);
+
+        $linea = $this->lineaDeComboDelPayload($combo, 1);
+
+        $respuesta = $this->crearCarrito($this->comercio, [
+            'combos' => [$linea, $linea],
+        ]);
+
+        $respuesta->assertStatus(201);
+        $cart_id = (int) $respuesta->json('cart.id');
+
+        $this->assertCount(1, $this->combosGuardados($cart_id),
+            'el mismo combo mandado dos veces tiene que dejar UNA fila en cart_combo');
+
+        $this->assertSame(self::PRECIO_COMBO, $this->totalGuardado($cart_id),
+            'y el total tiene que ser el del combo una vez: 18.000 seria cobrarlo dos veces');
+    }
 }

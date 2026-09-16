@@ -105,6 +105,23 @@ class CartHelper {
      * Un combo del payload que no matchee nada de eso se saltea en silencio, como hace
      * `attachArticles` con las lineas que no le corresponden.
      *
+     * ── 🔴 UN COMBO REPETIDO EN EL PAYLOAD SE CUELGA UNA SOLA VEZ ────────────────────────────
+     *
+     * Medido antes del arreglo: dos entradas con el mismo `combo_id` en el body dejaban 2 filas en
+     * `cart_combo` y un total de 18.000 donde iban 9.000. Cobra de MAS, asi que no es una fuga de
+     * plata — pero es plata mal cobrada igual, y es exactamente la forma de bug que
+     * `check_repetidos()` existe para tapar en la coleccion de articulos.
+     *
+     * Gana LA PRIMERA entrada, que es el mismo criterio de `check_repetidos()` ("mantener solo una
+     * relacion, la primera"). Las cantidades NO se suman: sumarlas seria inventar una regla que la
+     * coleccion de articulos no tiene, y el SPA manda una entrada por combo con su `amount`
+     * adentro — un id repetido es un payload roto, no un pedido de dos unidades.
+     *
+     * ⚠️ Y va ACA y no en `check_repetidos()` a proposito: aquel corre dentro de `getFullModel()`,
+     * o sea DESPUES de `set_total()`, asi que aun funcionando dejaria las filas bien y el total
+     * mal — que es la mitad que importa. Deduplicando al colgar, el total se calcula una sola vez y
+     * ya sale bien.
+     *
      * @param  \App\Cart  $cart
      * @param  array|null  $combos
      * @return void
@@ -137,13 +154,24 @@ class CartHelper {
                         ->get()
                         ->keyBy('id');
 
+        /* Los que ya se colgaron en esta pasada. Ver el docblock: gana la primera entrada. */
+        $ya_colgados = [];
+
         foreach ($combos as $combo) {
 
             if (!isset($combo['id']) || !$modelos->has((int) $combo['id'])) {
                 continue;
             }
 
-            $modelo = $modelos->get((int) $combo['id']);
+            $id = (int) $combo['id'];
+
+            if (isset($ya_colgados[$id])) {
+                continue;
+            }
+
+            $ya_colgados[$id] = true;
+
+            $modelo = $modelos->get($id);
 
             $cart->combos()->attach($modelo->id, [
                                         'price'     => $modelo->price,
