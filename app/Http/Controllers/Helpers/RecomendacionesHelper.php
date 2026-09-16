@@ -145,6 +145,33 @@ class RecomendacionesHelper
                     $join->on('o.id', '=', 'ao1.order_id')
                         ->where('o.user_id', '=', $user_id);
                 })
+                /*
+                 * 🔴 Un pedido CANCELADO no es una compra, y el titulo de la seccion afirma
+                 * que alguien compro. Sin esto, la co-compra se armaba con ventas que nunca
+                 * se concretaron -y en un comercio que cancela seguido (falta de stock, pago
+                 * rechazado) eso no es el borde, es la norma-.
+                 *
+                 * Se excluye por las DOS vias porque el esquema arrastra las dos: la columna
+                 * vieja `orders.status` (enum, hoy no la escribe el checkout) y el
+                 * `order_status_id` que si escribe OrderController. Los nombres de
+                 * `order_statuses` son texto libre POR COMERCIO, asi que el match es por
+                 * 'cancel' y cubre Cancelado/Cancelada/Canceled. Es una heuristica: un
+                 * comercio que le ponga "Anulado" a su estado de cancelacion se cuela. Mejor
+                 * eso que no filtrar nada.
+                 *
+                 * 'Sin confirmar' NO se excluye a proposito: es el estado con el que nace
+                 * TODO pedido del checkout (OrderController), asi que sacarlo dejaria afuera
+                 * las compras mas recientes, que son las que mas valen para recomendar.
+                 */
+                ->leftJoin('order_statuses as os', 'os.id', '=', 'o.order_status_id')
+                ->where(function ($q) {
+                    $q->whereNull('os.name')
+                        ->orWhere('os.name', 'not like', '%cancel%');
+                })
+                ->where(function ($q) {
+                    $q->whereNull('o.status')
+                        ->orWhere('o.status', '<>', 'canceled');
+                })
                 ->join('article_order as ao2', function ($join) use ($article_id) {
                     $join->on('ao2.order_id', '=', 'ao1.order_id')
                         ->where('ao2.article_id', '<>', $article_id);
