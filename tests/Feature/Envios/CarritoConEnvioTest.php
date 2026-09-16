@@ -3,6 +3,7 @@
 namespace Tests\Feature\Envios;
 
 use App\Cart;
+use App\DeliveryZone;
 use App\Envio;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
@@ -880,18 +881,36 @@ class CarritoConEnvioTest extends TestCase
         $this->assertCount(1, $items, 'solo el artículo: ni la zona del body ni un envío de $0');
     }
 
-    public function test_sin_carrito_por_zipnova_la_preferencia_sigue_cobrando_la_zona_del_body()
+    /**
+     * 🔴 Reescrito en la misión `mp-precio-servidor-y-credenciales-env` (16/9/2026): antes de esa
+     * misión, `articulos_a_cobrar()` cobraba el `price` que mandaba el BODY sin mirar la zona
+     * atada al carrito — este mismo test pasaba con `delivery_zone_id: 1` sin que existiera
+     * ninguna `DeliveryZone` con ese id, porque el id nunca se usaba para nada. Ahora la zona
+     * (igual que los artículos y el cupón) sale de `cart.delivery_zone`, así que hace falta una
+     * fila real para que la preferencia tenga con qué cobrar el envío.
+     *
+     * @return void
+     */
+    public function test_sin_envio_por_zipnova_la_preferencia_cobra_la_zona_real_atada_al_carrito()
     {
         Http::fake();
 
-        $cart = $this->crearCarritoPorApi(['envio' => null, 'deliver' => 1, 'delivery_zone_id' => 1]);
+        // DeliveryZone no declara $fillable/$guarded: sin mass assignment, propiedad por propiedad.
+        $zona = new DeliveryZone();
+        $zona->name = 'Zona';
+        $zona->price = 350;
+        $zona->user_id = $this->comercio->id;
+        $zona->save();
+
+        $cart = $this->crearCarritoPorApi(['envio' => null, 'deliver' => 1, 'delivery_zone_id' => $zona->id]);
         $payment_method = $this->paymentMethodMp();
 
+        // El body pide una zona y un precio distintos: no tienen que pesar en lo que se cobra.
         $request = Request::create('/api/mercado-pago/preference', 'POST', [
             'payment_method' => ['id' => $payment_method->id, 'user_id' => $this->comercio->id],
             'cupon'          => null,
-            'delivery_zone'  => ['id' => 1, 'name' => 'Zona', 'price' => 350],
-            'articles'       => [['name' => $this->articulo->name, 'final_price' => 1000, 'amount' => 2]],
+            'delivery_zone'  => ['id' => 999, 'name' => 'Otra zona', 'price' => 1],
+            'articles'       => [['name' => $this->articulo->name, 'final_price' => 1, 'amount' => 2]],
             'cart_id'        => $cart->id,
         ]);
 
@@ -899,7 +918,7 @@ class CarritoConEnvioTest extends TestCase
 
         $this->assertCount(2, $items);
         $this->assertSame('Envio', $items[1]['name']);
-        $this->assertSame(350.0, (float) $items[1]['final_price'], 'la zona, como siempre');
+        $this->assertSame(350.0, (float) $items[1]['final_price'], 'la zona real atada al carrito, no la del body');
     }
 
     /*
