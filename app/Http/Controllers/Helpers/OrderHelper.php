@@ -155,7 +155,16 @@ class OrderHelper {
             if (!Self::combo_ya_cargado($order, $combo)) {
                 $order->combos()->attach([$combo->id => [
                                                 'amount'      => $combo->pivot->amount,
-                                                'cost'        => $combo->pivot->cost,
+                                                // Del MODELO y no del pivot, y medido: `Cart::combos()`
+                                                // no trae `cost` en el `withPivot` —a proposito, para
+                                                // no publicarle el costo al navegador—, asi que
+                                                // `$combo->pivot->cost` es null y `order_combo.cost`
+                                                // quedaba vacio. Es el mismo valor que escribio
+                                                // `CartHelper::attach_combos` (`$modelo->cost`).
+                                                // ⚠️ `attachPromocionesVinoteca` tiene el defecto que
+                                                // esto evita: lee `$promo->pivot->cost`, que tampoco
+                                                // esta en su withPivot. Queda denunciado, no se toca.
+                                                'cost'        => $combo->cost,
                                                 'notes'       => $combo->pivot->notes,
                                                 'price'       => $combo->pivot->price,
                                             ]]);

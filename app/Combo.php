@@ -31,6 +31,23 @@ class Combo extends Model
     protected $guarded = [];
 
     /**
+     * 🔴 `cost` es lo que al comerciante le CUESTA el combo, y la tienda es publica: cualquier
+     * visitante que abra las devtools en la home veria el margen de cada combo. La tienda ya no
+     * publica el costo de un articulo (`Cart::articles()` no trae `cost` en el pivot), asi que
+     * esto solo mantiene el mismo criterio en una coleccion nueva.
+     *
+     * No afecta a la API: `$hidden` toca la serializacion, no la lectura. `CartHelper::attach_combos`
+     * y `OrderHelper::attachCombos` siguen leyendo `$combo->cost` normalmente.
+     *
+     * ⚠️ `PromocionVinoteca` SI lo publica hoy (su modelo no tiene `$hidden` y `get_promociones_vinoteca`
+     * devuelve el modelo entero). Es un defecto preexistente, no se arregla en esta mision para no
+     * cambiar una respuesta que el SPA ya consume — queda denunciado.
+     *
+     * @var array<int, string>
+     */
+    protected $hidden = ['cost'];
+
+    /**
      * `articles.images` y no solo `articles`: la tarjeta del combo no tiene imagen propia y se
      * dibuja con las de sus componentes. Sin esto serian N+1 consultas por combo en la home.
      */
