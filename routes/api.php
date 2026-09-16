@@ -243,6 +243,9 @@ Route::middleware('auth:buyer')->group(function() {
 	Route::put('/buyer/password',
 		'BuyerController@updatePassword'
 	);
+	Route::put('/buyer/envio-zipcode',
+		'BuyerController@updateEnvioZipcode'
+	);
 
 	// Last Searchs
 	Route::get('/last-searchs',

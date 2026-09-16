@@ -10,6 +10,8 @@ use Exception;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\Validator;
 
 class BuyerController extends Controller
 {
@@ -265,6 +267,42 @@ class BuyerController extends Controller
 		$buyer->surname = StringHelper::modelName($request->surname);
 		$buyer->email = $request->email;
 		$buyer->save();
+		return response(null, 200);
+	}
+
+	/**
+	 * Guarda el último código postal (y localidad/provincia, si Zipnova o el comprador ya las
+	 * resolvieron) con el que el buyer cotizó un envío, para no volver a pedírselo la próxima vez
+	 * (misión envio-cp-buyer-modal, 16/9/2026).
+	 *
+	 * `envio_zipcode/envio_city/envio_state` las crea empresa-api (el deploy de la tienda no corre
+	 * `migrate`, arquitectura_tecnica.md:470): si un cliente todavía no tiene esa migración, el
+	 * guardado es un no-op silencioso — el cotizador de la tienda sigue funcionando igual, solo
+	 * que sin recordar el código postal entre visitas.
+	 */
+	function updateEnvioZipcode(Request $request) {
+		if (!Schema::hasColumn('buyers', 'envio_zipcode')) {
+			return response(null, 204);
+		}
+
+		$validator = Validator::make($request->all(), [
+			// Mismo largo mínimo que EnvioController::cotizar (el CP ya cotizado con éxito, así
+			// que 4 es válido siempre): sin esto se podía guardar un CP de un solo caracter.
+			'zipcode' => 'required|string|min:4|max:20',
+			'city'    => 'nullable|string|max:120',
+			'state'   => 'nullable|string|max:120',
+		]);
+
+		if ($validator->fails()) {
+			return response()->json(['errors' => $validator->errors()], 422);
+		}
+
+		$buyer = Buyer::find($this->buyerId());
+		$buyer->envio_zipcode = $request->zipcode;
+		$buyer->envio_city = $request->city;
+		$buyer->envio_state = $request->state;
+		$buyer->save();
+
 		return response(null, 200);
 	}
 
