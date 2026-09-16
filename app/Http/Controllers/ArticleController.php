@@ -6,6 +6,7 @@ use App\Article;
 use App\Events\ArticleViewedEvent;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\HomeHelper;
+use App\Http\Controllers\Helpers\RecomendacionesHelper;
 use App\Http\Controllers\Helpers\TagHelper;
 use App\Http\Controllers\LastSearchController;
 use App\PromocionVinoteca;
@@ -68,6 +69,45 @@ class ArticleController extends Controller {
             return response()->json(['models' => $articles], 200);
         }
         return response()->json(['models' => ['data' => []]], 200);
+    }
+
+    /**
+     * "Quienes vieron este producto tambien compraron" (mision tienda-ficha-estilo-ml).
+     *
+     * 🔴 `models` es un ARRAY PLANO, no un paginador: estas secciones son un carrusel de
+     * hasta 12 articulos, sin scroll infinito. Es la diferencia con similars(), que si
+     * pagina y por eso devuelve `['data' => []]` cuando no tiene nada.
+     *
+     * 🔴 Sin datos devuelve `{'models': []}` con 200, nunca un 404 ni un error: "este
+     * producto todavia no tiene recomendaciones" es un resultado normal —y el mas frecuente
+     * de todos— y no una falla. El SPA oculta la seccion cuando el array viene vacio.
+     *
+     * El `$commerce_id` de la ruta no es decorativo: scopea la consulta al comercio, que en
+     * una base compartida es lo unico que evita mostrar lo que se vende en el negocio de al
+     * lado. Ver el docblock de RecomendacionesHelper.
+     *
+     * @param mixed $article_id
+     * @param mixed $commerce_id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function tambienCompraronVistas($article_id, $commerce_id) {
+        $articles = RecomendacionesHelper::vieronTambienCompraron($article_id, $commerce_id);
+        return response()->json(['models' => $articles], 200);
+    }
+
+    /**
+     * "Quienes compraron este producto tambien compraron" (mision tienda-ficha-estilo-ml).
+     *
+     * Mismo contrato que tambienCompraronVistas(): array plano en `models`, y `[]` con 200
+     * cuando no hay nada. Ver el docblock de arriba.
+     *
+     * @param mixed $article_id
+     * @param mixed $commerce_id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function tambienCompraronCompras($article_id, $commerce_id) {
+        $articles = RecomendacionesHelper::compraronTambienCompraron($article_id, $commerce_id);
+        return response()->json(['models' => $articles], 200);
     }
 
     function setViewed($article_id) {

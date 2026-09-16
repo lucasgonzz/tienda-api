@@ -71,6 +71,17 @@ Route::get('/articles/{slug}/{commerce_id}',
 Route::get('/articles/similars/{id}/{commerce_id}',
 	'ArticleController@similars'
 );
+// Las dos secciones de recomendacion de la ficha (mision tienda-ficha-estilo-ml). Misma
+// forma que articles/similars: publicas, sin auth, y devuelven {'models': [...]}.
+//
+// El {commerce_id} scopea la consulta al comercio — en una base compartida es lo unico que
+// evita recomendar lo que se vende en el negocio de al lado. Ver RecomendacionesHelper.
+Route::get('/articles/tambien-compraron/vistas/{id}/{commerce_id}',
+	'ArticleController@tambienCompraronVistas'
+);
+Route::get('/articles/tambien-compraron/compras/{id}/{commerce_id}',
+	'ArticleController@tambienCompraronCompras'
+);
 Route::get('/articles/set-viewed/{id}',
 	'ArticleController@setViewed'
 );
