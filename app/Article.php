@@ -2,6 +2,7 @@
 
 namespace App;
 
+use App\Http\Controllers\Helpers\ArticlePriceRangeHelper;
 use App\User;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -19,9 +20,18 @@ class Article extends Model
     /**
      * Eager load de relaciones habituales para listados y detalle de artículos en tienda.
      * Incluye price_types para que checkPriceTypes pueda leer pivot->final_price.
+     *
+     * `article_price_ranges` se suma detrás de su guarda de esquema (misión
+     * combos-y-rangos-de-precio, 16/9/2026): la tabla la crea `empresa-api` y este scope está en
+     * el camino de TODOS los listados, así que sin tabla el eager load no sería una sección vacía
+     * sino la tienda entera en 500. Ver `ArticlePriceRangeHelper::hay_tabla()`.
      */
     function scopeWithAll($query) {
         $query->with('discounts', 'images', 'descriptions', 'condition', 'sizes', 'colors', 'brand', 'iva', 'article_properties.article_property_values', 'article_properties.article_property_type', 'article_variants.article_property_values.article_property_type', 'bodega', 'cepa', 'price_types');
+
+        if (ArticlePriceRangeHelper::hay_tabla()) {
+            $query->with('article_price_ranges');
+        }
     }
     
     protected $casts = [
@@ -101,6 +111,15 @@ class Article extends Model
 
     function price_types() {
         return $this->belongsToMany(PriceType::class)->withPivot('percentage', 'price', 'final_price');
+    }
+
+    /**
+     * Tramos de precio por cantidad de ESTE artículo ("comprando 10 o más, $X").
+     * Los carga el ABM del ERP; la tienda solo los lee. El matcheo lo resuelve
+     * `ArticlePriceRangeHelper`, nunca a mano.
+     */
+    function article_price_ranges() {
+        return $this->hasMany('App\ArticlePriceRange')->orderBy('id', 'ASC');
     }
 
     function article_properties() {

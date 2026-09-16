@@ -6,6 +6,7 @@ use App\Buyer;
 use App\Cart;
 use App\Cupon;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Order;
 use App\Payment;
@@ -125,6 +126,56 @@ class OrderHelper {
             }
             // Log::info($article->name.' variant_id: '.$article->pivot->variant_id);
         }
+    }
+
+    /**
+     * Copia los combos del carrito al pedido (mision combos-y-rangos-de-precio, 16/9/2026).
+     *
+     * Calcado de `attachPromocionesVinoteca`, con dos diferencias a proposito:
+     *
+     *   - La guarda de esquema primero: sin `order_combo` esto seria un 500 con el comprador
+     *     apretando "Confirmar compra". Ver `ComboEsquemaHelper`.
+     *   - NO se le aplica `online_price_surchage`, a diferencia de los articulos. Es el mismo
+     *     criterio que ya tienen las promociones de vinoteca: el recargo online es un porcentaje
+     *     sobre el precio de lista de un articulo, y `combos.price` es un precio fijo que el
+     *     comerciante escribio a mano para vender ese combo a ese numero.
+     *
+     * @param  \App\Cart  $cart
+     * @param  \App\Order  $order
+     * @return void
+     */
+    static function attachCombos($cart, $order) {
+
+        if (!ComboEsquemaHelper::disponible()) {
+            return;
+        }
+
+        foreach ($cart->combos as $combo) {
+
+            if (!Self::combo_ya_cargado($order, $combo)) {
+                $order->combos()->attach([$combo->id => [
+                                                'amount'      => $combo->pivot->amount,
+                                                // Del MODELO y no del pivot, y medido: `Cart::combos()`
+                                                // no trae `cost` en el `withPivot` —a proposito, para
+                                                // no publicarle el costo al navegador—, asi que
+                                                // `$combo->pivot->cost` es null y `order_combo.cost`
+                                                // quedaba vacio. Es el mismo valor que escribio
+                                                // `CartHelper::attach_combos` (`$modelo->cost`).
+                                                // ⚠️ `attachPromocionesVinoteca` tiene el defecto que
+                                                // esto evita: lee `$promo->pivot->cost`, que tampoco
+                                                // esta en su withPivot. Queda denunciado, no se toca.
+                                                'cost'        => $combo->cost,
+                                                'notes'       => $combo->pivot->notes,
+                                                'price'       => $combo->pivot->price,
+                                            ]]);
+            }
+        }
+    }
+
+    static function combo_ya_cargado($order, $combo) {
+        $order->load('combos');
+        $order_combo = $order->combos()->where('combo_id', $combo->id)->first();
+        return !is_null($order_combo);
     }
 
     static function promo_ya_cargada($order, $promo) {

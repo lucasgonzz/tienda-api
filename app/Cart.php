@@ -2,6 +2,7 @@
 
 namespace App;
 
+use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use Illuminate\Database\Eloquent\Model;
 
 class Cart extends Model
@@ -26,8 +27,18 @@ class Cart extends Model
         'envio_destino'    => 'array',
     ];
 
+    /**
+     * ⚠️ `combos` va detrás de su guarda de esquema, igual que `envio` en `Order`: la tabla
+     * `cart_combo` la crea `empresa-api` y hay bases de clientes donde todavía no existe. Cargarla
+     * de oficio sería un 500 en cada operación del carrito de esos clientes — o sea, la compra
+     * caída entera. Ver `ComboEsquemaHelper`.
+     */
     function scopeWithAll($query) {
         $query->with('cupon', 'articles.images', 'articles', 'articles.colors', 'articles.sizes', 'payment_method.type', 'payment_method.payment_method_installments', 'delivery_zone', 'promociones_vinoteca.images');
+
+        if (ComboEsquemaHelper::disponible()) {
+            $query->with('combos.articles.images');
+        }
     }
 
     function articles() {
@@ -36,6 +47,16 @@ class Cart extends Model
 
     function promociones_vinoteca() {
         return $this->belongsToMany('App\PromocionVinoteca')->withPivot('price', 'amount', 'notes');
+    }
+
+    /**
+     * La tercera colección comprable del carrito, hermana de `promociones_vinoteca`.
+     * Pivote `cart_combo` (el nombre por convención ya coincide).
+     *
+     * 🔴 Nunca se toca sin preguntarle antes a `ComboEsquemaHelper::disponible()`.
+     */
+    function combos() {
+        return $this->belongsToMany('App\Combo')->withPivot('price', 'amount', 'notes');
     }
 
     function cupon() {

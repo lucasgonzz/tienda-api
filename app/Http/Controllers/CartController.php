@@ -6,6 +6,7 @@ use App\Cart;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
+use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Order;
 use Illuminate\Http\Request;
@@ -130,6 +131,12 @@ class CartController extends Controller
         CartHelper::attachArticles($cart, $request->cart['articles']);
         CartHelper::attach_promociones_vinoteca($cart, $request->cart['promociones_vinoteca']);
 
+        // `combos` es OPCIONAL en el body y su ausencia nunca es un error: un SPA viejo —o uno
+        // nuevo corriendo contra una base sin el esquema de combos— simplemente no la manda.
+        // Por eso se lee con isset y no como `$request->cart['combos']` a secas, que en un
+        // payload viejo seria "Undefined array key".
+        CartHelper::attach_combos($cart, isset($request->cart['combos']) ? $request->cart['combos'] : []);
+
         CartHelper::set_total($cart);
 
         // Queda registrado como propio de esta sesion. Es lo unico que ata un carrito de invitado
@@ -169,21 +176,34 @@ class CartController extends Controller
         CartHelper::checkPaymentStatus($cart);
         $cart->articles()->sync([]);
     	$cart->promociones_vinoteca()->sync([]);
+
+        // La clave `combos` es opcional (ver `store`): sin ella el carrito queda como siempre.
+        $combos = is_array($request->combos) ? $request->combos : [];
+
+        if (ComboEsquemaHelper::disponible()) {
+            $cart->combos()->sync([]);
+        }
+
         $cart_deleted = false;
 
         if (
             count($request->articles) >= 1
             || count($request->promociones_vinoteca) >= 1
+            || count($combos) >= 1
         ) {
-            
+
             if (count($request->articles) >= 1) {
                 CartHelper::attachArticles($cart, $request->articles);
-            } 
-            
+            }
+
             if (count($request->promociones_vinoteca) >= 1) {
                 CartHelper::attach_promociones_vinoteca($cart, $request->promociones_vinoteca);
             }
-            
+
+            if (count($combos) >= 1) {
+                CartHelper::attach_combos($cart, $combos);
+            }
+
             CartHelper::set_total($cart);
         } else {
             $cart->delete();
@@ -215,7 +235,18 @@ class CartController extends Controller
             return response()->json(['cart' => null], 403);
         }
 
-        if ($request->is_promocion_vinoteca) {
+        // `is_combo` apunta al tercer pivote, igual que `is_promocion_vinoteca` apunta al segundo.
+        // Va detras de la guarda de esquema: sin `cart_combo` no hay a que apuntar, y un payload
+        // con `is_combo` contra una base vieja no puede reventar el carrito.
+        if ($request->is_combo) {
+
+            if (ComboEsquemaHelper::disponible()) {
+                $cart->combos()->updateExistingPivot($request->id, [
+                    'amount'    => $request->amount,
+                ]);
+            }
+
+        } else if ($request->is_promocion_vinoteca) {
 
             $cart->promociones_vinoteca()->updateExistingPivot($request->id, [
                 'amount'    => $request->amount,
@@ -227,8 +258,13 @@ class CartController extends Controller
                 'amount'    => $request->amount,
             ]);
         }
-        
 
+
+        // 🔴 Y acá adentro está el arreglo del hueco que abre la misión combos-y-rangos-de-precio:
+        // `set_total()` vuelve a resolver el precio de las líneas con tramos por cantidad
+        // (`CartHelper::resincronizar_precios_por_rango`). Este método cambia el `amount` sin
+        // volver a pasar por `get_price()`, así que sin eso el comprador se quedaba con el precio
+        // del tramo anterior. Es el pedido textual de Lucas.
         CartHelper::set_total($cart);
 
         // Este camino cambia las lineas SIN pasar por sync_checkout_fields: el precio de envio
@@ -265,6 +301,11 @@ class CartController extends Controller
 
         $cart->articles()->sync([]);
         $cart->promociones_vinoteca()->sync([]);
+
+        if (ComboEsquemaHelper::disponible()) {
+            $cart->combos()->sync([]);
+        }
+
         $cart->delete();
         return response(null, 200);
     }
