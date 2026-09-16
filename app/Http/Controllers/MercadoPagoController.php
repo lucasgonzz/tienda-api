@@ -166,6 +166,22 @@ class MercadoPagoController extends Controller
      * en vez de confiar en una copia nueva que manda la MISMA request que pide cobrar. Mismo cupon:
      * se usa `$cart->cupon` (lo que de verdad quedo atado al carrito), nunca `$request->cupon`.
      *
+     * 🔴 DOS AGUJEROS QUE DESTAPO EL CHEQUEO INDEPENDIENTE, LOS DOS DE "COBRAR DE MENOS EN
+     * SILENCIO" — el mismo problema que esta mision existe para cerrar, asi que no alcanzaba con
+     * mirar solo `$cart->articles`:
+     *
+     *  1. Las promociones de vinoteca viven en OTRA relacion (`$cart->promociones_vinoteca`), que
+     *     `CartHelper::set_total()` SI suma al `cart.total` que ve el comprador. Sin agregarlas
+     *     aca, un carrito de $6.000 (articulo $1.000 + promocion $5.000) armaba la preferencia
+     *     por $1.000: la promocion desaparecia entera, sin error ni warning.
+     *  2. `Article` usa `SoftDeletes`, y el scope global de Eloquent excluye automaticamente las
+     *     filas borradas de CUALQUIER relacion — incluida `$cart->articles`. Un comercio que da
+     *     de baja un articulo agotado mientras un comprador tiene el carrito abierto (un caso
+     *     operativo normal, no un ataque) hacia que ese articulo se esfumara del cobro. Por eso
+     *     `->articles()->withTrashed()->get()` en vez de la propiedad `$cart->articles`: el
+     *     carrito ya tiene el precio acordado: excluirlo cobraria de menos, no cobrar nada es
+     *     peor que cobrar lo que ya se habia mostrado.
+     *
      * SIN carrito resuelto (SPA viejo que no manda `cart_id`, o `cart_id` ajeno/inexistente) se
      * mantiene el camino de siempre, sin tocarlo: es un agujero preexistente y ya documentado en
      * `CartHelper::get_price()` ("el cliente fija el precio base... arreglarlo es otra mision"), no
@@ -193,15 +209,22 @@ class MercadoPagoController extends Controller
                 ? ['amount' => $cart->cupon->amount, 'percentage' => $cart->cupon->percentage]
                 : null;
 
-            $articles = $cart->articles->map(function ($articulo) {
+            $mapear = function ($item) {
                 return [
-                    'name'        => $articulo->name,
-                    'amount'      => $articulo->pivot->amount,
-                    'final_price' => $articulo->pivot->price,
+                    'name'        => $item->name,
+                    'amount'      => $item->pivot->amount,
+                    'final_price' => $item->pivot->price,
                 ];
-            })->all();
+            };
 
-            return $online_payment_helper->setPrices($cupon, $delivery_zone, $articles, $envio_precio);
+            // withTrashed(): ver el punto 2 del docblock de arriba.
+            $articles = $cart->articles()->withTrashed()->get()->map($mapear)->all();
+
+            // Ver el punto 1 del docblock de arriba. `PromocionVinoteca` tambien usa SoftDeletes,
+            // asi que se trae con el mismo `withTrashed()` que los articulos y por el mismo motivo.
+            $promociones = $cart->promociones_vinoteca()->withTrashed()->get()->map($mapear)->all();
+
+            return $online_payment_helper->setPrices($cupon, $delivery_zone, array_merge($articles, $promociones), $envio_precio);
         }
 
         $delivery_zone = is_null($envio_precio) ? $request->delivery_zone : null;

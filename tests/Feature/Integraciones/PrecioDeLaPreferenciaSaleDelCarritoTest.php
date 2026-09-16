@@ -9,9 +9,11 @@ use App\DeliveryZone;
 use App\Http\Controllers\MercadoPagoController;
 use App\PaymentMethod;
 use App\PaymentMethodType;
+use App\PromocionVinoteca;
 use App\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use ReflectionMethod;
 use Tests\TestCase;
 
@@ -257,5 +259,63 @@ class PrecioDeLaPreferenciaSaleDelCarritoTest extends TestCase
         $items = $this->articulosACobrar(Request::create('/api/mercado-pago/preference', 'POST'), $cart);
 
         $this->assertSame(1100.0, (float) $items[0]['final_price'], 'El recargo del medio de pago se sigue sumando arriba del precio del carrito.');
+    }
+
+    /**
+     * 🔴 EL HALLAZGO BLOQUEANTE DEL CHEQUEO INDEPENDIENTE: las promociones de vinoteca viven en
+     * OTRA relación del carrito (`promociones_vinoteca`, no `articles`) y `CartHelper::set_total()`
+     * las suma igual al total que ve el comprador. Sin traerlas acá, un carrito de $6.000
+     * ($1.000 de artículo + $5.000 de promoción) armaba la preferencia por $1.000 — la promoción
+     * desaparecía entera, sin error ni warning.
+     *
+     * @return void
+     */
+    public function test_las_promociones_de_vinoteca_entran_en_lo_que_se_cobra()
+    {
+        $cart = $this->carritoCon(['price' => 1000]);
+
+        $promo = PromocionVinoteca::create([
+            'name'        => 'Promo de prueba',
+            'user_id'     => $this->comercio->id,
+            'final_price' => 5000,
+            'online'      => 1,
+        ]);
+        $cart->promociones_vinoteca()->attach($promo->id, ['price' => 5000, 'amount' => 1]);
+
+        $items = $this->articulosACobrar(Request::create('/api/mercado-pago/preference', 'POST'), $cart->fresh());
+
+        $this->assertCount(2, $items, 'El artículo Y la promoción, las dos líneas.');
+
+        $total = array_sum(array_map(function ($item) {
+            return $item['final_price'] * $item['amount'];
+        }, $items));
+
+        $this->assertSame(6000.0, $total, 'Lo mismo que cart.total: $1.000 de artículo + $5.000 de promoción.');
+    }
+
+    /**
+     * 🔴 EL SEGUNDO HALLAZGO: `Article` usa SoftDeletes, y el scope global de Eloquent excluye
+     * automáticamente las filas borradas de `$cart->articles`. Un comercio que da de baja un
+     * artículo agotado mientras un comprador tiene el carrito abierto (caso operativo normal, no
+     * un ataque) hacía que ese artículo se esfumara del cobro — el carrito ya tenía el precio
+     * acordado, y excluirlo cobraba de menos en silencio.
+     *
+     * @return void
+     */
+    public function test_un_articulo_borrado_despues_de_agregarlo_sigue_cobrando_lo_que_el_carrito_ya_tenia()
+    {
+        $cart = $this->carritoCon(['price' => 1500]);
+
+        // UPDATE crudo, no Article::delete(): el modelo tiene el trait Likeable enganchado a los
+        // eventos de Eloquent, y este slot no tiene la tabla likeable_likes migrada (gap previo,
+        // no relacionado a esta misión). Lo único que importa acá es el estado final de la
+        // columna, no el evento de borrado en sí.
+        DB::table('articles')->where('id', $this->articulo->id)->update(['deleted_at' => now()]);
+        $this->assertNotNull($this->articulo->fresh()->deleted_at, 'Confirmar que de verdad quedó soft-deleted.');
+
+        $items = $this->articulosACobrar(Request::create('/api/mercado-pago/preference', 'POST'), $cart->fresh());
+
+        $this->assertCount(1, $items, 'El artículo borrado tiene que seguir cobrándose, no desaparecer.');
+        $this->assertSame(1500.0, (float) $items[0]['final_price']);
     }
 }
