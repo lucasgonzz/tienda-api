@@ -359,6 +359,14 @@ class CartHelper {
                comprador, que es el precio normal al que hay que volver cuando no hay tramo. */
             $articulos = ArticleHelper::checkPriceTypes($articulos);
 
+            /* 🔴 Ver la nota de la vuelta al precio normal, mas abajo: con la extension de rangos
+               por CATEGORIA prendida, el precio normal de una linea NO es su `final_price`. */
+            $tiene_rangos_por_categoria = CommerceHelper::hasExtencion(
+                'lista_de_precios_por_rango_de_cantidad_vendida',
+                null,
+                $cart->user_id
+            );
+
             foreach ($lineas as $linea) {
                 $articulo = $articulos->firstWhere('id', $linea->article_id);
 
@@ -374,8 +382,28 @@ class CartHelper {
                 $precio = ArticlePriceRangeHelper::precio($articulo->article_price_ranges, $linea->amount);
 
                 if (is_null($precio)) {
-                    /* Ningun tramo para esta cantidad: vuelve al precio normal, y solo hacia
-                       arriba. Ver la asimetria del docblock. */
+                    /*
+                     * Ningun tramo para esta cantidad: vuelve al precio normal, y solo hacia
+                     * arriba. Ver la asimetria del docblock.
+                     *
+                     * 🔴 Y "el precio normal" depende de por donde siga la cadena de `get_price()`.
+                     * Sin la extension de rangos por CATEGORIA, es `final_price` y se puede
+                     * escribir con confianza. CON la extension prendida, el eslabon siguiente es
+                     * `get_price_range()`, que resuelve un tramo de categoria a partir de las
+                     * cantidades de TODO el payload (`check_article_price_type_group` suma las
+                     * lineas del mismo grupo de articulos). Reconstruir eso aca —sin payload—
+                     * seria una segunda copia del mismo calculo, y una copia que se desincroniza
+                     * cobra distinto segun el camino. Asi que en ese caso NO se corrige: se deja
+                     * el precio que puso `get_price()`, que es el de master.
+                     *
+                     * Lo que si sigue valiendo para ese comercio es la rama de arriba: si un tramo
+                     * por articulo matchea la cantidad nueva, se escribe. Es exactamente la misma
+                     * precedencia que `get_price()`.
+                     */
+                    if ($tiene_rangos_por_categoria) {
+                        continue;
+                    }
+
                     if (!is_numeric($articulo->final_price)) {
                         continue;
                     }
