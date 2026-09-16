@@ -2,10 +2,16 @@
 
 namespace Tests\Feature\CombosYRangos;
 
+use App\Cart;
 use App\Http\Controllers\Helpers\ArticlePriceRangeHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
+use App\Http\Controllers\MercadoPagoController;
+use App\PaymentMethod;
+use App\PaymentMethodType;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use ReflectionMethod;
 use Tests\TestCase;
 
 /**
@@ -59,12 +65,20 @@ class SinEsquemaDeCombosYRangosTest extends TestCase
     /** @var array Ids de los carritos creados fuera de transaccion. */
     private $carritos_creados = [];
 
+    /** @var array Ids de las promociones de vinoteca creadas fuera de transaccion. */
+    private $promociones_creadas = [];
+
+    /** @var array Ids de los medios de pago creados fuera de transaccion. */
+    private $medios_de_pago_creados = [];
+
     protected function setUp(): void
     {
         parent::setUp();
 
         $this->comercios_creados = [];
         $this->carritos_creados = [];
+        $this->promociones_creadas = [];
+        $this->medios_de_pago_creados = [];
 
         $this->olvidarLasMemorias();
 
@@ -233,6 +247,77 @@ class SinEsquemaDeCombosYRangosTest extends TestCase
         $this->assertTrue(ComboEsquemaHelper::disponible());
     }
 
+    /**
+     * 🔴 SIN EL ESQUEMA DE COMBOS, EL COMPRADOR TIENE QUE PODER PAGAR IGUAL.
+     *
+     * Este caso es la guarda del arreglo de la fuga de plata de `articulos_a_cobrar()`
+     * (`MercadoPagoController`): los combos eran una tercera colección del carrito que
+     * `CartHelper::set_total()` sumaba y la preferencia de Mercado Pago NO cobraba. Al taparlo,
+     * ese método pasó a leer `$cart->combos` — y `cart_combo` es justamente una de las tablas que
+     * un cliente con la tienda nueva y el ERP viejo todavía no tiene.
+     *
+     * O sea: sin guarda, el arreglo de la fuga habría cambiado "cobrar de menos" por "no poder
+     * cobrar nada", que es peor. Lo que se fija acá es que sin esquema el cobro queda exactamente
+     * como en master: artículos y promociones de vinoteca, sin una excepción.
+     *
+     * ── Por qué este caso vive acá y no en `PrecioDeLaPreferenciaSaleDelCarritoTest` ──────────
+     *
+     * Sus tres hermanos —el invariante, el carrito de solo combos y el precio del pivote— sí están
+     * allá, que es el molde del arreglo. Este no puede: probar "el esquema no está" exige DDL, y
+     * MySQL le hace commit implícito a la transacción abierta, así que `DatabaseTransactions` —que
+     * ese archivo usa— dejaría sembrado en la base del slot todo lo que el caso escribió. La
+     * máquina de esconder/restaurar/limpiar a mano ya vive en esta clase y es la razón por la que
+     * existe (ver su docblock).
+     *
+     * @return void
+     */
+    public function test_sin_el_esquema_de_combos_el_cobro_online_sigue_andando()
+    {
+        $comercio = $this->comercioCreado();
+        $articulo = $this->articuloPublicado($comercio);
+        $promo    = $this->promocionVinotecaCreada($comercio, 5000);
+        $combo    = $this->combo($comercio);
+
+        $cart = $this->carritoDeCobro($comercio, [
+            'articulo' => [$articulo->id, 1000],
+            'promo'    => [$promo->id, 5000],
+            'combo'    => [$combo->id, 9000],
+        ]);
+
+        $payment_method = $this->medioDePagoCreado($comercio);
+
+        /* Contraprueba: CON el esquema puesto, el combo SÍ entra en lo que se cobra. Sin esto, el
+           caso de abajo daría verde incluso contra un `articulos_a_cobrar()` que nunca mire los
+           combos — o sea, contra la fuga de plata sin arreglar. */
+        $con_esquema = $this->articulosACobrar($comercio, $payment_method, $cart->fresh());
+
+        $this->assertCount(3, $con_esquema,
+            'el escenario arranca con las TRES colecciones en la preferencia: si no, el caso sería vacuo');
+        $this->assertSame(15000.0, $this->sumaDeLosItems($con_esquema),
+            '$1.000 de artículo + $5.000 de promoción + $9.000 de combo');
+
+        $this->esconderCombos();
+
+        try {
+            $this->olvidarLasMemorias();
+
+            $this->assertFalse(ComboEsquemaHelper::disponible(),
+                'con el esquema escondido la guarda tiene que dar false');
+
+            $items = $this->articulosACobrar($comercio, $payment_method, $cart->fresh());
+
+            $this->assertCount(2, $items,
+                'sin esquema se cobran las dos colecciones de siempre: el artículo y la promoción');
+            $this->assertSame(6000.0, $this->sumaDeLosItems($items),
+                'y por el importe de master, sin el combo que esta base no sabe que existe');
+        } finally {
+            $this->restaurarCombos();
+            $this->limpiarLoCreado();
+        }
+
+        $this->assertTrue(ComboEsquemaHelper::disponible(), 'la base volvió a tener el esquema de combos');
+    }
+
     /*
     |---------------------------------------------------------------------------------------------
     | Los tramos por cantidad
@@ -330,7 +415,7 @@ class SinEsquemaDeCombosYRangosTest extends TestCase
 
     /*
     |---------------------------------------------------------------------------------------------
-    | El esconder y el restaurar
+    | Las fixtures y los ayudantes de lectura
     |---------------------------------------------------------------------------------------------
     */
 
@@ -346,6 +431,114 @@ class SinEsquemaDeCombosYRangosTest extends TestCase
                     ->assertStatus(200)
                     ->json('combos');
     }
+
+    /* ── Las fixtures del cobro online ────────────────────────────────────────────────────────
+       Van acá y no en el trait porque solo las usa el caso del cobro. Todo lo que crean queda
+       anotado para que `limpiarLoCreado()` lo borre: en esta clase no hay transacción que
+       revierta. */
+
+    /**
+     * Una promoción de vinoteca del comercio, anotada para borrarla después.
+     *
+     * @param  \App\User  $comercio
+     * @param  float  $final_price
+     * @return \App\PromocionVinoteca
+     */
+    private function promocionVinotecaCreada($comercio, $final_price)
+    {
+        $promo = $this->promocionVinoteca($comercio, $final_price);
+
+        $this->promociones_creadas[] = $promo->id;
+
+        return $promo;
+    }
+
+    /**
+     * El medio de pago con el que se arma la preferencia, anotado para borrarlo después.
+     *
+     * @param  \App\User  $comercio
+     * @return \App\PaymentMethod
+     */
+    private function medioDePagoCreado($comercio)
+    {
+        $tipo = PaymentMethodType::where('name', 'MercadoPago')->first();
+
+        if (!$tipo) {
+            $tipo = new PaymentMethodType;
+            $tipo->name = 'MercadoPago';
+            $tipo->save();
+        }
+
+        $payment_method = new PaymentMethod;
+        $payment_method->name                   = 'Mercado Pago';
+        $payment_method->user_id                = $comercio->id;
+        $payment_method->payment_method_type_id = $tipo->id;
+        $payment_method->save();
+
+        $this->medios_de_pago_creados[] = $payment_method->id;
+
+        return $payment_method;
+    }
+
+    /**
+     * Un carrito con las TRES colecciones colgadas a mano, con el precio congelado en cada pivote.
+     *
+     * Directo con `attach()` y no por el endpoint: lo que este caso mide es el cobro, no el
+     * armado del carrito (eso ya lo cubre `test_sin_el_esquema_de_combos_la_home_y_el_carrito_siguen_andando`).
+     *
+     * @param  \App\User  $comercio
+     * @param  array  $lineas  ['articulo' => [id, precio], 'promo' => [...], 'combo' => [...]]
+     * @return \App\Cart
+     */
+    private function carritoDeCobro($comercio, array $lineas)
+    {
+        $cart = Cart::create(['user_id' => $comercio->id, 'buyer_id' => null]);
+
+        $this->carritos_creados[] = $cart->id;
+
+        $cart->articles()->attach($lineas['articulo'][0], ['amount' => 1, 'price' => $lineas['articulo'][1]]);
+        $cart->promociones_vinoteca()->attach($lineas['promo'][0], ['amount' => 1, 'price' => $lineas['promo'][1]]);
+        $cart->combos()->attach($lineas['combo'][0], ['amount' => 1, 'price' => $lineas['combo'][1], 'cost' => 0]);
+
+        return $cart;
+    }
+
+    /**
+     * Invoca `MercadoPagoController::articulos_a_cobrar()` por reflexión, igual que
+     * `PrecioDeLaPreferenciaSaleDelCarritoTest`.
+     *
+     * @param  \App\User  $comercio
+     * @param  \App\PaymentMethod  $payment_method
+     * @param  \App\Cart  $cart
+     * @return array
+     */
+    private function articulosACobrar($comercio, $payment_method, $cart)
+    {
+        $controller = new MercadoPagoController();
+        $metodo = new ReflectionMethod($controller, 'articulos_a_cobrar');
+        $metodo->setAccessible(true);
+
+        return $metodo->invoke($controller, Request::create('/api/mercado-pago/preference', 'POST'), $comercio, $payment_method, $cart);
+    }
+
+    /**
+     * Lo que Mercado Pago le va a cobrar al comprador.
+     *
+     * @param  array  $items
+     * @return float
+     */
+    private function sumaDeLosItems(array $items)
+    {
+        return array_sum(array_map(function ($item) {
+            return $item['final_price'] * $item['amount'];
+        }, $items));
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | El esconder y el restaurar
+    |---------------------------------------------------------------------------------------------
+    */
 
     /** Esconde los tres objetos de los combos. */
     private function esconderCombos()
@@ -444,6 +637,7 @@ class SinEsquemaDeCombosYRangosTest extends TestCase
     {
         if (!empty($this->carritos_creados)) {
             DB::table('article_cart')->whereIn('cart_id', $this->carritos_creados)->delete();
+            DB::table('cart_promocion_vinoteca')->whereIn('cart_id', $this->carritos_creados)->delete();
 
             if (Schema::hasTable('cart_combo')) {
                 DB::table('cart_combo')->whereIn('cart_id', $this->carritos_creados)->delete();
@@ -452,6 +646,18 @@ class SinEsquemaDeCombosYRangosTest extends TestCase
             DB::table('carts')->whereIn('id', $this->carritos_creados)->delete();
 
             $this->carritos_creados = [];
+        }
+
+        if (!empty($this->medios_de_pago_creados)) {
+            DB::table('payment_methods')->whereIn('id', $this->medios_de_pago_creados)->delete();
+
+            $this->medios_de_pago_creados = [];
+        }
+
+        if (!empty($this->promociones_creadas)) {
+            DB::table('promocion_vinotecas')->whereIn('id', $this->promociones_creadas)->delete();
+
+            $this->promociones_creadas = [];
         }
 
         if (empty($this->comercios_creados)) {
