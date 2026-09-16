@@ -279,6 +279,13 @@ class ArticleHelper
                 if ($article->relationLoaded('price_types')) {
                     $article->setRelation('price_types', $article->price_types->take(0));
                 }
+                /* Los tramos por artículo (misión combos-y-rangos-de-precio) llevan un precio
+                   unitario absoluto adentro: si se vacían `final_price` y `ranges` pero se dejan
+                   estos, el precio que la tienda dice esconder viaja igual en el JSON y se lee con
+                   las devtools. Se vacían por el mismo motivo y en el mismo lugar que `ranges`. */
+                if ($article->relationLoaded('article_price_ranges')) {
+                    $article->setRelation('article_price_ranges', $article->article_price_ranges->take(0));
+                }
             }
         }
         return $articles;

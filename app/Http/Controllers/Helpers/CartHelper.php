@@ -219,11 +219,130 @@ class CartHelper {
         }
     }
 
+    /**
+     * 🔴 Vuelve a resolver, contra la base, el precio de las lineas cuyo articulo tiene TRAMOS POR
+     * CANTIDAD. Es el pedido textual de Lucas: "que en base a las cantidades que el usuario
+     * agregue al carrito sea el precio que le va a aparecer en el carrito".
+     *
+     * ── EL HUECO QUE TAPA ────────────────────────────────────────────────────────────────────
+     * `CartController::update_article_amount()` —el boton "Actualizar" del carrito— cambia el
+     * `amount` del pivot con `updateExistingPivot` y NO vuelve a pasar por `get_price()`. Con un
+     * precio que depende de la cantidad eso significa que el comprador agrega 10 unidades al
+     * precio del tramo, baja a 1 y se queda con el precio del tramo de 10. Exactamente el mismo
+     * defecto que ya tenia la oferta personalizada y que arregla el metodo de arriba; por eso
+     * este va al lado y por el mismo camino.
+     *
+     * ── POR QUE ACA Y NO EN EL CONTROLLER ────────────────────────────────────────────────────
+     * `set_total()` es el unico punto por el que pasan TODOS los caminos que escriben el carrito
+     * (`store`, `update` y `update_article_amount`). Es la misma razon, palabra por palabra, que
+     * la de `resincronizar_precios_de_oferta`.
+     *
+     * ── EL ORDEN CON LA RESINCRONIZACION DE OFERTAS NO ES INDISTINTO ─────────────────────────
+     * Corre DESPUES, y tiene que correr despues. Aquella, para una linea sin oferta vigente,
+     * escribe el `final_price` cuando es mayor que lo guardado — o sea que le pisaria el precio
+     * del tramo a una linea con descuento por cantidad. Corriendo al final, esta lo deja bien sin
+     * importar lo que haya hecho la otra.
+     *
+     * ── PRECEDENCIA: LA OFERTA PERSONALIZADA GANA ────────────────────────────────────────────
+     * Misma decision que en `get_price()` y por los mismos motivos (ver alla el bloque largo). La
+     * señal de que una linea es del carril de ofertas es que `checkPriceTypes()` le dejo un
+     * `precio_sin_oferta` al articulo: esas lineas se saltean enteras y las sigue gobernando
+     * `resincronizar_precios_de_oferta`.
+     *
+     * ── LA ASIMETRIA, CALCADA DE LA DE OFERTAS ───────────────────────────────────────────────
+     *   - Hay tramo para esta cantidad: se escribe su precio, para arriba o para abajo. Es el
+     *     numero que el comprador esta viendo en la pantalla.
+     *   - No hay tramo (bajo la cantidad y ya no le corresponde ninguno): se vuelve al precio
+     *     normal, pero SOLO si es MAYOR que el guardado. O sea unicamente para deshacer un
+     *     descuento que ya no corresponde; nunca para otorgar uno.
+     *
+     * ── LO BARATO PRIMERO ────────────────────────────────────────────────────────────────────
+     * Primero la guarda de esquema (memoizada), despues el `whereHas` que descarta de una a los
+     * articulos sin tramos. Un carrito de articulos comunes no carga ni un modelo.
+     *
+     * @param  \App\Cart  $cart
+     * @return void
+     */
+    static function resincronizar_precios_por_rango($cart) {
+        try {
+            if (!ArticlePriceRangeHelper::hay_tabla()) {
+                return;
+            }
+
+            $lineas = DB::table('article_cart')->where('cart_id', $cart->id)->get();
+
+            if (count($lineas) == 0) {
+                return;
+            }
+
+            /* Solo los articulos CON tramos: el resto de las lineas no se toca ni se mira, asi
+               este metodo no puede cambiarle el precio a un carrito que no usa la funcionalidad. */
+            $articulos = Article::whereIn('id', $lineas->pluck('article_id')->unique()->all())
+                                ->whereHas('article_price_ranges')
+                                ->withAll()
+                                ->get();
+
+            if (count($articulos) == 0) {
+                return;
+            }
+
+            /* Mismo camino que getFullModel(): checkPriceTypes resuelve el `final_price` de ESTE
+               comprador, que es el precio normal al que hay que volver cuando no hay tramo. */
+            $articulos = ArticleHelper::checkPriceTypes($articulos);
+
+            foreach ($lineas as $linea) {
+                $articulo = $articulos->firstWhere('id', $linea->article_id);
+
+                if (is_null($articulo)) {
+                    continue;
+                }
+
+                /* Precedencia: la linea es del carril de ofertas y la gobierna el otro metodo. */
+                if (isset($articulo->precio_sin_oferta) && is_numeric($articulo->precio_sin_oferta)) {
+                    continue;
+                }
+
+                $precio = ArticlePriceRangeHelper::precio($articulo->article_price_ranges, $linea->amount);
+
+                if (is_null($precio)) {
+                    /* Ningun tramo para esta cantidad: vuelve al precio normal, y solo hacia
+                       arriba. Ver la asimetria del docblock. */
+                    if (!is_numeric($articulo->final_price)) {
+                        continue;
+                    }
+
+                    if ((float) $articulo->final_price <= (float) $linea->price) {
+                        continue;
+                    }
+
+                    $precio = (float) $articulo->final_price;
+                }
+
+                if ((float) $precio === (float) $linea->price) {
+                    continue;
+                }
+
+                DB::table('article_cart')->where('id', $linea->id)->update(['price' => $precio]);
+            }
+        } catch (\Throwable $e) {
+            /* Un tramo que falla no puede romper el carrito: queda el precio que ya estaba, que es
+               el comportamiento de master, y la falla queda en el log. */
+            Log::warning('CartHelper::resincronizar_precios_por_rango fallo, el carrito sigue con el precio anterior.', [
+                'cart_id'   => $cart->id,
+                'excepcion' => get_class($e),
+                'mensaje'   => $e->getMessage(),
+            ]);
+        }
+    }
+
     static function set_total($cart) {
         /* Antes de sumar, el precio de las lineas con oferta se vuelve a resolver contra la
            base. Ver el docblock de arriba: sin esto, cambiar la cantidad desde "Actualizar"
            conservaba el precio del tramo anterior. */
         Self::resincronizar_precios_de_oferta($cart);
+
+        /* Y despues —el orden importa, ver el docblock— el de los tramos por cantidad. */
+        Self::resincronizar_precios_por_rango($cart);
 
         $cart->load('articles');
 
@@ -280,6 +399,41 @@ class CartHelper {
             return $precio_con_oferta;
         }
 
+        /*
+         * 🔴 PRECEDENCIA, y esto es una DECISION, no un orden casual. Queda escrita acá porque es
+         * lo primero que alguien va a querer cambiar sin saber lo que rompe.
+         *
+         *   oferta personalizada  >  tramo por ARTICULO  >  tramo por CATEGORIA  >  final_price
+         *
+         * 1. La oferta personalizada gana. Es un acuerdo con UN comprador concreto, resuelto por
+         *    el servidor contra la base, y es el unico eslabon de esta cadena que tiene una
+         *    propiedad de seguridad encima: gana TAMBIEN cuando la oferta ya no existe, para que
+         *    una pestaña vieja no siga cobrando una promocion cancelada (ver el docblock de
+         *    `ClientOfferHelper::precioDeLinea`). Meter el tramo por cantidad antes la anularia.
+         *    Lo especifico le gana a lo general, y el comprador con oferta negociada sigue pagando
+         *    hoy exactamente lo que pagaba ayer: el cambio es compatible hacia atras.
+         *
+         *    ⚠️ El borde, dicho de frente: un articulo que TUVO una oferta y ya no la tiene llega
+         *    igual con `precio_sin_oferta` en el payload, asi que `precioDeLinea` devuelve la base
+         *    y el tramo por cantidad NO se le aplica. Es la eleccion conservadora —el servidor no
+         *    otorga un descuento por cantidad sobre una linea que venia del carril de ofertas— y
+         *    solo alcanza a los comercios que tienen el contrato de ofertas prendido.
+         *
+         * 2. El tramo por ARTICULO le gana al tramo por CATEGORIA por el mismo motivo: uno lo
+         *    cargó el comerciante para ESE articulo, el otro es el mapeo generico de su categoria.
+         *    Y no cambia nada para nadie: sin filas en `article_price_ranges` esta rama devuelve
+         *    null y el precio sale por donde salía, byte por byte.
+         */
+        $precio_por_rango = ArticlePriceRangeHelper::precio_de_articulo(
+            isset($article['id']) ? $article['id'] : null,
+            Self::cantidad_de_linea($article),
+            collect($articles)->pluck('id')->all()
+        );
+
+        if (!is_null($precio_por_rango)) {
+            return $precio_por_rango;
+        }
+
         if ($has_price_ranges) {
 
             Log::info('has_price_ranges');
@@ -287,6 +441,27 @@ class CartHelper {
         }
 
         return $article['final_price'];
+    }
+
+    /**
+     * La cantidad de una linea del payload. `pivot.amount` es la que efectivamente se guarda en
+     * `article_cart` (ver `attachArticles`), asi que es la que tiene que decidir el tramo; el
+     * `amount` plano queda de respaldo porque es el que mira `get_price_range()` y hay payloads
+     * que mandan uno solo de los dos.
+     *
+     * @param  array  $article
+     * @return float
+     */
+    static function cantidad_de_linea($article) {
+        if (isset($article['pivot']['amount']) && is_numeric($article['pivot']['amount'])) {
+            return (float) $article['pivot']['amount'];
+        }
+
+        if (isset($article['amount']) && is_numeric($article['amount'])) {
+            return (float) $article['amount'];
+        }
+
+        return 0.0;
     }
 
     static function get_price_range($articles, $article, $article_groups) {
