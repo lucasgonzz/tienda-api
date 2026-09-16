@@ -325,23 +325,48 @@ class CartHelper {
      *     normal, pero SOLO si es MAYOR que el guardado. O sea unicamente para deshacer un
      *     descuento que ya no corresponde; nunca para otorgar uno.
      *
-     * ── LO BARATO PRIMERO ────────────────────────────────────────────────────────────────────
-     * Primero la guarda de esquema (memoizada), despues el `whereHas` que descarta de una a los
-     * articulos sin tramos. Un carrito de articulos comunes no carga ni un modelo.
+     * ── 🔴 LO BARATO PRIMERO, Y ESTO NO ES UNA OPTIMIZACION: ES UN INVARIANTE DE COSTO ───────
+     *
+     * La primera version de este metodo entraba con `ArticlePriceRangeHelper::hay_tabla()` a
+     * secas, y esa guarda NO FILTRA A NADIE: la tabla la crea una migracion de noviembre de 2025 y
+     * hoy la tienen todos los clientes. O sea que cada comercio —usara tramos o no— pagaba en cada
+     * recalculo del carrito una lectura de `article_cart` mas un `whereHas` con `withAll()`
+     * encima, en los TRES caminos que escriben el carrito, todo el dia, para descubrir que no
+     * habia nada que hacer. Medido sobre un carrito de invitado con un articulo sin tramos:
+     * master 4 queries reales, con esa version 6.
+     *
+     * Y no lo encontro una revision: lo denuncio un test que ya existia —
+     * `ResincronizacionDelCarritoTest::test_sin_las_tablas_del_contrato_...`—, que cuenta las
+     * queries de `set_total()` justamente para que la resincronizacion de ofertas no le cueste
+     * nada al que no la usa. El invariante era de las dos, no de aquella sola.
+     *
+     * La guarda es `ArticlePriceRangeHelper::hay_tramos()` sobre los articulos DE ESTE CARRITO —
+     * ver alla por que es esa pregunta y no "¿este comercio usa tramos?", y por que en `store` y
+     * `update` se contesta sin tocar la base. El `whereHas` de mas abajo se queda igual: deja de
+     * ser el filtro y pasa a ser lo que siempre debio ser, la lectura de los que SI tienen tramos.
      *
      * @param  \App\Cart  $cart
-     * @return void
+     * @return bool  True si la funcion paso la guarda y se metio a resolver precios. `set_total()`
+     *               lo usa para saber si los pivots que tiene en memoria quedaron viejos: sumar
+     *               con ellos daria el total de ANTES de la correccion, que es el defecto exacto
+     *               que este metodo existe para evitar.
      */
     static function resincronizar_precios_por_rango($cart) {
+
+        $se_metio = false;
+
         try {
-            if (!ArticlePriceRangeHelper::hay_tabla()) {
-                return;
+            /* 🔴 LA GUARDA, Y VA PRIMERO QUE TODO. Ver el bloque del docblock. */
+            if (!Self::el_carrito_tiene_tramos($cart)) {
+                return false;
             }
+
+            $se_metio = true;
 
             $lineas = DB::table('article_cart')->where('cart_id', $cart->id)->get();
 
             if (count($lineas) == 0) {
-                return;
+                return $se_metio;
             }
 
             /* Solo los articulos CON tramos: el resto de las lineas no se toca ni se mira, asi
@@ -352,7 +377,7 @@ class CartHelper {
                                 ->get();
 
             if (count($articulos) == 0) {
-                return;
+                return $se_metio;
             }
 
             /* Mismo camino que getFullModel(): checkPriceTypes resuelve el `final_price` de ESTE
@@ -430,6 +455,35 @@ class CartHelper {
                 'mensaje'   => $e->getMessage(),
             ]);
         }
+
+        return $se_metio;
+    }
+
+    /**
+     * ¿Alguna linea de este carrito es de un articulo con tramos cargados? Es la guarda de
+     * `resincronizar_precios_por_rango()`, y lo que la vuelve barata es DONDE se la pregunta.
+     *
+     * `set_total()` carga `$cart->articles` ANTES de llamar a la resincronizacion —esa carga es la
+     * que master ya hacia para sumar, nada mas que subida unas lineas—, asi que los ids de las
+     * lineas ya estan en memoria y averiguarlos no cuesta ninguna query. El `$cart->load()` de
+     * abajo es nada mas una red por si alguien llama a la resincronizacion por fuera de
+     * `set_total()`; por el camino real nunca se ejecuta.
+     *
+     * @param  \App\Cart  $cart
+     * @return bool
+     */
+    private static function el_carrito_tiene_tramos($cart) {
+
+        /* Lo mas barato de todo: sin tabla no hay tramos y no se mira ni el carrito. */
+        if (!ArticlePriceRangeHelper::hay_tabla()) {
+            return false;
+        }
+
+        if (!$cart->relationLoaded('articles')) {
+            $cart->load('articles');
+        }
+
+        return ArticlePriceRangeHelper::hay_tramos($cart->articles->pluck('id')->unique()->all());
     }
 
     static function set_total($cart) {
@@ -438,10 +492,19 @@ class CartHelper {
            conservaba el precio del tramo anterior. */
         Self::resincronizar_precios_de_oferta($cart);
 
-        /* Y despues —el orden importa, ver el docblock— el de los tramos por cantidad. */
-        Self::resincronizar_precios_por_rango($cart);
-
+        /* 🔴 Esta carga estaba ABAJO, despues de las dos resincronizaciones, y subio a proposito:
+           es la MISMA lectura de siempre —la que master hace para sumar— y ahora sirve tambien
+           para contestar la guarda de tramos sin pagar una query propia. Va despues de la
+           resincronizacion de ofertas para traer los precios que esa ya corrigio. */
         $cart->load('articles');
+
+        /* Y despues —el orden importa, ver el docblock— el de los tramos por cantidad. Si se metio
+           a resolver precios, lo que quedo en memoria es de antes de sus escrituras y hay que
+           releerlo: sumar con eso daria el total viejo. Solo lo pagan los carritos que de verdad
+           tienen tramos. */
+        if (Self::resincronizar_precios_por_rango($cart)) {
+            $cart->load('articles');
+        }
 
         $total = 0;
 

@@ -51,7 +51,8 @@ use Illuminate\Support\Facades\Schema;
  *   - `CartHelper::get_price()`: al agregar la linea al carrito.
  *   - `CartHelper::resincronizar_precios_por_rango()`: cada vez que cambia la CANTIDAD, que es el
  *     pedido concreto de Lucas ("que en base a las cantidades que el usuario agregue al carrito
- *     sea el precio que le va a aparecer en el carrito").
+ *     sea el precio que le va a aparecer en el carrito"). Ese metodo entra por `hay_tramos()`, que
+ *     es la guarda que le impide costarle una sola query al comercio que no usa la funcionalidad.
  */
 class ArticlePriceRangeHelper
 {
@@ -93,6 +94,78 @@ class ArticlePriceRangeHelper
         }
 
         return self::$hay_tabla;
+    }
+
+    /**
+     * ¿Alguno de estos articulos tiene tramos cargados? Es la GUARDA BARATA de
+     * `CartHelper::resincronizar_precios_por_rango()`, y su molde es
+     * `ClientOfferHelper::hayContrato()`: una pregunta que se contesta en cero o una query y corta
+     * en seco antes de tocar nada caro.
+     *
+     * ── POR QUE HACE FALTA UNA GUARDA, SI YA ESTA `hay_tabla()` ──────────────────────────────
+     *
+     * Porque `hay_tabla()` no filtra a nadie: `article_price_ranges` la crea una migracion de
+     * noviembre de 2025 y hoy la tienen TODOS los clientes. La hermana de esa resincronizacion
+     * —la de ofertas personalizadas— corta en 0 queries cuando el comercio no usa el contrato; sin
+     * esta, la de tramos cargaba las lineas del carrito y hacia un `whereHas` con `withAll()` en
+     * CADA recalculo, en los tres caminos que escriben el carrito, para descubrir que no habia
+     * nada que hacer. Medido sobre un carrito de invitado con un articulo sin tramos: master 4
+     * queries reales, esta rama 6.
+     *
+     * ── POR QUE ESTA PREGUNTA Y NO "¿ESTE COMERCIO USA TRAMOS?" ──────────────────────────────
+     *
+     * La version por comercio es mas cara y menos precisa. Mas cara porque esta tabla NO tiene
+     * `user_id` (el aislamiento lo da `articles.user_id`, ver el modelo), asi que preguntar por el
+     * comercio obliga a cruzar contra el catalogo entero. Y menos precisa porque la respuesta que
+     * importa no es "este comercio carga tramos" sino "hay algo que resincronizar en ESTE
+     * carrito": un comercio con tramos en diez articulos y un carrito sin ninguno de esos diez no
+     * tiene nada que resincronizar. Aca es un `whereIn` de uno a veinte ids contra el indice de
+     * `article_id`.
+     *
+     * ── Y EN LOS DOS CAMINOS MAS USADOS NO CUESTA NI UNA QUERY ───────────────────────────────
+     *
+     * `store` y `update` pasan por `attachArticles()` -> `get_price()` -> `precio_de_articulo()`,
+     * que ya llamo a `precargar()` con TODOS los ids del carrito. Cuando `set_total()` pregunta,
+     * la respuesta ya esta en memoria. El unico camino que paga una query es
+     * `update_article_amount()` —el boton "Actualizar"—, y ahi es exactamente la query que la
+     * funcion iba a hacer igual, adelantada y sin el `withAll()` detras.
+     *
+     * ⚠️ El memo es por proceso: bajo PHP-FPM muere con el request, pero en phpunit el proceso
+     * sigue vivo entre casos. Un test que carga tramos DESPUES de haber preguntado tiene que
+     * llamar a `olvidar()` en el medio.
+     *
+     * @param  array  $ids  Los `article_id` de las lineas del carrito.
+     * @return bool
+     */
+    public static function hay_tramos(array $ids)
+    {
+        if (!self::hay_tabla()) {
+            return false;
+        }
+
+        $limpios = [];
+
+        foreach ($ids as $id) {
+            $id = is_numeric($id) ? (int) $id : 0;
+
+            if ($id > 0) {
+                $limpios[$id] = $id;
+            }
+        }
+
+        if (count($limpios) == 0) {
+            return false;
+        }
+
+        self::precargar($limpios);
+
+        foreach ($limpios as $id) {
+            if (count(self::$rangos_por_articulo[$id]) > 0) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
