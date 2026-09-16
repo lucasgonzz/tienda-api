@@ -153,7 +153,26 @@ class MercadoPagoController extends Controller
      * excluyentes y un body con las dos es un estado viejo del SPA. Si el carrito no va por
      * Zipnova (o no se mando `cart_id`), vale la zona del body como siempre.
      *
-     * @param Request $request cupon, delivery_zone, articles.
+     * 🔴 CON CARRITO RESUELTO, LOS ARTICULOS/CUPON/ZONA SALEN DEL CARRITO, NUNCA DEL BODY (mision
+     * `mp-precio-servidor-y-credenciales-env`, 16/9/2026). Antes de esta mision `$request->articles`
+     * viajaba derecho a `setPrices()`, que solo aplica el recargo del comercio y del medio de pago
+     * sobre el `final_price` que le llega — sin volver a mirar la base. O sea que quien arma el
+     * request de la preferencia podia cobrar lo que quisiera, sin tocar el carrito para nada: el
+     * carrito de $27.999 y la preferencia de $1 se armaban con el mismo POST.
+     *
+     * El carrito YA tiene, persistidos por el servidor, los precios con los que se mostro y se
+     * confirmo (`CartHelper::attachArticles()` los resuelve al agregar cada linea, y
+     * `CartHelper::set_total()` los revalida antes de guardar el total): alcanza con leerlos de ahi
+     * en vez de confiar en una copia nueva que manda la MISMA request que pide cobrar. Mismo cupon:
+     * se usa `$cart->cupon` (lo que de verdad quedo atado al carrito), nunca `$request->cupon`.
+     *
+     * SIN carrito resuelto (SPA viejo que no manda `cart_id`, o `cart_id` ajeno/inexistente) se
+     * mantiene el camino de siempre, sin tocarlo: es un agujero preexistente y ya documentado en
+     * `CartHelper::get_price()` ("el cliente fija el precio base... arreglarlo es otra mision"), no
+     * uno que esta mision abra. Lo que se cierra es el camino con carrito, que es el que usa
+     * cualquier SPA actual.
+     *
+     * @param Request $request cupon, delivery_zone, articles (solo se usan sin carrito resuelto).
      * @param \App\User $commerce Comercio que cobra (con su online_configuration).
      * @param \App\PaymentMethod $payment_method Fila de `payment_methods` que eligio el comprador.
      * @param \App\Cart|null $cart Carrito que se paga, si se pudo resolver.
@@ -164,6 +183,27 @@ class MercadoPagoController extends Controller
         $online_payment_helper = new OnlinePaymentHelper($commerce, $payment_method);
 
         $envio_precio = EnvioCartHelper::precio_para_cobrar($cart);
+
+        if ($cart) {
+            $delivery_zone = is_null($envio_precio) && $cart->delivery_zone
+                ? ['price' => $cart->delivery_zone->price]
+                : null;
+
+            $cupon = $cart->cupon
+                ? ['amount' => $cart->cupon->amount, 'percentage' => $cart->cupon->percentage]
+                : null;
+
+            $articles = $cart->articles->map(function ($articulo) {
+                return [
+                    'name'        => $articulo->name,
+                    'amount'      => $articulo->pivot->amount,
+                    'final_price' => $articulo->pivot->price,
+                ];
+            })->all();
+
+            return $online_payment_helper->setPrices($cupon, $delivery_zone, $articles, $envio_precio);
+        }
+
         $delivery_zone = is_null($envio_precio) ? $request->delivery_zone : null;
 
         return $online_payment_helper->setPrices($request->cupon, $delivery_zone, $request->articles, $envio_precio);
