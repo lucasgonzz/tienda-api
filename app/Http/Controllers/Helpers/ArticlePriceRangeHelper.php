@@ -187,8 +187,14 @@ class ArticlePriceRangeHelper
         $price = self::valor($rango, 'price');
 
         /* Criterio 4, y va sobre el GANADOR: `price` es nullable en la base y el gemelo hace
-           Number(null) === 0, que es falsy. Nulo, no numerico o cero -> el rango no aplica. */
-        if (is_null($price) || !is_numeric($price) || (float) $price == 0.0) {
+           Number(null) === 0, que es falsy. Nulo, no numerico o cero -> el rango no aplica.
+
+           El `<=` y no `==` es deliberado: un tramo con precio negativo es un dato imposible de
+           cargar con sentido (el ABM del articulo usa un input numerico), pero si llegara a
+           existir, aceptarlo seria cobrar plata al reves. Con `==` este lado lo aceptaba y el
+           gemelo del SPA lo descartaba, o sea que volvia a haber dos criterios para la misma
+           regla. Los dos descartan, y descartan hacia el lado seguro. */
+        if (is_null($price) || !is_numeric($price) || (float) $price <= 0.0) {
             return null;
         }
 
