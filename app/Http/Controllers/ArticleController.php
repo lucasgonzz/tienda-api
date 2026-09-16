@@ -53,6 +53,21 @@ class ArticleController extends Controller {
         return response()->json(['models' => $articles], 200);
     }
 
+    /**
+     * Cuantos similares por pagina, con 6 de default.
+     *
+     * 🔴 El default es 6 y NO se cambia: es lo que devolvia este endpoint desde siempre, y un
+     * SPA viejo que no manda `per_page` tiene que seguir viendo exactamente lo mismo. El
+     * parametro existe porque los "productos relacionados" de la ficha nueva dibujan hasta 3
+     * filas de 3 y con 6 articulos nunca pasaban de 2 (mision tienda-ficha-estilo-ml).
+     *
+     * El techo de 24 no es decorativo: sin el, cualquiera puede pedir `per_page=100000` a un
+     * endpoint publico y sin auth que hace `withAll()` — que trae imagenes, descuentos y
+     * precios de cada articulo.
+     */
+    const SIMILARES_POR_PAGINA = 6;
+    const SIMILARES_POR_PAGINA_MAX = 24;
+
     function similars($article_id) {
         $article = Article::find($article_id);
         if (!is_null($article->sub_category)) {
@@ -64,11 +79,35 @@ class ArticleController extends Controller {
                                 ->withAll()
                                 ->checkOnline()
                                 ->checkStock()
-                                ->paginate(6);
+                                ->paginate($this->similaresPorPagina());
             $articles = ArticleHelper::checkPriceTypes($articles);
             return response()->json(['models' => $articles], 200);
         }
         return response()->json(['models' => ['data' => []]], 200);
+    }
+
+    /**
+     * Lee `per_page` del request y lo deja adentro de [1, SIMILARES_POR_PAGINA_MAX].
+     *
+     * Cualquier cosa que no sea un numero util —vacio, texto, 0, negativo— cae al default sin
+     * hacer ruido: es un parametro opcional de un endpoint publico, no una entrada a validar
+     * con un 422.
+     *
+     * @return int
+     */
+    private function similaresPorPagina() {
+        $pedido = request()->per_page;
+        if (!is_numeric($pedido)) {
+            return self::SIMILARES_POR_PAGINA;
+        }
+        $pedido = (int) $pedido;
+        if ($pedido < 1) {
+            return self::SIMILARES_POR_PAGINA;
+        }
+        if ($pedido > self::SIMILARES_POR_PAGINA_MAX) {
+            return self::SIMILARES_POR_PAGINA_MAX;
+        }
+        return $pedido;
     }
 
     /**
