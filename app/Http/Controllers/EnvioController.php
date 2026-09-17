@@ -30,7 +30,9 @@ use Illuminate\Support\Facades\Validator;
  *   422 `validacion`    faltan o están mal los datos del pedido de cotización (`errors`)
  *   422 `sin_zipnova`   el negocio no tiene envíos por correo (sin conector o sin esquema)
  *   422 `sin_articulos` nada que enviar (artículos ajenos, digitales, o lista vacía)
- *   422 `ubicacion`     Zipnova no reconoció el CP: `needs_location: true`, pedir localidad y provincia
+ *   422 `ubicacion`     Zipnova no reconoció el CP ni resolvió su localidad: `needs_location: true`,
+ *                       pedir localidad y provincia (es el camino de excepción desde el 17/9/2026:
+ *                       un CP válido se resuelve solo, ver `ZipnovaCotizadorService`)
  *   403 `carrito`       el carrito no es de esta sesión
  *   502 `zipnova`       Zipnova falló o no respondió
  */
@@ -54,6 +56,13 @@ class EnvioController extends Controller
      * ── Respuesta 200 ─────────────────────────────────────────────────────────────────────────
      *
      * `{zipcode: string, city: string|null, state: string|null, envio_gratis: bool, opciones: [...]}`
+     *
+     * `city` y `state` son la localidad y la provincia que Zipnova resolvió para ese código
+     * postal, y desde el 17/9/2026 vienen llenas TAMBIÉN cuando el comprador mandó solo el CP:
+     * el servidor las resuelve con el centinela de `ZipnovaCotizadorService::CENTINELA_UBICACION`.
+     * No hay ninguna clave nueva —son las mismas cinco de siempre—, lo que cambió es que dejaron
+     * de venir en null. El SPA las muestra ("Envíos a Rosario, Santa Fe") y las guarda en el perfil
+     * del comprador; si Zipnova no resolvió nada, sale el 422 `ubicacion` de siempre.
      *
      * Con `articles_extra` se cotiza DOS veces —primero la base sola, después la base más el
      * extra— y `envio_gratis` y `opciones` son los del conjunto CON el extra: es lo que el
