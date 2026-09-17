@@ -23,11 +23,15 @@ use Tests\TestCase;
  *    opción no está en el conjunto, se cae a la más barata de cada una y sale `misma_opcion: false`.
  * 3. La diferencia puede dar NEGATIVA cuando el extra hace llegar al envío gratis, y ahí lo que
  *    manda son `envio_gratis_base` / `envio_gratis_total` / `queda_gratis`, no el número.
- * 4. Sin base —carrito vacío, carrito ajeno, nada que viaje— sale `hay_base: false` y el costo que
- *    se muestra es el completo, como siempre.
+ * 4. Sin base —`articles` vacío, nada que viaje— sale `hay_base: false` y el costo que se muestra
+ *    es el completo, como siempre. Un carrito AJENO no es un caso de esos: el SPA manda su copia
+ *    local en `articles` y la base se rearma desde ahí.
  * 5. Un id que ya está en el carrito SUMA su cantidad en vez de abrir una línea nueva, y la
  *    cantidad del extra cambia lo que se le pide a Zipnova (el envío se cotiza por unidad).
  * 6. Sin `articles_extra` la respuesta no cambia en una sola clave.
+ * 6.bis Los requests son los que manda el SPA de verdad: `articles` viaja SIEMPRE (ver
+ *    `cotizarConCarrito`), y `articles_extra` solo cuando hay base y queda algo por agregar. Las
+ *    formas que el SPA ya no manda se siguen fijando aparte, como contrato de la API.
  * 7. 🔴 Las dos corridas NO comparten la clave de caché. Si colisionaran, las dos devolverían lo
  *    mismo y la diferencia daría 0 SIEMPRE: una falla muda y perfectamente creíble.
  *
@@ -222,11 +226,39 @@ class CotizarEnvioIncrementalTest extends TestCase
     |---------------------------------------------------------------------------------------------
     */
 
-    public function test_con_el_carrito_vacio_no_hay_base_y_se_muestra_el_costo_completo()
+    public function test_con_el_carrito_vacio_el_spa_manda_la_ficha_en_articles_y_cotiza_el_articulo_solo()
     {
         $this->conectorZipnova($this->comercio);
         $this->zipnovaCotiza();
 
+        /* 🔴 Con el carrito vacío el SPA NO manda `articles_extra`: manda la ficha en `articles`,
+           que es la clave de siempre. Es a propósito y es lo que hace que la tienda no se rompa
+           mientras la API todavía no se actualizó —`articles_extra` es una clave nueva y una API
+           vieja la ignora—; con la ficha en `articles` las dos versiones cotizan lo mismo. La
+           ventana es real: la corrida del admin publica el SPA varios minutos antes que la API.
+
+           Sin `articles_extra` tampoco viene el bloque `incremental`, y está bien: no hay ninguna
+           diferencia que mostrar, lo que el comprador ve es el costo completo. */
+        $respuesta = $this->postJson(self::RUTA, [
+            'commerce_id' => $this->comercio->id,
+            'zipcode'     => '5000',
+            'articles'    => [['id' => $this->de_la_ficha->id, 'amount' => 1]],
+        ]);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame(self::PRECIO_RETIRO_CORREO_ARG, (float) $respuesta->json('opciones.0.precio'));
+        $this->assertNull($respuesta->json('incremental'), 'sin `articles_extra` la respuesta es la de siempre, sin bloque nuevo');
+        Http::assertSentCount(1);
+    }
+
+    public function test_un_articles_vacio_con_extra_no_tiene_base_y_se_muestra_el_costo_completo()
+    {
+        $this->conectorZipnova($this->comercio);
+        $this->zipnovaCotiza();
+
+        /* No es lo que manda el SPA de hoy (con el carrito vacío la ficha va en `articles`, ver el
+           test de arriba), y se fija igual porque es el contrato de la API: una base vacía no es un
+           error, es `hay_base: false`. */
         $respuesta = $this->postJson(self::RUTA, [
             'commerce_id'    => $this->comercio->id,
             'zipcode'        => '5000',
@@ -267,7 +299,7 @@ class CotizarEnvioIncrementalTest extends TestCase
         Http::assertSentCount(1);
     }
 
-    public function test_un_carrito_ajeno_con_articles_extra_cotiza_el_articulo_solo_en_vez_de_dar_403()
+    public function test_un_carrito_ajeno_con_articles_extra_cotiza_igual_en_vez_de_dar_403_y_la_base_sale_de_articles()
     {
         $this->conectorZipnova($this->comercio);
         $this->zipnovaCotiza();
@@ -279,11 +311,47 @@ class CotizarEnvioIncrementalTest extends TestCase
             'commerce_id'    => $this->comercio->id,
             'zipcode'        => '5000',
             'cart_id'        => $ajeno->id,
+            'articles'       => $this->lineasDelCarrito($ajeno),
             'articles_extra' => [['id' => $this->de_la_ficha->id, 'amount' => 1]],
         ]);
 
         $respuesta->assertStatus(200, 'la ficha tiene que mostrar un precio aunque el carrito se haya vencido del otro lado');
+
+        /* 🔴 Lo que se pierde al no poder leer el `cart_id` es el carrito GUARDADO, no la base: el
+           SPA manda además su copia local en `articles`, y con eso la base se rearma. Es lo que
+           corresponde —el comprador tiene cosas en el carrito y la diferencia es contra eso—, y no
+           filtra nada del carrito ajeno: `lineas_desde_articulos` resuelve los artículos por id
+           contra el comercio, sin mirar una sola línea de ese carrito. */
+        $this->assertTrue($respuesta->json('incremental.hay_base'), 'la base se rearma desde `articles`, que el SPA manda siempre');
+        $this->assertSame(self::PRECIO_RETIRO_CORREO_ARG, (float) $respuesta->json('opciones.0.precio'));
+
+        /* Zipnova devuelve lo mismo a las dos corridas (el fake es uno solo), así que la
+           diferencia da 0: lo que se fija acá es que HAY diferencia calculada, no cuánto. */
+        $this->assertSame(0.0, (float) $respuesta->json('incremental.diferencia'));
+        Http::assertSentCount(2);
+    }
+
+    public function test_sin_articles_un_carrito_ajeno_con_extra_se_queda_sin_base()
+    {
+        $this->conectorZipnova($this->comercio);
+        $this->zipnovaCotiza();
+
+        /* El mismo caso de arriba pero sin la copia local. No es lo que manda el SPA de hoy —manda
+           `articles` siempre—, y se fija igual porque es el contrato de la API para cualquier
+           cliente: sin base contra la cual restar, el precio que sale es el completo y nunca una
+           diferencia inventada. */
+        $ajeno = $this->carritoCon($this->en_el_carrito, 2, 2000);
+
+        $respuesta = $this->postJson(self::RUTA, [
+            'commerce_id'    => $this->comercio->id,
+            'zipcode'        => '5000',
+            'cart_id'        => $ajeno->id,
+            'articles_extra' => [['id' => $this->de_la_ficha->id, 'amount' => 1]],
+        ]);
+
+        $respuesta->assertStatus(200);
         $this->assertFalse($respuesta->json('incremental.hay_base'));
+        $this->assertNull($respuesta->json('incremental.diferencia'));
         $this->assertSame(self::PRECIO_RETIRO_CORREO_ARG, (float) $respuesta->json('opciones.0.precio'));
     }
 
@@ -488,7 +556,13 @@ class CotizarEnvioIncrementalTest extends TestCase
 
     /**
      * Lo que manda la ficha del artículo cuando el comprador ya tiene un carrito: el carrito como
-     * base (`cart_id`) y el artículo que está mirando como extra.
+     * base (`cart_id` **y** `articles`) y el artículo que está mirando como extra.
+     *
+     * 🔴 `articles` va SIEMPRE, y no es un adorno: es la forma exacta del request del SPA
+     * (`Cotizador.vue` arma el payload con `articles: this.lineas_base` sin ninguna condición, y
+     * `lineas_base` es la copia local del carrito). Omitirlo acá probaba un request que no existe
+     * en producción, y además tapaba la diferencia que importa: con `articles` lleno, un `cart_id`
+     * que el servidor no puede leer NO se queda sin base, porque la rearma desde esa copia local.
      *
      * @param \App\Cart $cart
      * @param array $extra
@@ -501,8 +575,27 @@ class CotizarEnvioIncrementalTest extends TestCase
                 'commerce_id'    => $this->comercio->id,
                 'zipcode'        => '5000',
                 'cart_id'        => $cart->id,
+                'articles'       => $this->lineasDelCarrito($cart),
                 'articles_extra' => $extra,
             ]);
+    }
+
+    /**
+     * El carrito en la forma en que el SPA lo manda en `articles`: la copia local de sus líneas
+     * (ver `lineas_del_carrito()` en `src/store/cart.js` de tienda-spa).
+     *
+     * @param \App\Cart $cart
+     * @return array
+     */
+    private function lineasDelCarrito($cart)
+    {
+        $lineas = [];
+
+        foreach ($cart->articles as $article) {
+            $lineas[] = ['id' => $article->id, 'amount' => (int) $article->pivot->amount];
+        }
+
+        return $lineas;
     }
 
     /**

@@ -90,9 +90,28 @@ class EnvioController extends Controller
      * ── Un `cart_id` que no se puede leer ─────────────────────────────────────────────────────
      *
      * Sin `articles_extra` sigue siendo 403 `carrito` (el comprador pidió cotizar ESE carrito y no
-     * es suyo). Con `articles_extra` el carrito es solo la base: se ignora, se cotiza el extra solo
-     * y sale `hay_base: false`. La ficha del artículo tiene que seguir mostrando un precio aunque
-     * el carrito se haya vencido del otro lado.
+     * es suyo). Con `articles_extra` el carrito es solo la base: se ignora y la base se rearma con
+     * `articles`, que el SPA manda SIEMPRE (es su copia local del carrito, ver `lineas_base` en
+     * `Cotizador.vue`). O sea que en el caso real lo que se pierde es el carrito guardado —sus
+     * cantidades y su subtotal—, no la base, y sale `hay_base: true`. Solo queda `hay_base: false`
+     * si además `articles` viene vacío o sin nada que viaje. La ficha del artículo tiene que seguir
+     * mostrando un precio aunque el carrito se haya vencido del otro lado.
+     *
+     * Eso no filtra nada del carrito ajeno: `articles` lo mandó el propio cliente y
+     * `lineas_desde_articulos` resuelve los ids contra el comercio, sin leer una sola línea de ese
+     * carrito.
+     *
+     * ── Qué manda el SPA, que no es cualquier combinación ──────────────────────────────────────
+     *
+     * `articles` viaja siempre. `articles_extra` solo cuando hay base Y queda algo por agregar:
+     *
+     *   - carrito con cosas, algo que agregar → `articles` = carrito, `articles_extra` = lo que
+     *     FALTA (el total del selector menos lo que de ese artículo ya está en el carrito), `cart_id`;
+     *   - carrito con cosas, nada que agregar (el artículo ya está entero adentro) → `articles` =
+     *     carrito, sin `articles_extra`: se muestra el envío del carrito tal como está;
+     *   - carrito vacío → `articles` = la ficha, sin `articles_extra`. Va así a propósito: con la
+     *     ficha en `articles` una `tienda-api` todavía sin actualizar cotiza exactamente lo mismo,
+     *     en vez de quedarse sin artículos y responder 422 `sin_articulos`.
      *
      * @param Request $request
      * @return \Illuminate\Http\JsonResponse `{zipcode, city, state, envio_gratis, opciones: [...], incremental?}`
