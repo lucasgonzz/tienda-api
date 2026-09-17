@@ -316,11 +316,12 @@ class CotizarEnvioSinLocalidadTest extends TestCase
         });
     }
 
-    public function test_con_localidad_del_comprador_la_guarda_no_corre()
+    public function test_con_localidad_del_comprador_un_destino_sin_eco_igual_pasa_la_guarda()
     {
-        /* Si el comprador escribió su localidad, lo que Zipnova devuelva en `destination` no puede
-           hacer fracasar la cotización: es el camino de siempre y tiene que seguir andando igual.
-           Se prueba con un destino que la guarda del centinela rechazaría. */
+        /* Si el comprador escribió su localidad, que Zipnova no la ecoe no puede hacer fracasar la
+           cotización: es el camino de siempre y tiene que seguir andando igual. La guarda sí corre
+           (corre siempre), pero lo que mira es el destino YA completado con lo que él escribió, y
+           "Villa Allende" es un lugar de verdad. */
         $quote = $this->fixture('zipnova_quote.json');
         unset($quote['destination']);
 
@@ -338,6 +339,54 @@ class CotizarEnvioSinLocalidadTest extends TestCase
         $this->assertCount(3, $respuesta->json('opciones'));
         /* Sin eco de Zipnova quedan las que escribió el comprador, como antes de esta misión. */
         $this->assertSame('Villa Allende', $respuesta->json('city'));
+        $this->assertSame('Cordoba', $respuesta->json('state'));
+    }
+
+    public function test_el_centinela_mandado_en_el_body_no_puede_salir_como_la_localidad_del_200()
+    {
+        /* 🔴 `POST /api/envios/cotizar` es PÚBLICA y `city` viaja en el body. Con la guarda atada a
+           "resolví por código postal", mandar el centinela a mano la salteaba entera y el 200
+           devolvía "Zzz Inexistente" como localidad — que el SPA guarda en `buyers.envio_city` y
+           después precarga en `carts.envio_destino`. Era la última puerta por la que el centinela
+           podía terminar escrito como la localidad de una persona.
+
+           Ningún comprador llega acá usando la tienda (las fuentes de `envio.city` son la respuesta
+           ya filtrada, el formulario manual y Google), pero el endpoint está abierto. */
+        $quote = $this->fixture('zipnova_quote.json');
+        unset($quote['destination']);
+
+        Http::fake([self::URL_QUOTE => Http::response($quote, 200)]);
+
+        $respuesta = $this->postJson(self::RUTA, [
+            'commerce_id' => $this->comercio->id,
+            'zipcode'     => '5000',
+            'city'        => ZipnovaCotizadorService::CENTINELA_UBICACION,
+            'state'       => ZipnovaCotizadorService::CENTINELA_UBICACION,
+            'articles'    => [['id' => $this->articulo->id, 'amount' => 1]],
+        ]);
+
+        $respuesta->assertStatus(422);
+        $this->assertSame('ubicacion', $respuesta->json('codigo'));
+        $this->assertTrue($respuesta->json('needs_location'));
+    }
+
+    public function test_si_zipnova_resuelve_de_verdad_el_centinela_del_body_no_llega_al_200()
+    {
+        /* La otra mitad del caso de arriba: si Zipnova ignoró la pareja (no matchea su padrón) y
+           resolvió por el código postal, lo que vale es lo que resolvió. El centinela que entró por
+           el body queda pisado y no sale a ningún lado. */
+        $this->zipnovaCotiza();
+
+        $respuesta = $this->postJson(self::RUTA, [
+            'commerce_id' => $this->comercio->id,
+            'zipcode'     => '5000',
+            'city'        => ZipnovaCotizadorService::CENTINELA_UBICACION,
+            'state'       => ZipnovaCotizadorService::CENTINELA_UBICACION,
+            'articles'    => [['id' => $this->articulo->id, 'amount' => 1]],
+        ]);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame('Cordoba', $respuesta->json('city'));
         $this->assertSame('Cordoba', $respuesta->json('state'));
     }
 

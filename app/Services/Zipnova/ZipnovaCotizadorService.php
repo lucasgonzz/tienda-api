@@ -86,7 +86,8 @@ class ZipnovaCotizadorService
      * código postal solo, con el centinela, no tiene esa puerta.
      *
      * La contrapartida obligatoria es la guarda de `zipnova_resolvio_el_destino()`: nunca se da por
-     * sentado que resolvió.
+     * sentado que resolvió. Y esa guarda corre SIEMPRE, incluso cuando el comprador mandó su
+     * localidad: `POST /api/envios/cotizar` es pública y este mismo valor puede llegar por el body.
      */
     const CENTINELA_UBICACION = 'Zzz Inexistente';
 
@@ -101,12 +102,13 @@ class ZipnovaCotizadorService
      *                          cotiza con el centinela y Zipnova resuelve por el código postal.
      * @param string|null $state Provincia, si el comprador la indicó.
      * @return array `{zipcode, city, state, envio_gratis, declared_value, quoted_at, opciones: [...]}`
-     *               `city` y `state` son los que resolvió Zipnova: con el centinela salen siempre
-     *               llenos (la guarda no deja pasar otra cosa), no null como antes de 17/9/2026.
+     *               `city` y `state` son los que resolvió Zipnova: salen siempre llenos y con un
+     *               lugar de verdad —la guarda no deja pasar otra cosa, tampoco un centinela que
+     *               haya llegado por el body—, no null como antes de 17/9/2026.
      * @throws SinZipnovaException Sin esquema o sin conector.
      * @throws SinArticulosException Nada que enviar.
-     * @throws UbicacionException Zipnova no reconoció el destino, o no resolvió la localidad del
-     *                            código postal (la guarda del centinela).
+     * @throws UbicacionException Zipnova no reconoció el destino, o el destino que quedó no es un
+     *                            lugar de verdad (la guarda del centinela, que corre siempre).
      * @throws ZipnovaException Cualquier otra falla de Zipnova (la atrapa el llamador y responde 502).
      */
     public static function cotizar($commerce_id, array $lineas, $subtotal, $zipcode, $city = null, $state = null)
@@ -164,17 +166,6 @@ class ZipnovaCotizadorService
 
         $cotizacion = ZipnovaQuoteNormalizer::normalizar($respuesta, $envio_gratis);
 
-        // 🔴 La guarda del centinela, y es la parte más importante de este método: NO se da por
-        // sentado que Zipnova resolvió. Se cotizó con una localidad que no existe; si el
-        // `destination` que volvió ecoa ese mismo centinela (o viene vacío), Zipnova no resolvió
-        // nada y lo que hay en la mano es un precio a ninguna parte. Ahí el comportamiento correcto
-        // es el de siempre —`needs_location`, que el comprador escriba su localidad—, y no mostrar
-        // un envío que nadie sabe a dónde va. Esto es lo que vuelve verificable un comportamiento
-        // que Zipnova no documenta en ningún lado.
-        if ($resolver_por_zipcode && !self::zipnova_resolvio_el_destino($cotizacion)) {
-            throw new UbicacionException('Zipnova no resolvió la localidad del código postal ' . $zipcode . '.');
-        }
-
         // Una opción de retiro sin sucursales nunca se podría completar (el envío en Zipnova
         // exige el point_id): no se le ofrece al comprador.
         $cotizacion['opciones'] = array_values(array_filter($cotizacion['opciones'], function ($opcion) {
@@ -192,16 +183,33 @@ class ZipnovaCotizadorService
         // la localidad que resolvió (medido el 17/9/2026).
         $cotizacion['zipcode'] = (string) $zipcode;
 
-        // Localidad y provincia son las que resolvió Zipnova. Con el centinela la guarda de arriba
-        // ya garantizó que las resolvió de verdad, así que no hay nada que completar; con la
-        // localidad del comprador, si Zipnova no la ecoa, quedan las que él escribió.
+        // Localidad y provincia son las que resolvió Zipnova; con la localidad del comprador, si
+        // Zipnova no la ecoa, quedan las que él escribió.
         if (!$resolver_por_zipcode) {
-            if (is_null($cotizacion['city'])) {
+            if (!self::es_una_ubicacion_real($cotizacion['city'])) {
                 $cotizacion['city'] = $city;
             }
-            if (is_null($cotizacion['state'])) {
+            if (!self::es_una_ubicacion_real($cotizacion['state'])) {
                 $cotizacion['state'] = $state;
             }
+        }
+
+        // 🔴 La guarda del centinela, y es la parte más importante de este método: NO se da por
+        // sentado que el destino que se está por devolver sea un lugar de verdad. Si `city` o
+        // `state` ecoan el centinela (o vienen vacías), lo que hay en la mano es un precio a
+        // ninguna parte. Ahí el comportamiento correcto es el de siempre —`needs_location`, que el
+        // comprador escriba su localidad—, y no mostrar un envío que nadie sabe a dónde va. Esto es
+        // lo que vuelve verificable un comportamiento que Zipnova no documenta en ningún lado.
+        //
+        // 🔴 Corre SIEMPRE, y no solo cuando se resolvió por código postal. `POST /api/envios/cotizar`
+        // es PÚBLICA y `city` viaja en el body: mandando `city` = `state` = el centinela se salteaba
+        // la guarda entera y el 200 devolvía "Zzz Inexistente" como localidad, que el SPA guarda en
+        // `buyers.envio_city` y después precarga en `carts.envio_destino`. O sea: la última puerta
+        // por la que el centinela podía terminar escrito como la localidad de una persona. Va
+        // DESPUÉS de completar con lo que escribió el comprador, para mirar el valor que realmente
+        // va a salir en la respuesta y no un paso intermedio.
+        if (!self::zipnova_resolvio_el_destino($cotizacion)) {
+            throw new UbicacionException('No se resolvió la localidad del código postal ' . $zipcode . '.');
         }
 
         $cotizacion['declared_value'] = $declared_value;
@@ -296,11 +304,13 @@ class ZipnovaCotizadorService
     }
 
     /**
-     * True si Zipnova resolvió de verdad la localidad del código postal.
+     * True si el destino que se está por devolver es un lugar de verdad.
      *
-     * Es la contrapartida de `CENTINELA_UBICACION` y solo se pregunta cuando se cotizó con él: la
-     * cotización trae el destino que Zipnova resolvió (`destination.city` / `destination.state`),
-     * y si eso vuelve vacío o ecoando el centinela, entonces no resolvió nada.
+     * Es la contrapartida de `CENTINELA_UBICACION` y se pregunta SIEMPRE, no solo cuando se cotizó
+     * con él: la cotización trae el destino que Zipnova resolvió (`destination.city` /
+     * `destination.state`), ya completado con lo que haya escrito el comprador, y si eso vuelve
+     * vacío o ecoando el centinela, entonces no hay destino. El endpoint es público y `city` viaja
+     * en el body, así que el centinela también puede entrar por ahí.
      *
      * @param array $cotizacion Cotización ya normalizada.
      * @return bool
