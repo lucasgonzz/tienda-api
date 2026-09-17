@@ -329,6 +329,65 @@ class ZipnovaCotizadorService
     }
 
     /**
+     * Las líneas de la base MÁS las que el comprador está por agregar (modo `articles_extra` del
+     * endpoint público: la ficha del artículo con un carrito ya empezado).
+     *
+     * Un id que ya está en la base no agrega una línea nueva: le SUMA la cantidad. El envío se
+     * cotiza por unidad (`ZipnovaPaquetesHelper` repite el ítem `amount` veces), así que dos
+     * líneas del mismo artículo o una con la suma dan los mismos ítems — pero una sola línea es lo
+     * que el carrito va a tener de verdad cuando el comprador apriete "Agregar", y es lo que hace
+     * que la clave de caché de esta corrida coincida con la del carrito ya armado.
+     *
+     * El subtotal se suma: el de la base sale de `carts.total` (precios que resolvió el servidor) y
+     * el del extra del precio público del artículo, que es el mismo embudo con el que el carrito lo
+     * va a cargar. Solo se usa para el valor declarado y para la regla de envío gratis.
+     *
+     * Un extra que no existe, que es de otro comercio o que no viaja no agrega nada: la cotización
+     * del conjunto queda igual a la de la base y la diferencia da 0, que es la verdad.
+     *
+     * @param array $armado_base `{lineas, subtotal}` de `lineas_desde_carrito()` o `lineas_desde_articulos()`.
+     * @param int $commerce_id Comercio dueño de los artículos (el del carrito, si hay carrito).
+     * @param array $items_extra `[['id' => int, 'amount' => int], ...]`
+     * @return array{lineas: array, subtotal: float}
+     */
+    public static function lineas_con_extra(array $armado_base, $commerce_id, array $items_extra)
+    {
+        $armado_extra = self::lineas_desde_articulos($commerce_id, $items_extra);
+
+        if (count($armado_extra['lineas']) === 0) {
+            return $armado_base;
+        }
+
+        $lineas = $armado_base['lineas'];
+
+        foreach ($armado_extra['lineas'] as $extra) {
+            $id = (int) $extra['article']->id;
+            $ya_estaba = false;
+
+            foreach ($lineas as $i => $linea) {
+                if (!isset($linea['article']) || !is_object($linea['article'])) {
+                    continue;
+                }
+                if ((int) $linea['article']->id !== $id) {
+                    continue;
+                }
+                $lineas[$i]['amount'] = (int) $linea['amount'] + (int) $extra['amount'];
+                $ya_estaba = true;
+                break;
+            }
+
+            if (!$ya_estaba) {
+                $lineas[] = $extra;
+            }
+        }
+
+        return [
+            'lineas'   => $lineas,
+            'subtotal' => round((float) $armado_base['subtotal'] + (float) $armado_extra['subtotal'], 2),
+        ];
+    }
+
+    /**
      * Código postal sin espacios ni signos, en mayúsculas: Zipnova acepta el numérico ("5000") y
      * el CPA ("X5000ABC"); todo lo demás es ruido del teclado del teléfono.
      *

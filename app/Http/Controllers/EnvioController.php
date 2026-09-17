@@ -9,6 +9,7 @@ use App\Services\Zipnova\SinZipnovaException;
 use App\Services\Zipnova\UbicacionException;
 use App\Services\Zipnova\ZipnovaCotizadorService;
 use App\Services\Zipnova\ZipnovaException;
+use App\Services\Zipnova\ZipnovaIncrementalHelper;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
@@ -38,26 +39,72 @@ class EnvioController extends Controller
     /**
      * Cotiza el envío para un código postal.
      *
-     * Body: `{commerce_id, zipcode, city?, state?, cart_id?, articles?: [{id, amount}]}`. Con
-     * `cart_id` se cotiza el carrito guardado (líneas y subtotal del servidor); sin él, la lista
-     * `articles` (ficha del artículo). Si vienen los dos, manda el carrito.
+     * ── Request ───────────────────────────────────────────────────────────────────────────────
+     *
+     * `{commerce_id, zipcode, city?, state?, cart_id?, articles?: [{id, amount}],
+     *   articles_extra?: [{id, amount}]}`
+     *
+     * La BASE es lo que el comprador ya tiene: con `cart_id`, el carrito guardado (líneas y
+     * subtotal del servidor); sin él, la lista `articles`. Si vienen los dos, manda el carrito.
+     *
+     * `articles_extra` es lo que está por agregar (el artículo de la ficha, con su cantidad). Es
+     * OPCIONAL y sin él la respuesta es exactamente la de siempre, clave por clave: un SPA viejo no
+     * se entera de nada.
+     *
+     * ── Respuesta 200 ─────────────────────────────────────────────────────────────────────────
+     *
+     * `{zipcode: string, city: string|null, state: string|null, envio_gratis: bool, opciones: [...]}`
+     *
+     * Con `articles_extra` se cotiza DOS veces —primero la base sola, después la base más el
+     * extra— y `envio_gratis` y `opciones` son los del conjunto CON el extra: es lo que el
+     * comprador va a pagar si lo agrega. Se suma un bloque:
+     *
+     * ```
+     * incremental: {
+     *   hay_base:           bool          había base con la que comparar (carrito con algo que viaje)
+     *   misma_opcion:       bool          se compararon dos precios de la MISMA opción de envío
+     *   key:                string|null   opción del conjunto de la que sale `precio_total`
+     *   key_base:           string|null   opción de la base de la que sale `precio_base`
+     *   precio_base:        float|null    lo que el envío cuesta HOY (sin el extra)
+     *   precio_total:       float|null    lo que costaría CON el extra
+     *   diferencia:         float|null    precio_total - precio_base; puede ser 0 o negativa
+     *   envio_gratis_base:  bool          la base ya caía en envío gratis
+     *   envio_gratis_total: bool          el conjunto cae en envío gratis
+     *   queda_gratis:       bool          !envio_gratis_base && envio_gratis_total
+     * }
+     * ```
+     *
+     * Con `hay_base: false` (carrito vacío, carrito que no se pudo leer, o base sin nada que
+     * viaje) `diferencia` y `precio_base` son null y lo que se muestra es el costo completo, como
+     * siempre. Ver `ZipnovaIncrementalHelper` para los tres casos que definen si el número sirve.
+     *
+     * ── Un `cart_id` que no se puede leer ─────────────────────────────────────────────────────
+     *
+     * Sin `articles_extra` sigue siendo 403 `carrito` (el comprador pidió cotizar ESE carrito y no
+     * es suyo). Con `articles_extra` el carrito es solo la base: se ignora, se cotiza el extra solo
+     * y sale `hay_base: false`. La ficha del artículo tiene que seguir mostrando un precio aunque
+     * el carrito se haya vencido del otro lado.
      *
      * @param Request $request
-     * @return \Illuminate\Http\JsonResponse `{zipcode, city, state, envio_gratis, opciones: [...]}`
+     * @return \Illuminate\Http\JsonResponse `{zipcode, city, state, envio_gratis, opciones: [...], incremental?}`
      */
     function cotizar(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'commerce_id'       => 'required|integer',
+            'commerce_id'             => 'required|integer',
             // El largo real (4 a 8) se exige DESPUÉS de limpiar: "x5000-abc" o "5000 " son
             // entradas legítimas del teclado del teléfono; acá solo se frena el abuso.
-            'zipcode'           => 'required|string|max:20',
-            'city'              => 'nullable|string|max:120',
-            'state'             => 'nullable|string|max:120',
-            'cart_id'           => 'nullable|integer',
-            'articles'          => 'nullable|array|max:' . ZipnovaCotizadorService::MAX_LINEAS,
-            'articles.*.id'     => 'required|integer',
-            'articles.*.amount' => 'nullable|numeric|min:1',
+            'zipcode'                 => 'required|string|max:20',
+            'city'                    => 'nullable|string|max:120',
+            'state'                   => 'nullable|string|max:120',
+            'cart_id'                 => 'nullable|integer',
+            'articles'                => 'nullable|array|max:' . ZipnovaCotizadorService::MAX_LINEAS,
+            'articles.*.id'           => 'required|integer',
+            'articles.*.amount'       => 'nullable|numeric|min:1',
+            // Mismas reglas que `articles`: es la misma lista de líneas, del otro lado de la resta.
+            'articles_extra'          => 'nullable|array|max:' . ZipnovaCotizadorService::MAX_LINEAS,
+            'articles_extra.*.id'     => 'required|integer',
+            'articles_extra.*.amount' => 'nullable|numeric|min:1',
         ]);
 
         if ($validator->fails()) {
@@ -79,7 +126,12 @@ class EnvioController extends Controller
             ], 422);
         }
 
+        $articles_extra = $request->input('articles_extra');
+        $articles_extra = is_array($articles_extra) ? $articles_extra : [];
+        $hay_extra = count($articles_extra) > 0;
+
         $cart_id = $request->input('cart_id');
+        $cart = null;
 
         if (!empty($cart_id)) {
             $cart = Cart::find((int) $cart_id);
@@ -88,12 +140,20 @@ class EnvioController extends Controller
             // siquiera sus cantidades. 403 también para un id que no existe: no se distingue
             // "no existe" de "es de otro" para no permitir enumerar carritos.
             if (!CartOwnershipHelper::puede($cart)) {
-                return response()->json([
-                    'codigo'  => 'carrito',
-                    'message' => 'No encontramos tu carrito. Volvé a cargarlo e intentá de nuevo.',
-                ], 403);
-            }
+                if (!$hay_extra) {
+                    return response()->json([
+                        'codigo'  => 'carrito',
+                        'message' => 'No encontramos tu carrito. Volvé a cargarlo e intentá de nuevo.',
+                    ], 403);
+                }
 
+                // Con `articles_extra` el carrito es solo la base de la resta: si no se puede
+                // leer, se pierde la base (no el precio). Ver el docblock del método.
+                $cart = null;
+            }
+        }
+
+        if (!is_null($cart)) {
             // El comercio sale del carrito, no del body: el precio y la cuenta de Zipnova son
             // los del dueño de esos artículos.
             $commerce_id = (int) $cart->user_id;
@@ -103,7 +163,34 @@ class EnvioController extends Controller
             $armado = ZipnovaCotizadorService::lineas_desde_articulos($commerce_id, is_array($articles) ? $articles : []);
         }
 
+        $cotizacion_base = null;
+
         try {
+            if ($hay_extra) {
+                // 🔴 La base va PRIMERO, y ese orden importa por la caché: el comprador mira una
+                // ficha atrás de otra con el mismo carrito, así que esta corrida se repite y la
+                // caché de diez minutos se la come. La del conjunto cambia con cada artículo.
+                //
+                // Una base sin nada que enviar (carrito vacío, todo digital) no es un error acá:
+                // es `hay_base: false` y el costo que se muestra es el completo. El resto de las
+                // fallas —sin conector, destino que no se reconoce, Zipnova caído— salen por el
+                // mismo lugar de siempre: al conjunto le pasaría exactamente lo mismo.
+                try {
+                    $cotizacion_base = ZipnovaCotizadorService::cotizar(
+                        $commerce_id,
+                        $armado['lineas'],
+                        $armado['subtotal'],
+                        $zipcode,
+                        $request->input('city'),
+                        $request->input('state')
+                    );
+                } catch (SinArticulosException $e) {
+                    $cotizacion_base = null;
+                }
+
+                $armado = ZipnovaCotizadorService::lineas_con_extra($armado, $commerce_id, $articles_extra);
+            }
+
             $cotizacion = ZipnovaCotizadorService::cotizar(
                 $commerce_id,
                 $armado['lineas'],
@@ -142,12 +229,19 @@ class EnvioController extends Controller
             ], 502);
         }
 
-        return response()->json([
+        $respuesta = [
             'zipcode'      => $cotizacion['zipcode'],
             'city'         => $cotizacion['city'],
             'state'        => $cotizacion['state'],
             'envio_gratis' => $cotizacion['envio_gratis'],
             'opciones'     => $cotizacion['opciones'],
-        ], 200);
+        ];
+
+        // Sin `articles_extra` la respuesta queda igual a la de siempre, clave por clave.
+        if ($hay_extra) {
+            $respuesta['incremental'] = ZipnovaIncrementalHelper::comparar($cotizacion_base, $cotizacion);
+        }
+
+        return response()->json($respuesta, 200);
     }
 }
