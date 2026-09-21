@@ -66,6 +66,9 @@ class OnlineConfiguration extends Model
         'avisar_ingreso_stock_por_mail' => 'boolean',
         // Login con Google de la tienda online (prompt 590, grupo 164).
         'google_login_enabled' => 'boolean',
+        // Si se muestra el stock disponible en la ficha del articulo. La columna la agrega
+        // empresa-api (tienda-api no corre migrate sobre online_configurations, solo la lee).
+        'mostrar_stock_disponible' => 'boolean',
     ];
 
     function online_price_type() {
