@@ -69,6 +69,10 @@ class OnlineConfiguration extends Model
         // Si se muestra el stock disponible en la ficha del articulo. La columna la agrega
         // empresa-api (tienda-api no corre migrate sobre online_configurations, solo la lee).
         'mostrar_stock_disponible' => 'boolean',
+        // Si la tienda ignora el stock de los articulos (los trata como si tuvieran stock
+        // null: siempre disponibles, sin tope). Mismo criterio que mostrar_stock_disponible:
+        // la columna la agrega empresa-api, este repo solo la lee.
+        'ignorar_stock' => 'boolean',
     ];
 
     function online_price_type() {

@@ -82,7 +82,16 @@ class Article extends Model
     */
     function scopeCheckStock($query) {
         $commerce = User::find(request()->commerce_id);
-        
+
+        // ignorar_stock hace que TODA la tienda se comporte, para todo articulo, como ya se
+        // comporta hoy un articulo con stock null: nunca se filtra por stock, sin importar
+        // show_articles_without_stock (que es una configuracion distinta y anterior: decide
+        // si un articulo YA CALCULADO como agotado se oculta o se muestra con badge -- este
+        // flag va un paso antes, y hace que nada se calcule como agotado).
+        if ($commerce->online_configuration->ignorar_stock) {
+            return $query;
+        }
+
         $show_without_stock = $commerce->online_configuration->show_articles_without_stock;
         $stock_null_equal_0 = $commerce->online_configuration->stock_null_equal_0;
 
