@@ -118,6 +118,7 @@ class HomeController extends Controller
                     ->checkOnline()
                     ->checkStock();
             })
+            ->withCount('articles')
             ->orderBy('name', 'ASC')
             ->get();
 
