@@ -7,8 +7,10 @@ use App\ArticlePriceTypeGroup;
 use App\Cart;
 use App\Combo;
 use App\Cupon;
+use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ClientOfferHelper;
+use App\PromocionVinoteca;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -70,13 +72,27 @@ class CartHelper {
     }
 
     static function attach_promociones_vinoteca($cart, $promociones_vinoteca) {
-        
+
+        /*
+         * Los ajustes del cliente van tambien sobre las promos (decision 2 de Lucas). Mismo
+         * criterio que get_price(): el `final_price` del payload ya viene AJUSTADO (la API se lo
+         * mando asi al SPA), asi que primero se vuelve a la base y recien despues se aplica el
+         * factor, una vez, con los porcentajes de la base. Sin contrato (sin sesion, sin cliente
+         * o sin tablas) no se toca nada y la promo cobra exactamente lo de master.
+         */
+        $con_ajustes = AjustesDeClienteHelper::hayContrato();
+        $ajustes = $con_ajustes ? AjustesDeClienteHelper::del_comprador($cart->user_id) : AjustesDeClienteHelper::vacio();
+
         foreach ($promociones_vinoteca as $promo) {
+
+            if ($con_ajustes) {
+                $promo = AjustesDeClienteHelper::desajustar_linea($promo);
+            }
 
             // if (isset($promo['is_promocion_vinoteca'])) {
 
                 $cart->promociones_vinoteca()->attach($promo['id'], [
-                                            'price'         => $promo['final_price'],
+                                            'price'         => AjustesDeClienteHelper::ajustar($promo['final_price'], $ajustes),
                                             'cost'          => $promo['cost'],
                                             'amount'        => $promo['pivot']['amount'],
                                             'notes'         => $promo['pivot']['notes'],
@@ -157,6 +173,11 @@ class CartHelper {
         /* Los que ya se colgaron en esta pasada. Ver el docblock: gana la primera entrada. */
         $ya_colgados = [];
 
+        /* Los ajustes del cliente tambien van sobre los combos (decision 2 de Lucas). Aca el
+           precio sale de la BASE (`combos.price`, sin ajustar), asi que el factor se aplica
+           derecho y una sola vez. Sin ajustes, `ajustar()` devuelve el precio intacto. */
+        $ajustes = AjustesDeClienteHelper::del_comprador($cart->user_id);
+
         foreach ($combos as $combo) {
 
             if (!isset($combo['id']) || !$modelos->has((int) $combo['id'])) {
@@ -174,7 +195,7 @@ class CartHelper {
             $modelo = $modelos->get($id);
 
             $cart->combos()->attach($modelo->id, [
-                                        'price'     => $modelo->price,
+                                        'price'     => AjustesDeClienteHelper::ajustar($modelo->price, $ajustes),
                                         'cost'      => $modelo->cost,
                                         'amount'    => isset($combo['pivot']['amount']) ? $combo['pivot']['amount'] : 1,
                                         'notes'     => isset($combo['pivot']['notes']) ? $combo['pivot']['notes'] : null,
@@ -266,6 +287,11 @@ class CartHelper {
 
             $articulos = ArticleHelper::checkPriceTypes($articulos);
 
+            /* Los ajustes del cliente (mision descuentos-recargos-por-cliente) van ENCIMA de la
+               oferta: el precio de la linea es el de la oferta por el factor. Sin ajustes,
+               `ajustar()` devuelve el precio intacto y esto queda byte por byte como antes. */
+            $ajustes = AjustesDeClienteHelper::del_comprador($cart->user_id);
+
             foreach ($lineas as $linea) {
                 $articulo = $articulos->firstWhere('id', $linea->article_id);
 
@@ -277,21 +303,26 @@ class CartHelper {
                                 && !empty($articulo->oferta_personalizada['precio_aplicado']);
 
                 /* La base la resuelve el servidor: `precio_sin_oferta` cuando hay oferta, y el
-                   `final_price` de checkPriceTypes cuando no. */
+                   `final_price` de checkPriceTypes cuando no.
+
+                   🔴 Sin oferta la base es el precio SIN los ajustes del cliente y no
+                   `final_price` a secas: checkPriceTypes() ya le aplico el factor a
+                   `final_price`, y abajo se aplica otra vez sobre lo que devuelva
+                   precioDeLinea(). Con `final_price` el factor iria dos veces. */
                 $base = $tiene_oferta && isset($articulo->precio_sin_oferta)
                         ? $articulo->precio_sin_oferta
-                        : $articulo->final_price;
+                        : AjustesDeClienteHelper::precio_sin_ajustes($articulo);
 
                 if (!is_numeric($base)) {
                     continue;
                 }
 
-                $precio = ClientOfferHelper::precioDeLinea([
+                $precio = AjustesDeClienteHelper::ajustar(ClientOfferHelper::precioDeLinea([
                     'id'                => $articulo->id,
                     'amount'            => $linea->amount,
                     'precio_sin_oferta' => $base,
                     'precio_pausado'    => isset($articulo->precio_pausado) ? $articulo->precio_pausado : null,
-                ], $cart->user_id);
+                ], $cart->user_id), $ajustes);
 
                 if (is_null($precio) || (float) $precio === (float) $linea->price) {
                     continue;
@@ -420,6 +451,9 @@ class CartHelper {
                 $cart->user_id
             );
 
+            /* Los ajustes del cliente del comprador de la sesion, para el precio del tramo. */
+            $ajustes = AjustesDeClienteHelper::del_comprador($cart->user_id);
+
             foreach ($lineas as $linea) {
                 $articulo = $articulos->firstWhere('id', $linea->article_id);
 
@@ -432,7 +466,14 @@ class CartHelper {
                     continue;
                 }
 
-                $precio = ArticlePriceRangeHelper::precio($articulo->article_price_ranges, $linea->amount);
+                /* El tramo sale de la base SIN ajustar (AjustesDeClienteHelper no toca
+                   `article_price_ranges`), asi que el factor del cliente se aplica aca, una vez.
+                   El `final_price` de la vuelta al precio normal, mas abajo, ya viene ajustado de
+                   checkPriceTypes() y no se vuelve a multiplicar. */
+                $precio = AjustesDeClienteHelper::ajustar(
+                    ArticlePriceRangeHelper::precio($articulo->article_price_ranges, $linea->amount),
+                    $ajustes
+                );
 
                 if (is_null($precio)) {
                     /*
@@ -488,6 +529,246 @@ class CartHelper {
     }
 
     /**
+     * 🔴 Vuelve a poner cada linea del carrito al precio que le corresponde con los descuentos y
+     * recargos que el cliente del comprador tiene vinculados HOY (mision
+     * descuentos-recargos-por-cliente). Corre en `set_total()`, despues de las otras dos.
+     *
+     * ── EL HUECO QUE TAPA ────────────────────────────────────────────────────────────────────
+     * `store` y `update` pricean cada linea con el factor del momento (`get_price()`,
+     * `attach_combos()`, `attach_promociones_vinoteca()`). Pero `update_article_amount()` —el boton
+     * "Actualizar"— no vuelve a pasar por ahi, y el pedido se arma con lo que quedo guardado. Si
+     * entre medio el comerciante desvinculo un descuento o le cambio el porcentaje, la linea
+     * seguiria cobrando el factor viejo mientras el pedido registra los ajustes nuevos: se rompe
+     * la invariante de la mision ("los pivots del pedido son exactamente los ajustes con los que
+     * se pricearon sus renglones").
+     *
+     * ── LA BASE LA DERIVA EL SERVIDOR ────────────────────────────────────────────────────────
+     * Igual que `resincronizar_precios_de_oferta`: se cargan los articulos por el mismo camino que
+     * `getFullModel()` y se pasan por `checkPriceTypes()`, que es lo que la tienda le muestra al
+     * comprador. El precio de la linea es `precio_sin_ajustes_de_cliente × factor` (o sea, el
+     * `final_price` que ve en pantalla). Combos y promos, desde su precio en la base.
+     *
+     * ── SIMETRICA, PERO SOLO CON AJUSTES VIGENTES ────────────────────────────────────────────
+     * Con el cliente CON ajustes, cada linea tiene un ajuste que gobierna el servidor — lo mismo
+     * que una linea con oferta vigente en `resincronizar_precios_de_oferta` —, asi que se escribe
+     * para arriba o para abajo: es el numero que el comprador ve y el que el pedido va a declarar.
+     *
+     * Con el cliente SIN ajustes no se escribe NADA y no se lee ni una linea. Es a proposito:
+     * ahi no hay un ajuste que gobernar, y bajar una linea que quedo por encima del precio de hoy
+     * seria otorgar un descuento que nadie autorizo (el lado B de la asimetria de ofertas, fijado
+     * por `ResincronizacionDelCarritoTest::test_una_linea_sin_oferta_por_encima_de_la_base_no_se_toca`).
+     * El borde que queda, dicho de frente: si el comerciante desvincula TODOS los ajustes de un
+     * cliente con el carrito armado, la linea no se corrige aca. Si era un descuento, la sube la
+     * resincronizacion de ofertas (asimetria hacia arriba, cuando esas tablas estan). Si era un
+     * recargo, queda cobrando el recargo viejo hasta el proximo guardado del carrito (`update`,
+     * que el SPA dispara en cada paso del checkout y que vuelve a pricear todo por `get_price()`).
+     *
+     * ── QUE LINEAS NO SON SUYAS ──────────────────────────────────────────────────────────────
+     *   - Con oferta personalizada (`precio_sin_oferta`): las gobierna la resincronizacion de
+     *     ofertas, que ya aplica el factor encima de la oferta.
+     *   - Con un tramo por ARTICULO que matchea la cantidad: las gobierna la de tramos, idem.
+     *   - Con la extension de rangos por CATEGORIA: el precio depende de las cantidades de TODO el
+     *     payload (`get_price_range`) y reconstruirlo aca seria una segunda copia del calculo. No se
+     *     tocan; valen las que dejo `get_price()` con el factor del ultimo guardado.
+     *   - Con precio pausado o sin precio numerico: no hay importe.
+     *
+     * @param  \App\Cart  $cart
+     * @return bool  True si escribio alguna linea (y `set_total()` tiene que releer).
+     */
+    static function resincronizar_ajustes_de_cliente($cart) {
+
+        $escribio = false;
+
+        try {
+            /* Lo barato primero: sin sesion o sin cliente del ERP, 0 queries; sin tablas, la del
+               information_schema memoizada. */
+            if (!AjustesDeClienteHelper::hayContrato()) {
+                return false;
+            }
+
+            $ajustes = AjustesDeClienteHelper::del_comprador($cart->user_id);
+
+            /* Sin ajustes vigentes no hay nada que gobernar. Ver el docblock. */
+            if (!AjustesDeClienteHelper::tiene_ajustes($ajustes)) {
+                return false;
+            }
+
+            $escribio = Self::resincronizar_articulos_con_ajustes($cart, $ajustes) || $escribio;
+            $escribio = Self::resincronizar_promociones_con_ajustes($cart, $ajustes) || $escribio;
+
+            if (ComboEsquemaHelper::disponible()) {
+                $escribio = Self::resincronizar_combos_con_ajustes($cart, $ajustes) || $escribio;
+            }
+        } catch (\Throwable $e) {
+            /* Un ajuste que falla no puede romper el carrito: queda el precio que ya estaba. */
+            Log::warning('CartHelper::resincronizar_ajustes_de_cliente fallo, el carrito sigue con el precio anterior.', [
+                'cart_id'   => $cart->id,
+                'excepcion' => get_class($e),
+                'mensaje'   => $e->getMessage(),
+            ]);
+        }
+
+        return $escribio;
+    }
+
+    /**
+     * Las lineas de articulos de `resincronizar_ajustes_de_cliente()`.
+     *
+     * @param  \App\Cart  $cart
+     * @param  array  $ajustes
+     * @return bool
+     */
+    private static function resincronizar_articulos_con_ajustes($cart, $ajustes) {
+
+        /* Ver el docblock de arriba: con rangos por categoria el precio no se puede reconstruir. */
+        if (CommerceHelper::hasExtencion('lista_de_precios_por_rango_de_cantidad_vendida', null, $cart->user_id)) {
+            return false;
+        }
+
+        $lineas = DB::table('article_cart')->where('cart_id', $cart->id)->get();
+
+        if (count($lineas) == 0) {
+            return false;
+        }
+
+        $articulos = Article::whereIn('id', $lineas->pluck('article_id')->unique()->all())
+                            ->withAll()
+                            ->get();
+
+        if (count($articulos) == 0) {
+            return false;
+        }
+
+        $articulos = ArticleHelper::checkPriceTypes($articulos);
+
+        $escribio = false;
+
+        foreach ($lineas as $linea) {
+            $articulo = $articulos->firstWhere('id', $linea->article_id);
+
+            if (is_null($articulo)) {
+                continue;
+            }
+
+            if (isset($articulo->precio_pausado) && $articulo->precio_pausado) {
+                continue;
+            }
+
+            /* Carril de ofertas. */
+            if (isset($articulo->precio_sin_oferta) && is_numeric($articulo->precio_sin_oferta)) {
+                continue;
+            }
+
+            /* Carril de tramos por articulo, solo si un tramo matchea ESTA cantidad. */
+            if (
+                $articulo->relationLoaded('article_price_ranges')
+                && !is_null(ArticlePriceRangeHelper::precio($articulo->article_price_ranges, $linea->amount))
+            ) {
+                continue;
+            }
+
+            $base = AjustesDeClienteHelper::precio_sin_ajustes($articulo);
+
+            if (!is_numeric($base)) {
+                continue;
+            }
+
+            $precio = AjustesDeClienteHelper::ajustar($base, $ajustes);
+
+            if ((float) $precio === (float) $linea->price) {
+                continue;
+            }
+
+            DB::table('article_cart')->where('id', $linea->id)->update(['price' => $precio]);
+            $escribio = true;
+        }
+
+        return $escribio;
+    }
+
+    /**
+     * Las lineas de promociones de vinoteca de `resincronizar_ajustes_de_cliente()`. La base es
+     * `promocion_vinotecas.final_price` del comercio del carrito.
+     *
+     * @param  \App\Cart  $cart
+     * @param  array  $ajustes
+     * @return bool
+     */
+    private static function resincronizar_promociones_con_ajustes($cart, $ajustes) {
+
+        $lineas = DB::table('cart_promocion_vinoteca')->where('cart_id', $cart->id)->get();
+
+        if (count($lineas) == 0) {
+            return false;
+        }
+
+        $promos = PromocionVinoteca::whereIn('id', $lineas->pluck('promocion_vinoteca_id')->unique()->all())
+                                    ->where('user_id', $cart->user_id)
+                                    ->get()
+                                    ->keyBy('id');
+
+        return Self::escribir_lineas_de_precio_fijo('cart_promocion_vinoteca', $lineas, 'promocion_vinoteca_id', $promos, 'final_price', $ajustes);
+    }
+
+    /**
+     * Las lineas de combos de `resincronizar_ajustes_de_cliente()`. La base es `combos.price`.
+     *
+     * @param  \App\Cart  $cart
+     * @param  array  $ajustes
+     * @return bool
+     */
+    private static function resincronizar_combos_con_ajustes($cart, $ajustes) {
+
+        $lineas = DB::table('cart_combo')->where('cart_id', $cart->id)->get();
+
+        if (count($lineas) == 0) {
+            return false;
+        }
+
+        $combos = Combo::whereIn('id', $lineas->pluck('combo_id')->unique()->all())
+                        ->where('user_id', $cart->user_id)
+                        ->get()
+                        ->keyBy('id');
+
+        return Self::escribir_lineas_de_precio_fijo('cart_combo', $lineas, 'combo_id', $combos, 'price', $ajustes);
+    }
+
+    /**
+     * Escribe `round(base × factor, 2)` en cada linea de un pivot de precio fijo que no lo tenga.
+     *
+     * @param  string  $tabla
+     * @param  \Illuminate\Support\Collection  $lineas
+     * @param  string  $columna_id
+     * @param  \Illuminate\Support\Collection  $modelos  keyBy('id')
+     * @param  string  $columna_precio
+     * @param  array  $ajustes
+     * @return bool
+     */
+    private static function escribir_lineas_de_precio_fijo($tabla, $lineas, $columna_id, $modelos, $columna_precio, $ajustes) {
+
+        $escribio = false;
+
+        foreach ($lineas as $linea) {
+            $modelo = $modelos->get((int) $linea->{$columna_id});
+
+            if (is_null($modelo) || !is_numeric($modelo->{$columna_precio})) {
+                continue;
+            }
+
+            $precio = AjustesDeClienteHelper::ajustar($modelo->{$columna_precio}, $ajustes);
+
+            if ((float) $precio === (float) $linea->price) {
+                continue;
+            }
+
+            DB::table($tabla)->where('id', $linea->id)->update(['price' => $precio]);
+            $escribio = true;
+        }
+
+        return $escribio;
+    }
+
+    /**
      * ¿Alguna linea de este carrito es de un articulo con tramos cargados? Es la guarda de
      * `resincronizar_precios_por_rango()`, y lo que la vuelve barata es DONDE se la pregunta.
      *
@@ -534,6 +815,16 @@ class CartHelper {
             $cart->load('articles');
         }
 
+        /* Ultima, porque es la unica simetrica y gobierna solo las lineas que las otras dos no
+           gobiernan. Si escribio algo, lo que hay en memoria es de antes y hay que releerlo. */
+        if (Self::resincronizar_ajustes_de_cliente($cart)) {
+            $cart->load('articles', 'promociones_vinoteca');
+
+            if (ComboEsquemaHelper::disponible()) {
+                $cart->load('combos');
+            }
+        }
+
         $total = 0;
 
         foreach ($cart->articles as $article) {
@@ -556,7 +847,59 @@ class CartHelper {
         $cart->save();
     }
 
+    /**
+     * El precio de una linea del carrito: la cadena de siempre (oferta > tramo > rango por
+     * categoria > final_price > resuelto por el servidor) y, al final, los descuentos y recargos
+     * del cliente del comprador (mision descuentos-recargos-por-cliente).
+     *
+     * ── 🔴 POR QUE EL FACTOR NO SE APLICA ADENTRO DE LA CADENA, Y POR QUE SE "DESAJUSTA" PRIMERO ─
+     *
+     * Desde esta mision, `checkPriceTypes()` le deja a cada articulo el `final_price` YA
+     * ajustado (1000 con 10% de descuento y 5% de recargo -> 945), y el SPA reenvia ese mismo
+     * objeto en el carrito. Los eslabones de la cadena no son parejos:
+     *   - `final_price` del payload y `ranges[].price` (rangos por categoria) llegan AJUSTADOS;
+     *   - la oferta (`precio_sin_oferta`), los tramos por articulo (de la base), los combos (de la
+     *     base) y el respaldo del servidor llegan SIN ajustar.
+     * Aplicar el factor "donde falte" en cada eslabon es exactamente como se termina cobrando
+     * 1000 × 0,945 × 0,945 = 893,03 en un camino y 945 en otro. Por eso la regla es una sola:
+     * primero se devuelve TODA la linea a su base sin ajustes (`desajustar_linea`, que usa
+     * `precio_sin_ajustes_de_cliente`), la cadena corre sobre bases puras como en master, y el
+     * factor se aplica UNA vez, aca, con los porcentajes leidos de la base y nunca del payload.
+     * Si venis a "simplificar" multiplicando adentro de un eslabon, rompes esa invariante.
+     *
+     * Sin contrato (invitado, comprador sin cliente del ERP, o base sin las tablas) no se toca
+     * nada: la linea sale por `get_price_sin_ajustes_de_cliente()` byte por byte como en master.
+     *
+     * @param  array  $articles  todo el payload (la cadena mira las cantidades de las otras lineas)
+     * @param  array  $article  la linea
+     * @param  bool  $has_price_ranges
+     * @param  mixed  $article_groups
+     * @param  int|null  $user_id  comercio dueño del CARRITO
+     * @return mixed
+     */
     static function get_price($articles, $article, $has_price_ranges, $article_groups, $user_id = null) {
+
+        if (!AjustesDeClienteHelper::hayContrato()) {
+            return Self::get_price_sin_ajustes_de_cliente($articles, $article, $has_price_ranges, $article_groups, $user_id);
+        }
+
+        $precio = Self::get_price_sin_ajustes_de_cliente(
+            $articles,
+            AjustesDeClienteHelper::desajustar_linea($article),
+            $has_price_ranges,
+            $article_groups,
+            $user_id
+        );
+
+        return AjustesDeClienteHelper::ajustar($precio, AjustesDeClienteHelper::del_comprador($user_id));
+    }
+
+    /**
+     * La cadena de precedencia de una linea, SIN los ajustes del cliente. Es el `get_price()` de
+     * antes de la mision descuentos-recargos-por-cliente, intacto salvo el respaldo del servidor
+     * (ver `precio_resuelto_por_el_servidor`). Se llama solo desde `get_price()`.
+     */
+    static function get_price_sin_ajustes_de_cliente($articles, $article, $has_price_ranges, $article_groups, $user_id = null) {
 
         /*
          * 🔴 La oferta personalizada gana, y la resuelve EL SERVIDOR contra la base.
@@ -704,7 +1047,10 @@ class CartHelper {
 
         $resuelto = $articulos->first();
 
-        $precio = $resuelto->final_price;
+        /* 🔴 La base SIN los ajustes del cliente: checkPriceTypes() ya le aplico el factor a
+           `final_price`, y `get_price()` lo aplica al final de la cadena. Sin ajustes,
+           `precio_sin_ajustes()` devuelve `final_price` tal cual, como antes. */
+        $precio = AjustesDeClienteHelper::precio_sin_ajustes($resuelto);
 
         if (isset($resuelto->precio_sin_oferta) && is_numeric($resuelto->precio_sin_oferta)) {
             $precio_con_oferta = ClientOfferHelper::precioDeLinea(
@@ -819,7 +1165,14 @@ class CartHelper {
                 $combo->is_combo = true;
                 $combo->final_price = $combo->price;
             }
+
+            AjustesDeClienteHelper::aplicar_a_precios_fijos($model->combos, $model->user_id);
         }
+
+        /* Las promos y los combos vuelven con el precio ajustado, su base y sus badges, igual que
+           los articulos (que ya pasaron por checkPriceTypes). La base viaja para que el proximo
+           guardado del carrito no le aplique el factor dos veces (ver get_price()). */
+        AjustesDeClienteHelper::aplicar_a_precios_fijos($model->promociones_vinoteca, $model->user_id);
 
         $model = Self::check_repetidos($model);
 

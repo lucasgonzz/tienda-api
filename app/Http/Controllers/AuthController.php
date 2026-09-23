@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Buyer;
 use App\Cupon;
+use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\BuyerHelper;
 use App\Http\Controllers\Helpers\CuponHelper;
 use App\Http\Controllers\Helpers\GoogleLoginHelper;
@@ -104,6 +105,9 @@ class AuthController extends Controller
                         ->withAll()
                         ->first();
         Self::setLastLogin($buyer);
+        // Ajustes del cliente para el desplegable del nombre (login, registro y login social).
+        // Va despues de setLastLogin a proposito y como relacion en memoria: ver el helper.
+        AjustesDeClienteHelper::colgar_del_comprador($buyer);
         // $buyer = BuyerHelper::addMercadoPagoCards($buyer);
         return $buyer;
     }

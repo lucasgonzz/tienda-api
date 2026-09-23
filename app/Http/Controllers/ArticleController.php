@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Article;
 use App\Events\ArticleViewedEvent;
+use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\HomeHelper;
 use App\Http\Controllers\Helpers\RecomendacionesHelper;
@@ -38,6 +39,11 @@ class ArticleController extends Controller {
                             ->where('online', 1)
                             ->withAll()
                             ->first();
+            /* La ficha de una promo muestra el precio con los ajustes del cliente del comprador,
+               igual que la tarjeta de la home (mision descuentos-recargos-por-cliente). */
+            if (!is_null($promo)) {
+                AjustesDeClienteHelper::aplicar_a_precios_fijos([$promo], $commerce_id);
+            }
         	return response()->json(['article' => $promo], 200);
         }
 

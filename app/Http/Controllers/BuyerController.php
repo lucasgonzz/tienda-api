@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Buyer;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\BuyerHelper;
 use App\Http\Controllers\Helpers\StringHelper;
 use Exception;
@@ -21,6 +22,10 @@ class BuyerController extends Controller
 								->withAll()
 								->first();
 			AuthController::setLastLogin($buyer);
+			// Los descuentos y recargos que el comerciante le vinculo a su cliente del ERP, para
+			// el desplegable del nombre. Via helper y no como relacion eager: sin las tablas un
+			// with() tumbaria /api/user.
+			AjustesDeClienteHelper::colgar_del_comprador($buyer);
 			// $buyer = BuyerHelper::addMercadoPagoCards($buyer);
 			return response()->json(['buyer' => $buyer], 200);
 		}

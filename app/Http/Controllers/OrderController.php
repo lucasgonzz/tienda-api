@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Buyer;
 use App\Cart;
+use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
@@ -171,6 +172,25 @@ class OrderController extends Controller
                 return response()->json(['error' => 'No hay comprador identificado para este pedido'], 401);
             }
 
+            /*
+             * Los descuentos y recargos del cliente con los que se pricea este carrito (mision
+             * descuentos-recargos-por-cliente). Son los del comprador de la SESION —el que priceo
+             * las lineas, igual que la oferta personalizada—, no los del `buyer_id` que un vendedor
+             * puede mandar a nombre de otro.
+             *
+             * 🔴 La invariante: los pivots del pedido son EXACTAMENTE los ajustes con los que se
+             * pricearon sus renglones. `set_total()` resincroniza las lineas con los ajustes de hoy,
+             * asi que se corre una vez mas antes de crear el pedido por si el comerciante los cambio
+             * despues del ultimo guardado del carrito. Solo cuando todavia no se cobro nada: con
+             * `payment_id` (Mercado Pago ya cobro la preferencia armada con estas lineas) tocar los
+             * precios dejaria el pedido distinto de lo pagado, y eso es peor que el desfase.
+             */
+            $ajustes_de_cliente = AjustesDeClienteHelper::del_comprador($cart->user_id);
+
+            if (AjustesDeClienteHelper::tiene_ajustes($ajustes_de_cliente) && empty($cart->payment_id)) {
+                CartHelper::set_total($cart);
+            }
+
             // Envío por correo (misión zipnova-envios): el precio guardado tiene que ser el de
             // las líneas REALES del carrito y no haber vencido. Si un camino cambió las líneas
             // sin re-cotizar (o pasaron las 24 horas), se corta ANTES de crear el pedido y sin
@@ -257,6 +277,12 @@ class OrderController extends Controller
             // combos-y-rangos-de-precio). Si esta base no tiene `order_combo` el helper no hace
             // nada y el pedido se crea como siempre.
             OrderHelper::attachCombos($cart, $order);
+
+            // Los ajustes del cliente con su porcentaje de hoy (la foto), para que el ERP los
+            // muestre en el pedido y se los pase a la venta al confirmarlo. Sin ajustes o sin las
+            // tablas del pedido no escribe nada: el pedido queda exactamente como hoy.
+            AjustesDeClienteHelper::guardar_en_el_pedido($order->id, $ajustes_de_cliente);
+
             OrderHelper::updateCurrentCart($cart, $order);
             OrderHelper::deleteOrderCart($cart);
 

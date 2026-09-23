@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\ArticlePrice;
 use App\ArticleVariant;
 use App\Color;
+use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\ClientOfferHelper;
 use App\Http\Controllers\Helpers\CommerceHelper;
 use App\Http\Controllers\Helpers\Numbers;
@@ -188,6 +189,16 @@ class ArticleHelper
          * muestran la oferta sin tocarse ni uno.
          */
         $articles = ClientOfferHelper::aplicar($articles);
+
+        /*
+         * Los descuentos y recargos que el comerciante le vinculo al cliente del comprador
+         * (mision descuentos-recargos-por-cliente). Van DESPUES de la oferta personalizada y no
+         * antes, a proposito: la decision de Lucas es que se aplican ENCIMA del precio de oferta
+         * (oferta 20% + descuento 10% sobre 1000 = 720). Invertir el orden daria el mismo numero
+         * pero dejaria `precio_sin_oferta` ajustado y la oferta calculada sobre una base que ya no
+         * es la de lista.
+         */
+        $articles = AjustesDeClienteHelper::aplicar($articles);
 
         return $articles;
     }

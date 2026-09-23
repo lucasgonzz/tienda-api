@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Article;
 use App\Combo;
+use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Icon;
 use App\PromocionVinoteca;
 use App\StockMovement;
@@ -81,6 +82,10 @@ class HomeHelper
             
             $promocion_vinoteca->is_promocion_vinoteca = true;
         }
+        /* Decision 2 de la mision descuentos-recargos-por-cliente: los ajustes del cliente del
+           comprador van sobre todo lo comprable, asi que la tarjeta de la promo muestra el precio
+           que despues cobra el carrito. Sin comprador vinculado no toca nada. */
+        AjustesDeClienteHelper::aplicar_a_precios_fijos($promociones_vinoteca, $commerce_id);
         return $promociones_vinoteca;
     }
 
@@ -118,6 +123,9 @@ class HomeHelper
             $combo->is_combo = true;
             $combo->final_price = $combo->price;
         }
+
+        /* Idem promos: el combo se muestra con los ajustes del cliente aplicados. */
+        AjustesDeClienteHelper::aplicar_a_precios_fijos($combos, $commerce_id);
 
         return $combos;
     }
