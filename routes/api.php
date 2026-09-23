@@ -38,6 +38,29 @@ Route::get('/commerce/workdays/{commerce_id}',
 	'CommerceController@workdays'
 );
 
+// SEO (mision seo-tiendas, 23/9/2026). Las consume seo.php, la capa PHP del dist de tienda-spa,
+// para armarle a los crawlers el head y un cuerpo estatico con links reales. El contrato (las
+// nueve claves de `pagina` y el XML de `sitemap`) esta en el docblock de SeoPaginas.
+//
+// Publicas, sin auth: las llama el servidor de la tienda, nunca un comprador.
+//
+// 🔴 El withoutMiddleware('throttle:api') es por el mismo motivo que buyer-tracking/events,
+// pero al reves: aca TODAS las requests vienen de UNA sola IP (el servidor donde corre
+// seo.php), asi que el cubo de 60 por minuto por IP del grupo `api` le pondria techo a lo que
+// Google puede recorrer de la tienda entera. Cada ruta conserva su throttle propio.
+//
+// El tercer parametro del throttle (el prefijo) les da un cubo aparte a cada una: sin el,
+// Laravel usa la misma clave (dominio + IP) para todos los `throttle:N,M` y las visitas a
+// `pagina` le comerian el cupo a `sitemap` (y a /buyer, que es 20 por minuto).
+Route::get('/seo/pagina/{commerce_id}', 'SeoController@pagina')
+	->where('commerce_id', '[0-9]+')
+	->middleware('throttle:120,1,seo-pagina')
+	->withoutMiddleware('throttle:api');
+Route::get('/seo/sitemap/{commerce_id}', 'SeoController@sitemap')
+	->where('commerce_id', '[0-9]+')
+	->middleware('throttle:30,1,seo-sitemap')
+	->withoutMiddleware('throttle:api');
+
 // Nav
 Route::get('/articles/names/{commerce_id}',
 	'ArticleController@names'
