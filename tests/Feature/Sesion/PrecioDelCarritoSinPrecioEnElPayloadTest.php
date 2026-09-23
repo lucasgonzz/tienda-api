@@ -122,6 +122,22 @@ class PrecioDelCarritoSinPrecioEnElPayloadTest extends TestCase
         $this->assertEquals(self::PRECIO_DE_SU_LISTA, (float) $this->precioDeLinea(null));
     }
 
+    /**
+     * Una linea que directamente no trae la clave `final_price` tampoco revienta ("Undefined
+     * array key" era un 500 antes de llegar al respaldo): se resuelve igual que la null.
+     */
+    public function test_una_linea_sin_la_clave_final_price_se_resuelve_del_lado_del_servidor()
+    {
+        $this->actingAs($this->compradorVinculado(null), 'buyer');
+
+        $linea = $this->linea(null);
+        unset($linea['final_price']);
+
+        $precio = CartHelper::get_price([$linea], $linea, false, collect(), $this->comercio->id);
+
+        $this->assertEquals(self::PRECIO_DE_LA_COLUMNA, (float) $precio);
+    }
+
     /** El anonimo en tienda restringida sigue sin precio: el servidor tampoco se lo da. */
     public function test_el_anonimo_en_tienda_restringida_sigue_sin_precio()
     {
