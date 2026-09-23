@@ -57,11 +57,43 @@ use Symfony\Component\HttpFoundation\ResponseHeaderBag;
  *
  * Para la segunda hace falta memoria: cuando un request termina con el id CAMBIADO y el id de
  * arranque EXISTÍA (o sea, un login o un logout de verdad), se deja en el cache una MARCA DE
- * MIGRACIÓN para el id viejo, con TTL de diez minutos, antes de mandar la cookie nueva.
+ * MIGRACIÓN para el id viejo, con TTL de dos minutos, antes de mandar la cookie nueva. Dos
+ * minutos alcanzan para los requests lentos que estaban en vuelo al momento del login, y
+ * achican cualquier otro borde (ver abajo).
  *
  * Al terminar un request con el id SIN cambiar, se saltea el save y la cookie si:
  *   (a) el id existía al arrancar y ya no existe, o
- *   (b) hay marca de migración para ese id, exista o no el archivo.
+ *   (b) hay marca de migración para ese id, exista o no el archivo — salvo en la ruta de la
+ *       cookie CSRF de Sanctum, que queda exenta de esta regla (no de la (a)).
+ *
+ * ── POR QUÉ LA COOKIE CSRF QUEDA EXENTA DE LA MARCA ─────────────────────────────────────────
+ *
+ * La respuesta del login o del logout puede no llegar NUNCA al navegador: el comprador recargó
+ * mientras el login tardaba, o cerró la pestaña. El servidor igual migró o destruyó el id viejo
+ * y lo marcó, y el navegador se queda con esa cookie. Sin la excepción, cada request con ese id
+ * se saltea el save: `GET /sanctum/csrf-cookie` emite un token que no se guarda, el
+ * `POST /login` siguiente trae otro → 419, y el SPA muestra "Credenciales incorrectas" hasta
+ * que vence la marca (lo reprodujo el revisor de merge). Con la clase del framework, ese id se
+ * recrea anónimo y el comprador se vuelve a loguear en el momento.
+ *
+ * Como el primer paso de cualquier recarga o login del SPA (`auth/me` y `auth/csrf`) es ese
+ * GET, dejarlo guardar recrea el id viejo como una sesión ANÓNIMA con su token (nunca adopta la
+ * sesión nueva), y el login siguiente anda. La regla (a) sí le sigue valiendo: un GET a esa ruta
+ * que estaba EN VUELO cuando el login destruyó el id no lo resucita.
+ *
+ * El costo, dicho de frente: un GET a esa ruta con el id viejo que llega DESPUÉS del login pero
+ * antes de que el navegador reciba la cookie nueva vuelve a mandar el id viejo — la ventana 2
+ * de arriba, solo para esa ruta. El SPA la pide al arrancar y justo antes de loguear, no en el
+ * medio de la navegación, así que es angosta. Y la marca NO se borra al recrear: en esos dos
+ * minutos el resto de los requests con ese id leen la sesión recreada (el POST /login valida su
+ * token contra lo que está en disco) pero no la guardan.
+ *
+ * ── UN BORDE MENOR, ACEPTADO ────────────────────────────────────────────────────────────────
+ *
+ * Un request que arranca en los últimos segundos de la vida de la sesión (`lifetime`) y termina
+ * después de que venció cae en la regla (a) —existía al arrancar, ya no— y no la renueva. Solo
+ * le pasa a quien estuvo inactivo todo el lifetime, y el siguiente request arranca una sesión
+ * nueva como con la clase del framework.
  * En ese camino también se saca de la respuesta la cookie `XSRF-TOKEN`: `VerifyCsrfToken` corre
  * adentro de este middleware y la agrega con el token de la sesión vieja, y después de un logout
  * (que hace `regenerateToken`) eso deja el XSRF desincronizado y el próximo POST da 419.
@@ -89,9 +121,10 @@ class StartSession extends BaseStartSession
 {
     /**
      * Cuánto vive la marca de migración de un id, en segundos. Alcanza con cubrir los requests
-     * que el navegador tenía en vuelo al momento del login/logout.
+     * que el navegador tenía en vuelo al momento del login/logout; más largo solo agranda los
+     * bordes del docblock de la clase.
      */
-    const SEGUNDOS_DE_LA_MARCA = 600;
+    const SEGUNDOS_DE_LA_MARCA = 120;
 
     /**
      * Igual que el de la clase base, salvo los casos del docblock de la clase.
@@ -129,7 +162,7 @@ class StartSession extends BaseStartSession
                 $this->marcarMigracion($id_al_arrancar);
             }
 
-        } else if ($this->laReemplazoOtroRequest($session, $id_al_arrancar, $existia_al_arrancar)) {
+        } else if ($this->laReemplazoOtroRequest($request, $session, $id_al_arrancar, $existia_al_arrancar)) {
 
             /* Ni cookie ni save: ver el docblock de la clase. */
             $this->sacarCookieXsrf($response);
@@ -152,14 +185,16 @@ class StartSession extends BaseStartSession
      *
      *   (a) existía al arrancar y ya no existe: la destruyeron mientras este corría;
      *   (b) tiene marca de migración: la reemplazaron antes de que este llegara, o mientras
-     *       corría, exista o no el archivo.
+     *       corría, exista o no el archivo. No aplica a la ruta de la cookie CSRF de Sanctum
+     *       (ver el docblock de la clase).
      *
+     * @param  \Illuminate\Http\Request  $request
      * @param  \Illuminate\Contracts\Session\Session  $session
      * @param  string  $id_al_arrancar
      * @param  bool  $existia_al_arrancar
      * @return bool
      */
-    protected function laReemplazoOtroRequest($session, $id_al_arrancar, $existia_al_arrancar)
+    protected function laReemplazoOtroRequest(Request $request, $session, $id_al_arrancar, $existia_al_arrancar)
     {
         if ($existia_al_arrancar) {
             /* El handler de archivos pregunta con is_file()/filemtime(), y PHP cachea el stat
@@ -171,7 +206,31 @@ class StartSession extends BaseStartSession
             }
         }
 
+        if ($this->esLaRutaDeLaCookieCsrf($request)) {
+            return false;
+        }
+
         return $this->tieneMarcaDeMigracion($id_al_arrancar);
+    }
+
+    /**
+     * ¿Es `GET {sanctum.prefix}/csrf-cookie`? Sanctum la registra en
+     * `SanctumServiceProvider::defineRoutes()` con el nombre `sanctum.csrf-cookie`, bajo el
+     * prefijo `config('sanctum.prefix', 'sanctum')`. Se mira el nombre de la ruta cuando ya está
+     * resuelta, y el path como respaldo (por si el nombre cambia o el request no tiene ruta).
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return bool
+     */
+    protected function esLaRutaDeLaCookieCsrf(Request $request)
+    {
+        if ($request->route() && $request->routeIs('sanctum.csrf-cookie')) {
+            return true;
+        }
+
+        $path = trim(config('sanctum.prefix', 'sanctum'), '/').'/csrf-cookie';
+
+        return trim($request->path(), '/') === $path;
     }
 
     /**

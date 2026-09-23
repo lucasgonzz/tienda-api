@@ -278,6 +278,96 @@ class SesionDestruidaPorOtroRequestTest extends TestCase
     }
 
     /**
+     * 🔴 La respuesta del login NUNCA llego al navegador (recargo mientras tardaba): el servidor
+     * migro y marco el id viejo, y el navegador se quedo con esa cookie. El primer paso de la
+     * recarga es `GET /sanctum/csrf-cookie`: esa ruta esta exenta de la marca, asi que recrea
+     * el id viejo como sesion ANONIMA, guarda el token que emite y manda la cookie. El POST
+     * /login siguiente valida contra ese mismo token (sin esto: 419 durante toda la marca).
+     */
+    public function test_la_cookie_csrf_recrea_el_id_marcado_como_sesion_anonima_con_su_token()
+    {
+        $id_viejo = $this->sesionExistente();
+
+        /* El login que el navegador nunca recibio. */
+        $this->correr($id_viejo, function (Request $request) {
+            $request->session()->migrate(true);
+            $request->session()->put('login_buyer', 1187);
+        });
+        $this->assertSame('', $this->otroHandler()->read($id_viejo), 'El login destruyo el id viejo.');
+
+        $csrf = $this->correr($id_viejo, function (Request $request) {
+            return $this->respuestaConXsrf($request);
+        }, '/sanctum/csrf-cookie');
+
+        $this->assertSame($id_viejo, $this->cookieDeSesion($csrf),
+            'La cookie CSRF tiene que mandar la cookie de sesion del id recreado.');
+
+        $token_emitido = $this->cookieXsrf($csrf);
+        $this->assertNotNull($token_emitido);
+
+        $guardada = $this->leer($id_viejo);
+        $this->assertSame($token_emitido, $guardada['_token'] ?? null,
+            'El token que viaja en XSRF-TOKEN tiene que ser el que quedo guardado en la sesion.');
+        $this->assertArrayNotHasKey('login_buyer', $guardada,
+            'El id viejo se recrea ANONIMO: nunca adopta la sesion nueva del login.');
+
+        /* El POST /login siguiente: VerifyCsrfToken compara el token del header contra el de
+           la sesion que se lee de disco. */
+        $token_en_el_post = null;
+        $this->correr($id_viejo, function (Request $request) use (&$token_en_el_post) {
+            $token_en_el_post = $request->session()->token();
+        }, '/login', 'POST');
+
+        $this->assertSame($token_emitido, $token_en_el_post,
+            'El POST /login ve en la sesion el mismo token que se emitio: no hay 419.');
+    }
+
+    /**
+     * La exencion es solo de la marca: un `GET /sanctum/csrf-cookie` que estaba EN VUELO cuando
+     * el login destruyo el id (regla a) sigue sin guardar y sin mandar la cookie vieja.
+     */
+    public function test_la_cookie_csrf_en_vuelo_durante_el_login_no_resucita_el_id()
+    {
+        $id = $this->sesionExistente();
+
+        $csrf = $this->correr($id, function (Request $request) use ($id) {
+            $this->correr($id, function (Request $request) {
+                $request->session()->migrate(true);
+            });
+
+            return $this->respuestaConXsrf($request);
+        }, '/sanctum/csrf-cookie');
+
+        $this->assertNull($this->cookieDeSesion($csrf),
+            'La cookie CSRF en vuelo no puede pisarle al navegador la cookie del login.');
+        $this->assertNull($this->cookieXsrf($csrf));
+        $this->assertSame('', $this->otroHandler()->read($id), 'El id viejo no se recrea.');
+    }
+
+    /**
+     * La exencion no se filtra a otras rutas: con el id marcado, cualquier otra ruta (aunque se
+     * parezca) sigue sin guardar y sin cookie. La ventana de H1 para el resto de la API queda
+     * cubierta tambien por test_un_request_con_el_id_viejo_que_llega_despues_del_login_no_lo_resucita.
+     */
+    public function test_otra_ruta_con_el_id_marcado_sigue_sin_guardar_ni_mandar_la_cookie()
+    {
+        $id_viejo = $this->sesionExistente();
+
+        $this->correr($id_viejo, function (Request $request) {
+            $request->session()->migrate(true);
+        });
+
+        foreach (['/api/user', '/sanctum/csrf-cookie-no', '/api/sanctum/csrf-cookie'] as $ruta) {
+            $respuesta = $this->correr($id_viejo, function (Request $request) {
+                $request->session()->put('carritos_propios', [5209]);
+            }, $ruta);
+
+            $this->assertNull($this->cookieDeSesion($respuesta), "{$ruta} no puede mandar la cookie del id marcado.");
+            $this->assertSame('', $this->otroHandler()->read($id_viejo), "{$ruta} no puede recrear el id marcado.");
+        }
+    }
+
+    /**
      * Sin regresion: una cookie con un id que no existe (sesion vencida y barrida) y SIN marca
      * de migracion se trata como hoy: se manda la cookie y la sesion se guarda con ese id.
      */
@@ -299,13 +389,15 @@ class SesionDestruidaPorOtroRequestTest extends TestCase
      *
      * @param  string|null  $id  el id de la cookie, o null para un visitante sin cookie
      * @param  callable  $accion
+     * @param  string  $ruta
+     * @param  string  $metodo
      * @return \Illuminate\Http\Response
      */
-    private function correr($id, callable $accion)
+    private function correr($id, callable $accion, $ruta = '/api/articles', $metodo = 'GET')
     {
         $cookies = is_null($id) ? [] : [config('session.cookie') => $id];
 
-        $request = Request::create('/api/articles', 'GET', [], $cookies);
+        $request = Request::create($ruta, $metodo, [], $cookies);
 
         $middleware = new StartSession(new SessionManager($this->app));
 
