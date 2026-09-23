@@ -7,14 +7,20 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Session\Middleware\StartSession as BaseStartSession;
 use Illuminate\Session\SessionManager;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\Cookie;
 use Tests\TestCase;
 
 /**
- * Una respuesta que estaba en vuelo durante un login/logout no le vuelve a mandar al navegador
- * la cookie de la sesion que ese login/logout destruyo (mision tienda-precios-buyer-logueado,
+ * Un request que corre con el id de una sesion que un login/logout ya reemplazo no le vuelve a
+ * mandar al navegador esa cookie, ni resucita la sesion (mision tienda-precios-buyer-logueado,
  * 23/9/2026 — el caso medido en Fenix esta en el docblock de App\Http\Middleware\StartSession).
+ *
+ * Las dos ventanas: el request que salio ANTES del login y termino despues (la sesion existia al
+ * arrancar y ya no), y el que salio del navegador con la cookie vieja pero LLEGO despues del
+ * login (la sesion ya no existia al arrancar: lo frena la marca de migracion en el cache).
  *
  * ── Como se arma ─────────────────────────────────────────────────────────────────────────────
  *
@@ -160,10 +166,122 @@ class SesionDestruidaPorOtroRequestTest extends TestCase
     }
 
     /**
-     * Sin regresion: una cookie con un id que no existe (sesion vencida y barrida) se trata
-     * como hoy: se manda la cookie y la sesion se guarda con ese id.
+     * 🔴 LA SEGUNDA VENTANA (H1 del chequeo independiente): el login ya migro la sesion, y
+     * DESPUES llega un request que el navegador mando con la cookie vieja antes de recibir la
+     * nueva. Al arrancar, el id viejo ya no existe en disco — la regla de "existia y ya no" no lo
+     * ve —, y sin la marca de migracion lo guardaba y mandaba `Set-Cookie` con el id viejo.
+     *
+     * Corre anonimo con la sesion vacia (no se adopta la sesion nueva: eso anularia la
+     * proteccion contra fijacion de sesion de migrate(true)); solo no guarda ni manda cookies.
      */
-    public function test_una_cookie_con_un_id_que_no_existe_se_trata_como_siempre()
+    public function test_un_request_con_el_id_viejo_que_llega_despues_del_login_no_lo_resucita()
+    {
+        $id_viejo = $this->sesionExistente();
+
+        $login = $this->correr($id_viejo, function (Request $request) {
+            $request->session()->migrate(true);
+            $request->session()->put('login_buyer', 1187);
+        });
+        $id_nuevo = $this->cookieDeSesion($login);
+        $this->assertNotSame($id_viejo, $id_nuevo);
+
+        $sesion_vista = null;
+        $respuesta = $this->correr($id_viejo, function (Request $request) use (&$sesion_vista) {
+            $sesion_vista = $request->session()->all();
+            $request->session()->put('carritos_propios', [5209]);
+
+            return $this->respuestaConXsrf($request);
+        });
+
+        $this->assertNull($this->cookieDeSesion($respuesta),
+            'El request que llego tarde con el id viejo no puede pisarle al navegador la cookie del login.');
+        $this->assertNull($this->cookieXsrf($respuesta),
+            'Tampoco el XSRF-TOKEN de la sesion vieja.');
+        $this->assertSame('', $this->otroHandler()->read($id_viejo),
+            'El archivo del id viejo no se puede recrear.');
+        $this->assertArrayNotHasKey('login_buyer', $sesion_vista,
+            'El request con el id viejo NO adopta la sesion nueva: corre anonimo, como hoy.');
+        $this->assertSame(1187, $this->leer($id_nuevo)['login_buyer'] ?? null,
+            'La sesion nueva sigue intacta.');
+    }
+
+    /**
+     * El logout con `invalidate()` mientras un request logueado esta en vuelo: la respuesta en
+     * vuelo no resucita la sesion logueada ni manda el XSRF-TOKEN viejo (que despues del
+     * `regenerateToken` del logout dejaria el proximo POST en 419).
+     */
+    public function test_un_request_en_vuelo_durante_el_logout_no_manda_la_cookie_ni_el_xsrf()
+    {
+        $id = $this->sesionExistente();
+
+        $logout = null;
+
+        $en_vuelo = $this->correr($id, function (Request $request) use ($id, &$logout) {
+            $logout = $this->correr($id, function (Request $request) {
+                $request->session()->invalidate();
+                $request->session()->regenerateToken();
+            });
+
+            return $this->respuestaConXsrf($request);
+        });
+
+        $this->assertNotNull($this->cookieDeSesion($logout), 'El logout manda su cookie nueva.');
+        $this->assertNotSame($id, $this->cookieDeSesion($logout));
+
+        $this->assertNull($this->cookieDeSesion($en_vuelo),
+            'La respuesta en vuelo no puede devolverle al navegador la sesion logueada.');
+        $this->assertNull($this->cookieXsrf($en_vuelo),
+            'Ni el XSRF-TOKEN de la sesion que el logout invalido.');
+        $this->assertSame('', $this->otroHandler()->read($id));
+    }
+
+    /**
+     * Si el cache tira una excepcion, el request no se rompe: el login manda su cookie nueva y
+     * un request comun sigue mandando la suya y guardando la sesion.
+     */
+    public function test_un_cache_que_tira_una_excepcion_no_rompe_el_request()
+    {
+        Cache::shouldReceive('put')->andThrow(new \RuntimeException('cache caido'));
+        Cache::shouldReceive('has')->andThrow(new \RuntimeException('cache caido'));
+
+        $id_viejo = $this->sesionExistente();
+
+        $login = $this->correr($id_viejo, function (Request $request) {
+            $request->session()->migrate(true);
+        });
+
+        $id_nuevo = $this->cookieDeSesion($login);
+        $this->assertNotNull($id_nuevo);
+        $this->assertNotSame($id_viejo, $id_nuevo);
+
+        $comun = $this->correr($id_nuevo, function (Request $request) {
+            $request->session()->put('visto', true);
+        });
+
+        $this->assertSame($id_nuevo, $this->cookieDeSesion($comun));
+        $this->assertTrue($this->leer($id_nuevo)['visto'] ?? false);
+    }
+
+    /**
+     * Con el driver `cookie`, `CookieSessionHandler::read()` usa el request: la lectura inicial
+     * tiene que hacerse con el request ya puesto en el handler, o revienta con un 500.
+     */
+    public function test_con_el_driver_cookie_la_lectura_inicial_no_revienta()
+    {
+        config(['session.driver' => 'cookie']);
+
+        $respuesta = $this->correr(Str::random(40), function (Request $request) {
+            $request->session()->put('visto', true);
+        });
+
+        $this->assertNotNull($this->cookieDeSesion($respuesta));
+    }
+
+    /**
+     * Sin regresion: una cookie con un id que no existe (sesion vencida y barrida) y SIN marca
+     * de migracion se trata como hoy: se manda la cookie y la sesion se guarda con ese id.
+     */
+    public function test_una_cookie_con_un_id_que_no_existe_y_sin_marca_se_trata_como_siempre()
     {
         $id = Str::random(40);
 
@@ -192,10 +310,52 @@ class SesionDestruidaPorOtroRequestTest extends TestCase
         $middleware = new StartSession(new SessionManager($this->app));
 
         return $middleware->handle($request, function (Request $request) use ($accion) {
-            $accion($request);
+            $respuesta = $accion($request);
 
-            return new Response('ok');
+            return $respuesta instanceof Response ? $respuesta : new Response('ok');
         });
+    }
+
+    /**
+     * Una respuesta con la cookie `XSRF-TOKEN` que agrega `VerifyCsrfToken` (que corre ADENTRO de
+     * StartSession) con el token de la sesion del request.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\Response
+     */
+    private function respuestaConXsrf(Request $request)
+    {
+        $config = config('session');
+
+        $respuesta = new Response('ok');
+        $respuesta->headers->setCookie(new Cookie(
+            'XSRF-TOKEN',
+            $request->session()->token(),
+            0,
+            $config['path'],
+            $config['domain'],
+            $config['secure'] ?? false,
+            false,
+            false,
+            $config['same_site'] ?? null
+        ));
+
+        return $respuesta;
+    }
+
+    /**
+     * @param  \Symfony\Component\HttpFoundation\Response  $respuesta
+     * @return string|null
+     */
+    private function cookieXsrf($respuesta)
+    {
+        foreach ($respuesta->headers->getCookies() as $cookie) {
+            if ($cookie->getName() === 'XSRF-TOKEN') {
+                return $cookie->getValue();
+            }
+        }
+
+        return null;
     }
 
     /**
