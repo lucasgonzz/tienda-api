@@ -10,6 +10,7 @@ use App\Cepa;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\PromocionVinoteca;
 use App\SubCategory;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Resuelve una `ruta` de la tienda y arma la respuesta de GET /api/seo/pagina (contrato A de la
@@ -938,13 +939,18 @@ class SeoPaginas
             $filtro = function ($query) {
                 $this->filtroOnline($query)->checkStock();
             };
-            $this->categorias = Category::where('user_id', $this->ctx->commerce->id)
-                ->where('name', '!=', self::CATEGORIA_EXCLUIDA)
-                ->whereHas('articles', $filtro)
-                ->select('id', 'name')
-                ->withCount(['articles as articulos_online' => $filtro])
-                ->orderBy('name', 'ASC')
-                ->get();
+            // Cacheado 10 minutos por comercio (chequeo independiente de seo-tiendas): estas
+            // categorias van en el header de TODAS las paginas, y el whereHas + withCount sobre el
+            // catalogo entero se pagaba en cada visita, que seo.php espera antes de responder.
+            $this->categorias = Cache::remember('seo:categorias:'.$this->ctx->commerce->id, 600, function () use ($filtro) {
+                return Category::where('user_id', $this->ctx->commerce->id)
+                    ->where('name', '!=', self::CATEGORIA_EXCLUIDA)
+                    ->whereHas('articles', $filtro)
+                    ->select('id', 'name')
+                    ->withCount(['articles as articulos_online' => $filtro])
+                    ->orderBy('name', 'ASC')
+                    ->get();
+            });
         }
         return $this->categorias;
     }

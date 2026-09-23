@@ -420,7 +420,10 @@ class SeoContexto
         if ($espacio !== false && $espacio > 60) {
             $cortado = mb_substr($cortado, 0, $espacio, 'UTF-8');
         }
-        return rtrim($cortado, " \t,.;:-–—").'…';
+        // 🔴 Con regex /u y no con rtrim(): rtrim() trabaja por BYTES y la raya y el guion largo
+        // meten en la lista bytes que son parte de cualquier caracter multibyte ("ELABORÓ" quedaba
+        // con un byte suelto, json_encode fallaba y la pagina entera perdia la capa SEO con un 500).
+        return preg_replace('/[\s,.;:\-–—]+$/u', '', $cortado).'…';
     }
 
     /**
