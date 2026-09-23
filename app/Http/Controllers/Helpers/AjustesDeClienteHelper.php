@@ -4,9 +4,9 @@ namespace App\Http\Controllers\Helpers;
 
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Schema;
 
 /**
  * Descuentos y recargos de VENTA que el comerciante le vinculo a un cliente del ERP (mision
@@ -42,15 +42,34 @@ use Illuminate\Support\Facades\Schema;
  * mayor a 0; uno inservible se ignora entero (ni precio ni badge).
  *
  * --------------------------------------------------------------------------------------
- * 🔴 SI VENIS A SIMPLIFICAR, LEE ESTO: por que `hayTablas()` va antes de todo
+ * 🔴 Solo para el comprador que entro con SU CUENTA
+ * --------------------------------------------------------------------------------------
+ * Los ajustes son una condicion comercial de un cliente del ERP, asi que valen para quien se
+ * autentico como ese cliente: una cuenta con contraseña o con login social. NO para la ficha sin
+ * credencial que deja un checkout de invitado: `BuyerController::login()` le abre sesion en el
+ * guard a esa ficha cuando alguien compra con su email, y si la ficha estuviera vinculada, un
+ * invitado que sabe el email se llevaria el descuento del cliente (o pagaria un recargo que no
+ * vio). Mismo criterio de "cuenta" que `BuyerController::esFichaDeInvitado()`. Ver esCuenta().
+ *
+ * --------------------------------------------------------------------------------------
+ * 🔴 SI VENIS A SIMPLIFICAR, LEE ESTO: el chequeo del esquema
  * --------------------------------------------------------------------------------------
  * La tienda se despliega cuando Lucas quiere y el esquema llega con el release de empresa, asi
  * que durante dias o semanas la tienda nueva corre contra bases SIN estas tablas: es el estado
  * normal, no el borde. Sin la guarda, cada pagina con un comprador vinculado tiraria una excepcion
- * (y el try/catch "andaria", pero llenando el log de ruido hasta tapar las fallas de verdad). Va
- * memoizada porque es una consulta al information_schema y esto corre en cada request, y NUNCA
- * adentro de un loop de articulos. En consola se relee siempre: la suite esconde y crea tablas en
- * caliente dentro del mismo proceso (mismo criterio que `ClientOfferHelper::hayTablas()`).
+ * (y el try/catch "andaria", pero llenando el log de ruido hasta tapar las fallas de verdad).
+ *
+ * El chequeo NO es `Schema::hasTable`: en este Laravel eso trae la lista entera de
+ * `information_schema.tables` de la base y filtra en PHP, y harian falta cuatro. Es UNA consulta
+ * con las cuatro tablas en el `IN` (y, en la misma pasada, la columna `clients.deleted_at`), y el
+ * resultado se guarda en `Cache` MINUTOS_DE_CACHE_DEL_ESQUEMA minutos: bajo php-fpm las estaticas
+ * mueren con cada request, asi que sin el Cache se pagaria en todos. El costo, dicho de frente:
+ * cuando el release de empresa crea las tablas, la tienda tarda hasta esos minutos en enterarse.
+ * En consola se mide siempre y no se cachea: la suite esconde y crea tablas en caliente dentro
+ * del mismo proceso. Y NUNCA adentro de un loop de articulos.
+ *
+ * El aviso de "falta el esquema" va al log UNA vez por dia y por base (Cache::add), no una vez por
+ * request: con la estatica sola se repetiria en cada pagina de cada visitante.
  *
  * Y todo va en try/catch que registra y devuelve "sin ajustes": un descuento que falla no puede
  * tumbar la navegacion ni el checkout, pero tampoco se lo traga en silencio (warning al log).
@@ -73,19 +92,16 @@ class AjustesDeClienteHelper
     const TIPO_DESCUENTO = 'descuento';
     const TIPO_RECARGO = 'recargo';
 
-    /**
-     * Memoria de "existen las dos tablas de lectura". null = sin resolver.
-     *
-     * @var bool|null
-     */
-    private static $hay_tablas = null;
+    /** Cuanto vive en Cache la medicion del esquema. Ver el docblock de la clase. */
+    const MINUTOS_DE_CACHE_DEL_ESQUEMA = 5;
 
     /**
-     * Memoria de "existen las dos tablas del pedido". null = sin resolver.
+     * La medicion del esquema de este request: null = sin resolver, o
+     * {tablas: string[], clients_deleted_at: bool}. Ver esquema().
      *
-     * @var bool|null
+     * @var array|null
      */
-    private static $hay_tablas_del_pedido = null;
+    private static $esquema = null;
 
     /**
      * Ajustes ya leidos, indexados por "user_id:client_id". Es lo que hace que un listado o un
@@ -113,10 +129,10 @@ class AjustesDeClienteHelper
     }
 
     /**
-     * ¿Hay en este request un comprador logueado con cliente del ERP y estan las tablas de
-     * lectura? Es la guarda barata para quien tiene que decidir antes de cargar nada: 0 queries
-     * sin sesion o sin cliente (la mayoria de los compradores) y la del information_schema,
-     * memoizada, en el resto.
+     * ¿Hay en este request un comprador logueado CON SU CUENTA, con cliente del ERP, y estan las
+     * tablas de lectura? Es la guarda barata para quien tiene que decidir antes de cargar nada:
+     * 0 queries sin sesion o sin cliente (la mayoria de los compradores) y, en el resto, la
+     * medicion del esquema de esquema() (cacheada entre requests).
      *
      * @return bool
      */
@@ -169,7 +185,8 @@ class AjustesDeClienteHelper
     public static function para_el_comprador($buyer)
     {
         try {
-            if (is_null($buyer)) {
+            /* La ficha de un checkout de invitado no es la cuenta del cliente: ver esCuenta(). */
+            if (is_null($buyer) || !self::esCuenta($buyer)) {
                 return self::vacio();
             }
 
@@ -498,8 +515,7 @@ class AjustesDeClienteHelper
      */
     public static function olvidarMemoria()
     {
-        self::$hay_tablas = null;
-        self::$hay_tablas_del_pedido = null;
+        self::$esquema = null;
         self::$ajustes_por_cliente = [];
         self::$avisos = [];
     }
@@ -591,7 +607,14 @@ class AjustesDeClienteHelper
             return self::vacio();
         }
 
-        if (!self::hayTablas()) {
+        /* Una sola medicion del esquema para todo lo de aca abajo (en consola esquema() mide en
+           cada llamada, asi que no se le pregunta dos veces). */
+        $esquema = self::esquema();
+
+        if (
+            !in_array(self::TABLA_DESCUENTOS, $esquema['tablas'], true)
+            || !in_array(self::TABLA_RECARGOS, $esquema['tablas'], true)
+        ) {
             self::avisarUnaVez(
                 'tablas',
                 'AjustesDeClienteHelper: faltan '.self::TABLA_DESCUENTOS.' / '.self::TABLA_RECARGOS
@@ -604,9 +627,11 @@ class AjustesDeClienteHelper
         $clave = $user_id.':'.$client_id;
 
         if (!array_key_exists($clave, self::$ajustes_por_cliente) || app()->runningInConsole()) {
+            $sin_borrados = $esquema['clients_deleted_at'];
+
             self::$ajustes_por_cliente[$clave] = [
-                'descuentos' => self::leer(self::TABLA_DESCUENTOS, 'discounts', 'discount_id', $client_id, $user_id, true),
-                'recargos'   => self::leer(self::TABLA_RECARGOS, 'surchages', 'surchage_id', $client_id, $user_id, false),
+                'descuentos' => self::leer(self::TABLA_DESCUENTOS, 'discounts', 'discount_id', $client_id, $user_id, true, $sin_borrados),
+                'recargos'   => self::leer(self::TABLA_RECARGOS, 'surchages', 'surchage_id', $client_id, $user_id, false, $sin_borrados),
             ];
         }
 
@@ -622,17 +647,28 @@ class AjustesDeClienteHelper
      * @param int $client_id
      * @param int $user_id
      * @param bool $es_descuento
+     * @param bool $clients_con_deleted_at Si `clients` tiene la columna (sale de esquema()).
      * @return array Cada entrada {id, name, percentage}, sin repetidos, en el orden del vinculo.
      */
-    private static function leer($tabla_vinculo, $tabla_ajuste, $columna, $client_id, $user_id, $es_descuento)
+    private static function leer($tabla_vinculo, $tabla_ajuste, $columna, $client_id, $user_id, $es_descuento, $clients_con_deleted_at)
     {
-        $filas = DB::table($tabla_vinculo.' as v')
+        $query = DB::table($tabla_vinculo.' as v')
                     ->join($tabla_ajuste.' as a', 'a.id', '=', 'v.'.$columna)
+                    /* El cliente tiene que existir: un vinculo colgado de un cliente que el ERP
+                       borro no se cobra. */
+                    ->join('clients as c', 'c.id', '=', 'v.client_id')
                     ->where('v.client_id', $client_id)
                     ->where('a.user_id', $user_id)
-                    ->whereNull('a.deleted_at')
-                    ->orderBy('v.id', 'ASC')
-                    ->get(['a.id', 'a.name', 'a.percentage']);
+                    ->whereNull('a.deleted_at');
+
+        /* Y si lo borro con soft delete, tampoco. Solo si la columna existe: en una base vieja
+           sin ella, el whereNull seria "Unknown column". */
+        if ($clients_con_deleted_at) {
+            $query->whereNull('c.deleted_at');
+        }
+
+        $filas = $query->orderBy('v.id', 'ASC')
+                        ->get(['a.id', 'a.name', 'a.percentage']);
 
         $ajustes = [];
 
@@ -684,39 +720,122 @@ class AjustesDeClienteHelper
     }
 
     /**
-     * ¿Existen las dos tablas de lectura? Memoizado por proceso, releido siempre en consola.
-     * El porque largo esta en el docblock de la clase.
+     * ¿Existen las dos tablas de lectura? Sale de esquema(): ver el docblock de la clase.
      *
      * @return bool
      */
     private static function hayTablas()
     {
-        if (is_null(self::$hay_tablas) || app()->runningInConsole()) {
-            self::$hay_tablas = Schema::hasTable(self::TABLA_DESCUENTOS) && Schema::hasTable(self::TABLA_RECARGOS);
-        }
+        $tablas = self::esquema()['tablas'];
 
-        return self::$hay_tablas;
+        return in_array(self::TABLA_DESCUENTOS, $tablas, true) && in_array(self::TABLA_RECARGOS, $tablas, true);
     }
 
     /**
-     * ¿Existen las dos tablas del pedido? Mismo criterio que hayTablas(). Se piden las dos: un
-     * pedido con los descuentos guardados y los recargos perdidos le mentiria al ERP.
+     * ¿Existen las dos tablas del pedido? Se piden las dos: un pedido con los descuentos
+     * guardados y los recargos perdidos le mentiria al ERP.
      *
      * @return bool
      */
     private static function hayTablasDelPedido()
     {
-        if (is_null(self::$hay_tablas_del_pedido) || app()->runningInConsole()) {
-            self::$hay_tablas_del_pedido = Schema::hasTable(self::TABLA_DESCUENTOS_DEL_PEDIDO)
-                && Schema::hasTable(self::TABLA_RECARGOS_DEL_PEDIDO);
-        }
+        $tablas = self::esquema()['tablas'];
 
-        return self::$hay_tablas_del_pedido;
+        return in_array(self::TABLA_DESCUENTOS_DEL_PEDIDO, $tablas, true)
+            && in_array(self::TABLA_RECARGOS_DEL_PEDIDO, $tablas, true);
     }
 
     /**
-     * El cliente del ERP del comprador logueado, leido como ATRIBUTO (la relacion seria una
-     * query por pagina para algo que ya esta en la fila de `buyers`). null sin sesion.
+     * Que parte del esquema del contrato existe en esta base.
+     *
+     * Estatica dentro del request, Cache por MINUTOS_DE_CACHE_DEL_ESQUEMA entre requests, y en
+     * consola medida SIEMPRE y sin cachear (la suite esconde tablas en caliente). Solo se cachea
+     * el resultado de la medicion; si el Cache falla, se mide derecho.
+     *
+     * @return array{tablas: string[], clients_deleted_at: bool}
+     */
+    private static function esquema()
+    {
+        if (app()->runningInConsole()) {
+            self::$esquema = self::medirEsquema();
+
+            return self::$esquema;
+        }
+
+        if (!is_null(self::$esquema)) {
+            return self::$esquema;
+        }
+
+        try {
+            self::$esquema = Cache::remember(
+                self::claveDeCache('esquema'),
+                Carbon::now()->addMinutes(self::MINUTOS_DE_CACHE_DEL_ESQUEMA),
+                function () {
+                    return self::medirEsquema();
+                }
+            );
+        } catch (\Throwable $e) {
+            self::$esquema = self::medirEsquema();
+        }
+
+        return self::$esquema;
+    }
+
+    /**
+     * UNA consulta al information_schema: las cuatro tablas del contrato en el `IN` y, en la
+     * misma pasada, si `clients` tiene `deleted_at`. `table_schema = DATABASE()` la acota a la
+     * base de este cliente (el servidor tiene muchas).
+     *
+     * @return array{tablas: string[], clients_deleted_at: bool}
+     */
+    private static function medirEsquema()
+    {
+        $filas = DB::select(
+            "SELECT table_name AS nombre FROM information_schema.tables "
+            ."WHERE table_schema = DATABASE() AND table_name IN (?, ?, ?, ?) "
+            ."UNION ALL "
+            ."SELECT CONCAT(table_name, '.', column_name) AS nombre FROM information_schema.columns "
+            ."WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+            [
+                self::TABLA_DESCUENTOS,
+                self::TABLA_RECARGOS,
+                self::TABLA_DESCUENTOS_DEL_PEDIDO,
+                self::TABLA_RECARGOS_DEL_PEDIDO,
+                'clients',
+                'deleted_at',
+            ]
+        );
+
+        $esquema = ['tablas' => [], 'clients_deleted_at' => false];
+
+        foreach ($filas as $fila) {
+            $nombre = strtolower((string) $fila->nombre);
+
+            if ($nombre === 'clients.deleted_at') {
+                $esquema['clients_deleted_at'] = true;
+            } else {
+                $esquema['tablas'][] = $nombre;
+            }
+        }
+
+        return $esquema;
+    }
+
+    /**
+     * Clave de Cache de este helper, por base: varias tiendas pueden compartir el mismo store.
+     *
+     * @param string $que
+     * @return string
+     */
+    private static function claveDeCache($que)
+    {
+        return 'ajustes_de_cliente.'.$que.'.'.DB::connection()->getDatabaseName();
+    }
+
+    /**
+     * El cliente del ERP del comprador logueado CON SU CUENTA, leido como ATRIBUTO (la relacion
+     * seria una query por pagina para algo que ya esta en la fila de `buyers`). null sin sesion,
+     * sin cliente, o si quien esta en el guard es la ficha de un checkout de invitado.
      *
      * @return int|null
      */
@@ -724,11 +843,33 @@ class AjustesDeClienteHelper
     {
         $buyer = Auth::guard('buyer')->user();
 
-        if (is_null($buyer)) {
+        if (is_null($buyer) || !self::esCuenta($buyer)) {
             return null;
         }
 
         return self::idPositivo(isset($buyer->comercio_city_client_id) ? $buyer->comercio_city_client_id : null);
+    }
+
+    /**
+     * ¿El comprador es una CUENTA (contraseña o login social) y no la ficha sin credencial de un
+     * checkout de invitado?
+     *
+     * 🔴 Es `BuyerController::esFichaDeInvitado()` al reves, y por el mismo motivo: ese
+     * controller le abre sesion en el guard a la ficha sin credencial cuando un invitado compra
+     * con su email, asi que "hay un buyer en el guard" NO significa "entro el cliente". Sin esta
+     * guarda, cualquiera que supiera el email de una ficha vinculada compraria con los descuentos
+     * del cliente, o pagaria un recargo que nunca vio. Los atributos se leen crudos: `$hidden`
+     * solo afecta el JSON.
+     *
+     * @param \App\Buyer $buyer
+     * @return bool
+     */
+    private static function esCuenta($buyer)
+    {
+        $con_password = isset($buyer->password) && $buyer->password !== '';
+        $con_provider = isset($buyer->provider_id) && $buyer->provider_id !== '';
+
+        return $con_password || $con_provider;
     }
 
     /**
@@ -767,7 +908,7 @@ class AjustesDeClienteHelper
     }
 
     /**
-     * Deja constancia de un estado de CONFIGURACION (esquema sin llegar), una vez por proceso y
+     * Deja constancia de un estado de CONFIGURACION (esquema sin llegar), una vez por dia y por base
      * en nivel info: es el estado previsto del despliegue, no una falla.
      *
      * @param string $clave
@@ -781,6 +922,19 @@ class AjustesDeClienteHelper
         }
 
         self::$avisos[$clave] = true;
+
+        /* Fuera de consola, una vez por DIA y por base: la estatica muere con cada request bajo
+           php-fpm, asi que sola avisaria en cada pagina. Cache::add solo escribe (y devuelve
+           true) si la clave no estaba. En consola alcanza la estatica, que los tests limpian. */
+        if (!app()->runningInConsole()) {
+            try {
+                if (!Cache::add(self::claveDeCache('aviso.'.$clave), true, Carbon::now()->addDay())) {
+                    return;
+                }
+            } catch (\Throwable $ignorada) {
+                /* Sin Cache se avisa igual: peor es no avisar nunca. */
+            }
+        }
 
         try {
             Log::info($mensaje);

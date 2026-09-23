@@ -710,6 +710,12 @@ class EnvioCartHelper
      * (`promocion_vinotecas.final_price`, por el comercio del carrito), no del payload: con el
      * precio del navegador cualquiera llegaba al umbral de envío gratis inflando una promo.
      *
+     * Con los descuentos y recargos del cliente del comprador aplicados (misión
+     * descuentos-recargos-por-cliente): los artículos de `lineas_desde_articulos()` ya suman el
+     * precio ajustado (sale de `checkPriceTypes()`), así que las promos también, para que el umbral
+     * y el valor declarado se midan con lo que paga el comprador y no con dos escalas mezcladas.
+     * Sin ajustes, `ajustar()` devuelve el precio intacto.
+     *
      * @param int $commerce_id
      * @param array $data
      * @return float
@@ -728,13 +734,14 @@ class EnvioCartHelper
         }
 
         $suma = 0.0;
+        $ajustes = AjustesDeClienteHelper::del_comprador((int) $commerce_id);
         $de_la_base = PromocionVinoteca::where('user_id', (int) $commerce_id)
             ->whereIn('id', array_keys($cantidades))
             ->get(['id', 'final_price']);
 
         foreach ($de_la_base as $promo) {
             if (is_numeric($promo->final_price)) {
-                $suma += (float) $promo->final_price * $cantidades[(int) $promo->id];
+                $suma += (float) AjustesDeClienteHelper::ajustar($promo->final_price, $ajustes) * $cantidades[(int) $promo->id];
             }
         }
 

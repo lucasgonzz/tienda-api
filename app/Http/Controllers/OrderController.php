@@ -179,15 +179,20 @@ class OrderController extends Controller
              * puede mandar a nombre de otro.
              *
              * 🔴 La invariante: los pivots del pedido son EXACTAMENTE los ajustes con los que se
-             * pricearon sus renglones. `set_total()` resincroniza las lineas con los ajustes de hoy,
-             * asi que se corre una vez mas antes de crear el pedido por si el comerciante los cambio
-             * despues del ultimo guardado del carrito. Solo cuando todavia no se cobro nada: con
-             * `payment_id` (Mercado Pago ya cobro la preferencia armada con estas lineas) tocar los
-             * precios dejaria el pedido distinto de lo pagado, y eso es peor que el desfase.
+             * pricearon sus renglones. El SPA ya guarda el carrito (PUT /api/carts, que vuelve a
+             * pricear todas las lineas con los ajustes del momento) justo antes de este POST
+             * (`mixins/cart.js::makeOrder`), asi que en el camino normal esto no cambia nada. El
+             * `set_total()` de aca cubre lo que queda en el medio: que el comerciante cambie los
+             * ajustes entre ese PUT y este POST, o un POST que llegue sin el PUT previo. Con esto
+             * las lineas quedan con los ajustes de hoy, y son esos los que se guardan abajo.
+             *
+             * No hay excepcion por `payment_id`: con Mercado Pago el pedido se crea ANTES de pagar
+             * (el mismo makeOrder), y el PUT previo ya re-pricea igual, asi que una guarda por el
+             * pago no protegeria ningun monto cobrado.
              */
             $ajustes_de_cliente = AjustesDeClienteHelper::del_comprador($cart->user_id);
 
-            if (AjustesDeClienteHelper::tiene_ajustes($ajustes_de_cliente) && empty($cart->payment_id)) {
+            if (AjustesDeClienteHelper::tiene_ajustes($ajustes_de_cliente)) {
                 CartHelper::set_total($cart);
             }
 

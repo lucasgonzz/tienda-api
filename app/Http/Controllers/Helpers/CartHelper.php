@@ -77,17 +77,18 @@ class CartHelper {
          * Los ajustes del cliente van tambien sobre las promos (decision 2 de Lucas). Mismo
          * criterio que get_price(): el `final_price` del payload ya viene AJUSTADO (la API se lo
          * mando asi al SPA), asi que primero se vuelve a la base y recien despues se aplica el
-         * factor, una vez, con los porcentajes de la base. Sin contrato (sin sesion, sin cliente
-         * o sin tablas) no se toca nada y la promo cobra exactamente lo de master.
+         * factor, una vez, con los porcentajes de la base.
+         *
+         * El desajuste va SIEMPRE, tambien sin contrato (sin sesion de cuenta, sin cliente o sin
+         * tablas): una promo que este servidor ajusto antes puede volver en el payload de un
+         * comprador que ya no tiene los ajustes. Ver get_price(). Sin la clave en el payload no
+         * cambia nada y la promo cobra exactamente lo de master.
          */
-        $con_ajustes = AjustesDeClienteHelper::hayContrato();
-        $ajustes = $con_ajustes ? AjustesDeClienteHelper::del_comprador($cart->user_id) : AjustesDeClienteHelper::vacio();
+        $ajustes = AjustesDeClienteHelper::del_comprador($cart->user_id);
 
         foreach ($promociones_vinoteca as $promo) {
 
-            if ($con_ajustes) {
-                $promo = AjustesDeClienteHelper::desajustar_linea($promo);
-            }
+            $promo = AjustesDeClienteHelper::desajustar_linea($promo);
 
             // if (isset($promo['is_promocion_vinoteca'])) {
 
@@ -257,9 +258,12 @@ class CartHelper {
      * todos los clientes— no se carga ni un articulo y esto no cuesta nada.
      *
      * @param  \App\Cart  $cart
+     * @param  \ArrayObject|null  $memo  Si viene, deja en 'articulos' lo que cargo y resolvio, para
+     *                                   que `resincronizar_ajustes_de_cliente()` no lo vuelva a cargar
+     *                                   en el mismo `set_total()`. No cambia nada de lo que hace aca.
      * @return void
      */
-    static function resincronizar_precios_de_oferta($cart) {
+    static function resincronizar_precios_de_oferta($cart, $memo = null) {
         try {
             if (!ClientOfferHelper::hayContrato()) {
                 return;
@@ -286,6 +290,10 @@ class CartHelper {
             }
 
             $articulos = ArticleHelper::checkPriceTypes($articulos);
+
+            if (!is_null($memo)) {
+                $memo['articulos'] = $articulos;
+            }
 
             /* Los ajustes del cliente (mision descuentos-recargos-por-cliente) van ENCIMA de la
                oferta: el precio de la linea es el de la oferta por el factor. Sin ajustes,
@@ -573,15 +581,17 @@ class CartHelper {
      *   - Con precio pausado o sin precio numerico: no hay importe.
      *
      * @param  \App\Cart  $cart
+     * @param  \ArrayObject|null  $memo  Lo que ya cargo `resincronizar_precios_de_oferta()` en este
+     *                                   mismo `set_total()`. Ver resincronizar_articulos_con_ajustes().
      * @return bool  True si escribio alguna linea (y `set_total()` tiene que releer).
      */
-    static function resincronizar_ajustes_de_cliente($cart) {
+    static function resincronizar_ajustes_de_cliente($cart, $memo = null) {
 
         $escribio = false;
 
         try {
-            /* Lo barato primero: sin sesion o sin cliente del ERP, 0 queries; sin tablas, la del
-               information_schema memoizada. */
+            /* Lo barato primero: sin sesion de cuenta o sin cliente del ERP, 0 queries; sin
+               tablas, la medicion del esquema (cacheada entre requests). */
             if (!AjustesDeClienteHelper::hayContrato()) {
                 return false;
             }
@@ -593,7 +603,7 @@ class CartHelper {
                 return false;
             }
 
-            $escribio = Self::resincronizar_articulos_con_ajustes($cart, $ajustes) || $escribio;
+            $escribio = Self::resincronizar_articulos_con_ajustes($cart, $ajustes, $memo) || $escribio;
             $escribio = Self::resincronizar_promociones_con_ajustes($cart, $ajustes) || $escribio;
 
             if (ComboEsquemaHelper::disponible()) {
@@ -614,11 +624,19 @@ class CartHelper {
     /**
      * Las lineas de articulos de `resincronizar_ajustes_de_cliente()`.
      *
+     * Los articulos resueltos se REUSAN de `resincronizar_precios_de_oferta()` cuando esa corrio en
+     * este mismo `set_total()` (`$memo['articulos']`): son la misma carga (`withAll()` de los ids de
+     * las lineas) pasada por el mismo `checkPriceTypes()` para el mismo comprador, y ninguna de las
+     * dos resincronizaciones la modifica — solo escriben `article_cart.price`. Las LINEAS si se
+     * releen, porque la de ofertas pudo haberlas escrito. Si falta algun id (o la de ofertas no
+     * corrio, por no haber contrato de ofertas), se carga como siempre.
+     *
      * @param  \App\Cart  $cart
      * @param  array  $ajustes
+     * @param  \ArrayObject|null  $memo
      * @return bool
      */
-    private static function resincronizar_articulos_con_ajustes($cart, $ajustes) {
+    private static function resincronizar_articulos_con_ajustes($cart, $ajustes, $memo = null) {
 
         /* Ver el docblock de arriba: con rangos por categoria el precio no se puede reconstruir. */
         if (CommerceHelper::hasExtencion('lista_de_precios_por_rango_de_cantidad_vendida', null, $cart->user_id)) {
@@ -631,15 +649,30 @@ class CartHelper {
             return false;
         }
 
-        $articulos = Article::whereIn('id', $lineas->pluck('article_id')->unique()->all())
-                            ->withAll()
-                            ->get();
+        $ids = $lineas->pluck('article_id')->unique()->all();
 
-        if (count($articulos) == 0) {
-            return false;
+        $articulos = null;
+
+        if (!is_null($memo) && isset($memo['articulos'])) {
+            $cargados = $memo['articulos'];
+            $faltan = array_diff($ids, $cargados->pluck('id')->all());
+
+            if (count($faltan) == 0) {
+                $articulos = $cargados;
+            }
         }
 
-        $articulos = ArticleHelper::checkPriceTypes($articulos);
+        if (is_null($articulos)) {
+            $articulos = Article::whereIn('id', $ids)
+                                ->withAll()
+                                ->get();
+
+            if (count($articulos) == 0) {
+                return false;
+            }
+
+            $articulos = ArticleHelper::checkPriceTypes($articulos);
+        }
 
         $escribio = false;
 
@@ -799,7 +832,10 @@ class CartHelper {
         /* Antes de sumar, el precio de las lineas con oferta se vuelve a resolver contra la
            base. Ver el docblock de arriba: sin esto, cambiar la cantidad desde "Actualizar"
            conservaba el precio del tramo anterior. */
-        Self::resincronizar_precios_de_oferta($cart);
+        /* Lo que la resincronizacion de ofertas ya cargo, para que la de ajustes no lo repita. */
+        $memo = new \ArrayObject();
+
+        Self::resincronizar_precios_de_oferta($cart, $memo);
 
         /* 🔴 Esta carga estaba ABAJO, despues de las dos resincronizaciones, y subio a proposito:
            es la MISMA lectura de siempre —la que master hace para sumar— y ahora sirve tambien
@@ -817,7 +853,7 @@ class CartHelper {
 
         /* Ultima, porque es la unica simetrica y gobierna solo las lineas que las otras dos no
            gobiernan. Si escribio algo, lo que hay en memoria es de antes y hay que releerlo. */
-        if (Self::resincronizar_ajustes_de_cliente($cart)) {
+        if (Self::resincronizar_ajustes_de_cliente($cart, $memo)) {
             $cart->load('articles', 'promociones_vinoteca');
 
             if (ComboEsquemaHelper::disponible()) {
@@ -867,8 +903,13 @@ class CartHelper {
      * factor se aplica UNA vez, aca, con los porcentajes leidos de la base y nunca del payload.
      * Si venis a "simplificar" multiplicando adentro de un eslabon, rompes esa invariante.
      *
-     * Sin contrato (invitado, comprador sin cliente del ERP, o base sin las tablas) no se toca
-     * nada: la linea sale por `get_price_sin_ajustes_de_cliente()` byte por byte como en master.
+     * 🔴 Y el desajuste va SIEMPRE, tambien sin contrato. Sin contrato no hay factor, pero el
+     * payload puede traer igual un precio que ESTE servidor ajusto antes: el ERP le saco el
+     * cliente al comprador, o el comprador cerro sesion y el SPA conservo los articulos que habia
+     * pedido logueado. Ahi `final_price` es 945 y la base de verdad es
+     * `precio_sin_ajustes_de_cliente` (1000); cobrar 945 seria regalar el descuento sin dejarlo
+     * asentado en el pedido. Una linea sin esa clave (lo normal sin contrato) no cambia en nada:
+     * sale byte por byte como en master.
      *
      * @param  array  $articles  todo el payload (la cadena mira las cantidades de las otras lineas)
      * @param  array  $article  la linea
@@ -879,10 +920,7 @@ class CartHelper {
      */
     static function get_price($articles, $article, $has_price_ranges, $article_groups, $user_id = null) {
 
-        if (!AjustesDeClienteHelper::hayContrato()) {
-            return Self::get_price_sin_ajustes_de_cliente($articles, $article, $has_price_ranges, $article_groups, $user_id);
-        }
-
+        /* Sin contrato, del_comprador() devuelve vacio y ajustar() deja el precio intacto. */
         $precio = Self::get_price_sin_ajustes_de_cliente(
             $articles,
             AjustesDeClienteHelper::desajustar_linea($article),
