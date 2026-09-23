@@ -183,11 +183,37 @@ trait ArmaAjustesDeCliente
     }
 
     /**
-     * Un cliente del ERP del comercio y un comprador de la tienda vinculado a el.
+     * Un cliente del ERP del comercio y una CUENTA de la tienda (con contraseña) vinculada a el.
+     *
+     * La contraseña no es decorativa: los ajustes valen solo para una cuenta, no para la ficha
+     * sin credencial de un checkout de invitado (ver fichaDeInvitadoVinculada()).
      *
      * @return \App\Buyer
      */
     protected function compradorVinculado()
+    {
+        return $this->compradorDeUnCliente(['password' => bcrypt('secreto-ajustes')]);
+    }
+
+    /**
+     * La ficha SIN credencial que deja un checkout de invitado, vinculada igual a un cliente del
+     * ERP. `BuyerController::login()` le abre sesion en el guard cuando alguien compra con su
+     * email.
+     *
+     * @return \App\Buyer
+     */
+    protected function fichaDeInvitadoVinculada()
+    {
+        return $this->compradorDeUnCliente([]);
+    }
+
+    /**
+     * Un cliente del ERP del comercio y un comprador vinculado a el.
+     *
+     * @param array $atributos
+     * @return \App\Buyer
+     */
+    protected function compradorDeUnCliente(array $atributos)
     {
         $client = Client::create([
             'name'    => 'Cliente Ajustes Test',
@@ -196,12 +222,12 @@ trait ArmaAjustesDeCliente
 
         $this->anotar('clients', $client->id);
 
-        $buyer = Buyer::create([
+        $buyer = Buyer::create(array_merge([
             'name'                    => 'Comprador Ajustes Test',
             'email'                   => 'ajustes-'.Str::random(10).'@test.local',
             'comercio_city_client_id' => $client->id,
             'user_id'                 => $this->comercio->id,
-        ]);
+        ], $atributos));
 
         $this->anotar('buyers', $buyer->id);
 

@@ -97,6 +97,25 @@ class CarritoConAjustesTest extends TestCase
     }
 
     /**
+     * 🔴 Sin contrato, la linea que ESTE servidor ajusto antes vuelve a su base. El comprador
+     * armo la linea logueado (945, base 1000) y despues cerro sesion: el SPA conserva el objeto y
+     * lo manda como invitado. Sin cliente no hay factor, y cobrar 945 seria regalar el descuento.
+     */
+    public function test_sin_contrato_una_linea_ajustada_vuelve_a_su_base()
+    {
+        list($comprador, $articulo) = $this->compradorConDescuentoYRecargo(1000);
+
+        $linea = $this->lineaDelSpa($articulo);
+        $this->assertSame(945.0, (float) $linea['final_price']);
+
+        $this->app['auth']->guard('buyer')->logout();
+
+        $cart_id = $this->guardarCarrito([$linea]);
+
+        $this->assertSame(1000.0, $this->precioDeLaLinea('article_cart', $cart_id));
+    }
+
+    /**
      * Los porcentajes salen de la BASE, no del payload: un payload con la lista de ajustes
      * inventada (un 90%) no cambia nada.
      */

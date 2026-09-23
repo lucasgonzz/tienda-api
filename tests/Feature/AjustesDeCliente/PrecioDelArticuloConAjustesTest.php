@@ -196,6 +196,72 @@ class PrecioDelArticuloConAjustesTest extends TestCase
         $this->assertCount(1, $visto->ajustes_de_cliente);
     }
 
+    /**
+     * 🔴 La ficha SIN credencial de un checkout de invitado no es la cuenta del cliente, aunque
+     * este vinculada y aunque este en el guard: no ve ajustes ni los trae en /api/user.
+     */
+    public function test_la_ficha_de_invitado_vinculada_no_tiene_ajustes()
+    {
+        $ficha = $this->fichaDeInvitadoVinculada();
+        $this->vincular($ficha, [$this->crearDescuento(10)], [$this->crearRecargo(5)]);
+        $articulo = $this->crearArticulo(1000);
+
+        $this->actingAs($ficha, 'buyer');
+
+        $visto = $this->articuloComoLoVe($articulo);
+
+        $this->assertSame(1000.0, (float) $visto->final_price);
+        $this->assertFalse(isset($visto->ajustes_de_cliente));
+
+        $respuesta = $this->getJson('/api/user');
+        $respuesta->assertStatus(200);
+        $this->assertSame(['descuentos' => [], 'recargos' => []], $respuesta->json('buyer.ajustes_de_cliente'));
+    }
+
+    /** Un cliente borrado en el ERP (soft delete) deja de tener ajustes. */
+    public function test_un_cliente_borrado_no_tiene_ajustes()
+    {
+        $comprador = $this->compradorVinculado();
+        $this->vincular($comprador, [$this->crearDescuento(10)]);
+        $articulo = $this->crearArticulo(1000);
+
+        DB::table('clients')->where('id', $comprador->comercio_city_client_id)->update(['deleted_at' => Carbon::now()]);
+
+        $this->actingAs($comprador, 'buyer');
+
+        $this->assertSame(1000.0, (float) $this->articuloComoLoVe($articulo)->final_price);
+    }
+
+    /**
+     * El esquema del contrato se mide con UNA consulta al information_schema (las cuatro tablas
+     * en el IN), no con un Schema::hasTable por tabla.
+     */
+    public function test_el_esquema_se_mide_con_una_sola_consulta()
+    {
+        $comprador = $this->compradorVinculado();
+        $this->vincular($comprador, [$this->crearDescuento(10)]);
+        $articulo = $this->crearArticulo(1000);
+
+        $this->actingAs($comprador, 'buyer');
+
+        $articulos = \App\Article::where('id', $articulo->id)->withAll()->get();
+        $this->olvidarMemorias();
+
+        $queries = [];
+        DB::listen(function ($query) use (&$queries) {
+            $queries[] = $query->sql;
+        });
+
+        \App\Http\Controllers\Helpers\AjustesDeClienteHelper::aplicar($articulos);
+
+        $del_esquema = array_filter($queries, function ($sql) {
+            return stripos($sql, 'information_schema') !== false;
+        });
+
+        $this->assertCount(1, $del_esquema, implode(' | ', $del_esquema));
+        $this->assertSame(900.0, (float) $articulos->first()->final_price);
+    }
+
     /** Un mismo descuento vinculado dos veces se aplica una. */
     public function test_un_descuento_vinculado_dos_veces_se_aplica_una()
     {

@@ -144,6 +144,77 @@ class PedidoConAjustesTest extends TestCase
     }
 
     /**
+     * 🔴 El ERP le saca el cliente al comprador con el carrito armado. El SPA guarda el carrito
+     * (PUT) con los articulos que tenia en pantalla, ajustados (945, base 1000): la linea vuelve a
+     * 1000 y el pedido nace sin pivots. Es coherente: sin ajustes, sin descuento.
+     */
+    public function test_si_el_erp_le_saca_el_cliente_la_linea_vuelve_a_la_base_y_el_pedido_nace_sin_pivots()
+    {
+        $comprador = $this->compradorVinculado();
+        $this->vincular($comprador, [$this->crearDescuento(10)], [$this->crearRecargo(5)]);
+        $articulo = $this->crearArticulo(1000);
+        $this->actingAs($comprador, 'buyer');
+
+        $linea = $this->lineaDelSpa($articulo);
+        $cart_id = $this->guardarCarrito([$linea]);
+        $this->assertSame(945.0, (float) DB::table('article_cart')->where('cart_id', $cart_id)->value('price'));
+
+        DB::table('buyers')->where('id', $comprador->id)->update(['comercio_city_client_id' => null]);
+        $comprador->comercio_city_client_id = null;
+        $this->olvidarMemorias();
+
+        $this->putJson('/api/carts', [
+            'id'                   => $cart_id,
+            'articles'             => [$linea],
+            'promociones_vinoteca' => [],
+            'combos'               => [],
+        ])->assertStatus(200);
+
+        $this->assertSame(1000.0, (float) DB::table('article_cart')->where('cart_id', $cart_id)->value('price'));
+
+        $order_id = $this->crearPedido($cart_id);
+
+        $this->assertSame($this->conRecargoOnline(1000.0), (float) DB::table('article_order')->where('order_id', $order_id)->value('price'));
+        $this->assertSame(0, DB::table(AjustesDeClienteHelper::TABLA_DESCUENTOS_DEL_PEDIDO)->where('order_id', $order_id)->count());
+        $this->assertSame(0, DB::table(AjustesDeClienteHelper::TABLA_RECARGOS_DEL_PEDIDO)->where('order_id', $order_id)->count());
+    }
+
+    /**
+     * 🔴 Un invitado compra con el email de una ficha SIN credencial que esta vinculada a un
+     * cliente con ajustes. `POST /api/buyer` le abre sesion en el guard a esa ficha, pero eso es
+     * la identidad del checkout y no la cuenta del cliente: ni el precio que ve, ni la linea, ni el
+     * pedido llevan los ajustes. Sin esta guarda, cualquiera que supiera el email se llevaba el
+     * descuento (o pagaba un recargo que no vio).
+     */
+    public function test_el_checkout_de_invitado_con_el_email_de_una_ficha_vinculada_no_aplica_ajustes()
+    {
+        $ficha = $this->fichaDeInvitadoVinculada();
+        $this->vincular($ficha, [$this->crearDescuento(10)], [$this->crearRecargo(5)]);
+        $articulo = $this->crearArticulo(1000);
+
+        $this->postJson('/api/buyer', [
+            'name'        => 'Invitado',
+            'email'       => $ficha->email,
+            'commerce_id' => $this->comercio->id,
+        ])->assertSuccessful();
+
+        /* Precondicion: la ficha quedo en el guard, que es justamente lo peligroso. */
+        $this->assertSame((int) $ficha->id, (int) $this->app['auth']->guard('buyer')->id());
+
+        $linea = $this->lineaDelSpa($articulo);
+        $this->assertSame(1000.0, (float) $linea['final_price'], 'el invitado ve el precio de lista');
+
+        $cart_id = $this->guardarCarrito([$linea]);
+        $this->assertSame(1000.0, (float) DB::table('article_cart')->where('cart_id', $cart_id)->value('price'));
+
+        $order_id = $this->crearPedido($cart_id);
+
+        $this->assertSame($this->conRecargoOnline(1000.0), (float) DB::table('article_order')->where('order_id', $order_id)->value('price'));
+        $this->assertSame(0, DB::table(AjustesDeClienteHelper::TABLA_DESCUENTOS_DEL_PEDIDO)->where('order_id', $order_id)->count());
+        $this->assertSame(0, DB::table(AjustesDeClienteHelper::TABLA_RECARGOS_DEL_PEDIDO)->where('order_id', $order_id)->count());
+    }
+
+    /**
      * POST /api/carts, como el SPA. Devuelve el id del carrito.
      *
      * @param array $articulos
