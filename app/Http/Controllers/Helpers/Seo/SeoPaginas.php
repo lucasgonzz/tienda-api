@@ -580,8 +580,8 @@ class SeoPaginas
            con su titulo y su contenido (que puede traer HTML del editor del ERP). */
         $renglones = [];
         foreach ($articulo->descriptions as $descripcion) {
-            $renglones[] = SeoContexto::primeroNoVacio([$descripcion->title]);
-            $renglones[] = self::textoConRenglones($descripcion->content);
+            $renglones[] = SeoContexto::textoPlano($descripcion->title);
+            $renglones[] = SeoContexto::textoConRenglones($descripcion->content);
         }
         $texto_largo = trim(implode("\n", array_filter($renglones, function ($r) { return $r !== ''; })));
         $texto_plano = SeoContexto::textoPlano($texto_largo);
@@ -681,7 +681,7 @@ class SeoPaginas
         $ctx = $this->ctx;
         $canonica = self::urlFicha($ctx, $promocion);
         $precio = $ctx->precio($promocion);
-        $texto_largo = self::textoConRenglones($promocion->description);
+        $texto_largo = SeoContexto::textoConRenglones($promocion->description);
         $texto_plano = SeoContexto::textoPlano($texto_largo);
 
         $descripcion = $texto_plano !== ''
@@ -755,12 +755,12 @@ class SeoPaginas
 
         if ($clave === 'quienes-somos') {
             $titulo = SeoContexto::primeroNoVacio([SeoContexto::textoPlano($ctx->config->titulo_quienes_somos)], $titulo);
-            $texto = self::textoConRenglones($ctx->config->quienes_somos);
+            $texto = SeoContexto::textoConRenglones($ctx->config->quienes_somos);
             $descripcion = $texto !== '' ? SeoContexto::textoPlano($texto) : 'Conocé a '.$ctx->nombre.': quiénes somos y cómo trabajamos.';
             $contenido = $texto !== '' ? SeoHtml::parrafos($texto) : '<p>'.e($descripcion).'</p>';
         } else if ($clave === 'contacto') {
             $descripcion = 'Contacto de '.$ctx->nombre.': teléfono, mail y dirección. Escribinos por tus pedidos y consultas.';
-            $mensaje = self::textoConRenglones($ctx->config->mensaje_contacto);
+            $mensaje = SeoContexto::textoConRenglones($ctx->config->mensaje_contacto);
             $contenido = '<p>'.e($descripcion).'</p>'.($mensaje !== '' ? SeoHtml::parrafos($mensaje) : '');
         } else if ($clave === 'catalogo') {
             $descripcion = 'Catálogo de '.$ctx->nombre.': todas las categorías de productos. Comprá online con envío o retiro en el local.';
@@ -1046,27 +1046,6 @@ class SeoPaginas
             $texto .= ' a '.SeoContexto::formatearPrecio($precio);
         }
         return $texto.' en '.$this->ctx->nombre.'. Comprá online con envío o retiro en el local.';
-    }
-
-    /**
-     * Texto plano conservando los cortes de renglon (para los parrafos del cuerpo).
-     *
-     * @param  string|null  $html
-     * @return string
-     */
-    static function textoConRenglones($html)
-    {
-        $texto = preg_replace('/<\s*br\s*\/?>|<\/\s*(p|div|li|h[1-6])\s*>/iu', "\n", (string) $html);
-        $texto = preg_replace('/<[^>]*>/u', ' ', $texto);
-        $texto = html_entity_decode($texto, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        $renglones = [];
-        foreach (preg_split('/\R/u', $texto) as $renglon) {
-            $renglon = trim(preg_replace('/[^\S\n]+/u', ' ', $renglon));
-            if ($renglon !== '') {
-                $renglones[] = $renglon;
-            }
-        }
-        return implode("\n", $renglones);
     }
 
     /**

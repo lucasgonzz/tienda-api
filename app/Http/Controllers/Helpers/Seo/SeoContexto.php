@@ -371,10 +371,35 @@ class SeoContexto
      */
     static function textoPlano($html)
     {
-        $texto = preg_replace('/<[^>]*>/u', ' ', (string) $html);
-        $texto = html_entity_decode($texto, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        $texto = preg_replace('/\s+/u', ' ', $texto);
-        return trim((string) $texto);
+        return trim(str_replace("\n", ' ', self::textoConRenglones($html)));
+    }
+
+    /**
+     * Texto plano conservando los cortes de renglon (para los parrafos del cuerpo).
+     *
+     * Las etiquetas de bloque (p, div, li, br, h1..h6...) cortan renglon; las de linea (b, i,
+     * span, a...) se sacan SIN dejar espacio, para que "<b>ciruela</b>." quede "ciruela." y
+     * no "ciruela .". El &nbsp; se vuelve un espacio comun: \s de PCRE no lo reconoce.
+     *
+     * @param  string|null  $html
+     * @return string
+     */
+    static function textoConRenglones($html)
+    {
+        $bloques = '/<\s*br\s*\/?>|<\/?\s*(p|div|li|ul|ol|h[1-6]|tr|td|th|table|section|article|blockquote|header|footer)\b[^>]*>/iu';
+        $texto = preg_replace($bloques, "\n", (string) $html);
+        $texto = preg_replace('/<[^>]*>/u', '', (string) $texto);
+        $texto = html_entity_decode((string) $texto, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $texto = str_replace(["\u{00A0}", "\r"], [' ', "\n"], $texto);
+
+        $renglones = [];
+        foreach (explode("\n", $texto) as $renglon) {
+            $renglon = trim((string) preg_replace('/[ \t\f\v]+/u', ' ', $renglon));
+            if ($renglon !== '') {
+                $renglones[] = $renglon;
+            }
+        }
+        return implode("\n", $renglones);
     }
 
     /**
