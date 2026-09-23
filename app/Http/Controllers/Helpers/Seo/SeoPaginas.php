@@ -585,6 +585,19 @@ class SeoPaginas
             $renglones[] = SeoContexto::textoConRenglones($descripcion->content);
         }
         $texto_largo = trim(implode("\n", array_filter($renglones, function ($r) { return $r !== ''; })));
+
+        /* 🔴 Respaldo: el campo "Descripcion" del articulo (columna `articles.descripcion`, texto
+           libre del ERP). La ficha visible de tienda-spa (helpers/descripcion_articulo.js) lo usa
+           cuando el articulo no tiene NINGUNA descripcion con titulo, y esta capa tiene que decir
+           lo mismo que la pagina: si no, Google y WhatsApp veian la descripcion generica de un
+           articulo que en la tienda si tiene descripcion. Va SOLO si lo anterior quedo vacio (con
+           descripciones con titulo, el texto suelto no se usa, igual que en la pagina).
+           Se lee sin select de columnas a proposito (ver arriba): la base de un cliente con una
+           version anterior a la columna no la tiene, el atributo falta y se lee como null, o sea
+           que en ese caso el respaldo simplemente no se activa. */
+        if ($texto_largo === '') {
+            $texto_largo = SeoContexto::textoConRenglones($articulo->descripcion);
+        }
         $texto_plano = SeoContexto::textoPlano($texto_largo);
 
         $descripcion = $texto_plano !== ''

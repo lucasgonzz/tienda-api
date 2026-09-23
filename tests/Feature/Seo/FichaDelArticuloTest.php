@@ -219,6 +219,69 @@ class FichaDelArticuloTest extends TestCase
         );
     }
 
+    /**
+     * 🔴 Solo con el campo "Descripcion" del articulo (`articles.descripcion`), sin descripciones
+     * con titulo: es el respaldo. Meta description, JSON-LD y la seccion "Descripcion" del cuerpo
+     * tienen que salir de ese texto y NO de la generica (que era lo que veia Google).
+     */
+    public function test_el_campo_descripcion_es_el_respaldo_si_no_hay_descripciones_con_titulo()
+    {
+        $articulo = $this->articulo('Cesto Gris', [
+            'final_price' => 5000,
+            'descripcion' => "<p>Cesto de basura con porta papel.</p>\nMedidas: 30 x 20&nbsp;cm.",
+        ]);
+
+        $pagina = $this->pagina($this->rutaDe($articulo));
+
+        $this->assertSame('Cesto de basura con porta papel. Medidas: 30 x 20 cm.', $pagina['descripcion']);
+        $this->assertStringNotContainsString('Comprá online', $pagina['descripcion']);
+
+        $producto = $this->jsonLd($pagina, 'Product');
+        $this->assertSame('Cesto de basura con porta papel. Medidas: 30 x 20 cm.', $producto['description']);
+
+        $this->assertStringContainsString('<h2>Descripción</h2>', $pagina['cuerpo_html']);
+        $this->assertStringContainsString('Cesto de basura con porta papel.', $pagina['cuerpo_html']);
+    }
+
+    /** Con descripciones con titulo, el texto suelto NO se usa (igual que en la pagina visible). */
+    public function test_con_descripciones_con_titulo_el_campo_descripcion_no_se_usa()
+    {
+        $articulo = $this->articulo('Cesto Negro', ['descripcion' => 'TEXTO SUELTO QUE NO DEBE SALIR']);
+        $this->descripcion($articulo, 'Material', 'Plástico de alta densidad.');
+
+        $pagina = $this->pagina($this->rutaDe($articulo));
+
+        $this->assertSame('Material Plástico de alta densidad.', $pagina['descripcion']);
+        $this->assertStringNotContainsString('TEXTO SUELTO', json_encode($pagina, JSON_UNESCAPED_UNICODE));
+    }
+
+    /** Una descripcion con titulo vacia no cuenta: cae al campo "Descripcion". */
+    public function test_una_descripcion_vacia_cae_al_campo_descripcion()
+    {
+        $articulo = $this->articulo('Cesto Blanco', ['descripcion' => 'Respaldo del campo descripcion.']);
+        $this->descripcion($articulo, '', '<p> </p>');
+
+        $this->assertSame(
+            'Respaldo del campo descripcion.',
+            $this->pagina($this->rutaDe($articulo))['descripcion']
+        );
+    }
+
+    /** Un campo "Descripcion" en blanco no pisa la generica; y uno largo se corta en palabra. */
+    public function test_el_campo_descripcion_en_blanco_deja_la_generica_y_el_largo_se_corta()
+    {
+        $en_blanco = $this->articulo('Cesto Rojo', ['final_price' => 5000, 'descripcion' => '   ']);
+        $this->assertStringContainsString(
+            'Comprá online con envío o retiro en el local.',
+            $this->pagina($this->rutaDe($en_blanco))['descripcion']
+        );
+
+        $largo = $this->articulo('Cesto Largo', ['descripcion' => str_repeat('palabra ', 60)]);
+        $descripcion = $this->pagina($this->rutaDe($largo))['descripcion'];
+        $this->assertLessThanOrEqual(160, mb_strlen($descripcion));
+        $this->assertStringEndsWith('palabra…', $descripcion);
+    }
+
     /** Una descripcion larga se corta en palabra, con '…', sin pasar de 160. */
     public function test_la_descripcion_larga_se_corta_en_palabra()
     {
