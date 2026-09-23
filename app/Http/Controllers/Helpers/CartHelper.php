@@ -636,7 +636,65 @@ class CartHelper {
             return Self::get_price_range($articles, $article, $article_groups);
         }
 
-        return $article['final_price'];
+        $precio = $article['final_price'];
+
+        if (is_null($precio)) {
+            $precio = Self::precio_resuelto_por_el_servidor($article, $user_id);
+        }
+
+        return $precio;
+    }
+
+    /**
+     * El respaldo de `get_price()` cuando el payload llega con `final_price` en null: el precio
+     * del articulo resuelto del lado del servidor para el comprador de ESTE request, con la misma
+     * `ArticleHelper::checkPriceTypes()` que usa la tienda para mostrarlo. No es una copia de la
+     * logica: es la misma funcion, asi que no se puede desincronizar.
+     *
+     * ── POR QUE (Fenix, 23/9/2026) ──────────────────────────────────────────────────────────
+     * Con la tienda en "solo vinculados", `checkPriceTypes()` le borra los precios al anonimo
+     * (`esconder_precios_al_anonimo`). Un comprador que se loguea con articulos pedidos como
+     * anonimo en el store del SPA los agrega al carrito con `final_price` null, y eso terminaba
+     * en `Column 'price' cannot be null` en `article_cart`: un 500 y un carrito huerfano por
+     * intento (catorce en cinco minutos, carritos 5209–5222).
+     *
+     * Solo actua en el ultimo eslabon de la precedencia (ver `get_price()`), y solo cuando el
+     * payload no trae precio: cualquier linea con `final_price` sigue cobrando lo mismo que
+     * hoy, byte por byte. Si el comprador tampoco puede ver precios (anonimo en tienda
+     * restringida), `checkPriceTypes()` devuelve null otra vez y queda como hoy.
+     *
+     * El articulo se busca dentro del comercio del CARRITO cuando se conoce (`$user_id`, que lo
+     * escribio el servidor), no del que diga el payload.
+     *
+     * @param  array  $article  la linea del payload
+     * @param  int|null  $user_id  comercio dueño del carrito
+     * @return mixed  el precio, o null si el servidor tampoco lo puede resolver
+     */
+    static function precio_resuelto_por_el_servidor($article, $user_id = null) {
+        if (!isset($article['id'])) {
+            return null;
+        }
+
+        /* `price_types` es lo unico que checkPriceTypes() lee del articulo (casos 3 y 4). */
+        $query = Article::where('id', $article['id'])->with('price_types');
+
+        if (!is_null($user_id)) {
+            $query->where('user_id', $user_id);
+        }
+
+        $articulo = $query->first();
+
+        if (is_null($articulo)) {
+            return null;
+        }
+
+        $articulos = ArticleHelper::checkPriceTypes(collect([$articulo]));
+
+        $precio = $articulos->first()->final_price;
+
+        Log::info('get_price: final_price null en el payload del articulo '.$articulo->id.', resuelto por el servidor: '.var_export($precio, true));
+
+        return $precio;
     }
 
     /**
