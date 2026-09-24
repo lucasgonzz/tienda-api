@@ -73,6 +73,12 @@ class OnlineConfiguration extends Model
         // null: siempre disponibles, sin tope). Mismo criterio que mostrar_stock_disponible:
         // la columna la agrega empresa-api, este repo solo la lee.
         'ignorar_stock' => 'boolean',
+        // Si la tienda muestra la seccion "Novedades" del home y el item "Marca" de la barra de
+        // navegacion. Prendidos de fabrica (default 1). Las columnas las agrega empresa-api en su
+        // migracion de online_configurations: este repo solo las lee. Cast boolean para que
+        // tienda-spa reciba un tipo consistente en CommerceController@commerce.
+        'mostrar_novedades_en_home' => 'boolean',
+        'mostrar_marca_en_nav' => 'boolean',
     ];
 
     function online_price_type() {
