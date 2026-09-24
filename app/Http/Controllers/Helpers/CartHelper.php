@@ -477,9 +477,21 @@ class CartHelper {
                 /* El tramo sale de la base SIN ajustar (AjustesDeClienteHelper no toca
                    `article_price_ranges`), asi que el factor del cliente se aplica aca, una vez.
                    El `final_price` de la vuelta al precio normal, mas abajo, ya viene ajustado de
-                   checkPriceTypes() y no se vuelve a multiplicar. */
+                   checkPriceTypes() y no se vuelve a multiplicar.
+
+                   🔴 Y por eso mismo el precio base del tramo por PORCENTAJE es
+                   `precio_sin_ajustes()` y NO `final_price`: el porcentaje se aplica en la escala
+                   CRUDA, y el factor del cliente lo pone el `ajustar()` de aca afuera, una sola
+                   vez. Con `final_price` —que checkPriceTypes ya ajusto— el factor iria dos veces,
+                   que es exactamente el defecto que documenta el bloque largo de `get_price()`
+                   (1000 × 0,945 × 0,945 = 893,03 en un camino y 945 en el otro). Sin ajustes los
+                   dos numeros son el mismo y esto no cambia nada para nadie. */
                 $precio = AjustesDeClienteHelper::ajustar(
-                    ArticlePriceRangeHelper::precio($articulo->article_price_ranges, $linea->amount),
+                    ArticlePriceRangeHelper::precio(
+                        $articulo->article_price_ranges,
+                        $linea->amount,
+                        AjustesDeClienteHelper::precio_sin_ajustes($articulo)
+                    ),
                     $ajustes
                 );
 
@@ -692,15 +704,19 @@ class CartHelper {
                 continue;
             }
 
+            /* La base CRUDA de esta linea, la misma que se ajusta mas abajo. Se resuelve antes de
+               preguntar por el tramo porque un tramo por PORCENTAJE la necesita para saber si
+               aplica: sin ella el helper devolveria null y esta funcion le pisaria el precio a una
+               linea que el carril de tramos si gobierna. */
+            $base = AjustesDeClienteHelper::precio_sin_ajustes($articulo);
+
             /* Carril de tramos por articulo, solo si un tramo matchea ESTA cantidad. */
             if (
                 $articulo->relationLoaded('article_price_ranges')
-                && !is_null(ArticlePriceRangeHelper::precio($articulo->article_price_ranges, $linea->amount))
+                && !is_null(ArticlePriceRangeHelper::precio($articulo->article_price_ranges, $linea->amount, $base))
             ) {
                 continue;
             }
-
-            $base = AjustesDeClienteHelper::precio_sin_ajustes($articulo);
 
             if (!is_numeric($base)) {
                 continue;
@@ -1001,10 +1017,23 @@ class CartHelper {
          *    Y no cambia nada para nadie: sin filas en `article_price_ranges` esta rama devuelve
          *    null y el precio sale por donde salía, byte por byte.
          */
+        /* 🔴 El precio base del tramo por PORCENTAJE es el `final_price` DESAJUSTADO de la linea —
+           o sea, el eslabon 4 de esta misma cadena, el numero que se devolveria unas lineas mas
+           abajo si ningun tramo matcheara. Es la definicion literal de "sobre que se descuenta":
+           el porcentaje tiene que morder el precio que el comprador iba a pagar, no otro.
+
+           Viene desajustado solo: `get_price()` pasa la linea entera por `desajustar_linea()`
+           antes de llamar acá, justamente para que todos los eslabones corran en escala cruda y el
+           factor del cliente se aplique UNA sola vez al final. Leerlo de `$article` y no
+           recalcularlo es lo que garantiza que las dos ramas usen el mismo numero.
+
+           Sin `final_price` en el payload queda null, el tramo por porcentaje no aplica y la linea
+           sigue por la cadena de siempre hasta el respaldo del servidor: el lado seguro. */
         $precio_por_rango = ArticlePriceRangeHelper::precio_de_articulo(
             isset($article['id']) ? $article['id'] : null,
             Self::cantidad_de_linea($article),
-            collect($articles)->pluck('id')->all()
+            collect($articles)->pluck('id')->all(),
+            $article['final_price'] ?? null
         );
 
         if (!is_null($precio_por_rango)) {

@@ -38,11 +38,40 @@ use Illuminate\Support\Facades\Schema;
  *   3. Entre los que matchean gana el de MAYOR `amount`; con `amount` igual gana EL PRIMERO DEL
  *      ARRAY. (El `reduce` del gemelo usa `>` estricto, o sea que ante empate se queda con el
  *      acumulador, que es el primero.)
- *   4. Recien sobre el GANADOR se mira el `price`: nulo o cero -> el rango NO aplica y la linea
- *      sale al precio normal. El orden importa y no es un detalle: el gemelo elige primero por
- *      `amount` y despues hace `Number(range.price)`, donde `Number(null) === 0` es falsy. O sea
- *      que un ganador con `price` nulo NO deja competir al segundo — se cae al precio normal.
- *      Filtrar los nulos ANTES del desempate daria otro precio en ese borde exacto.
+ *   4. Recien sobre el GANADOR se le pregunta el MODO — y el modo tiene tres valores, no dos
+ *      (mision oferta-por-cantidad-porcentaje, 24/9/2026). En orden, sin empates posibles:
+ *
+ *        4.a. `price > 0`  -> PRECIO FIJO. Gana SIEMPRE, aunque el tramo tambien traiga
+ *             porcentaje. Es el valor absoluto que el comercio escribio pensando en un numero, y
+ *             es lo UNICO que existia hasta esta mision: cualquier fila vieja de cualquier
+ *             cliente se sigue comportando exactamente igual que antes. Por eso gana, y por eso
+ *             el orden no se invierte "para simplificar": invertirlo le cambiaria el precio a
+ *             filas que hoy ya estan cobrando bien en produccion.
+ *
+ *        4.b. Si no, `porcentaje > 0 && porcentaje < 100` -> PORCENTAJE sobre el precio que la
+ *             linea IBA A TENER (`$precio_base`). El 100 queda AFUERA a proposito: dejaria el
+ *             precio en cero, y un articulo regalado no es un descuento por cantidad, es un dato
+ *             mal cargado. Es el mismo lado seguro que el `<= 0` del precio fijo, y el mismo
+ *             borde que ya descarta `CriterioDeOfertaPorCantidadHelper` en `empresa-api`.
+ *
+ *        4.c. Cualquier otra cosa -> NINGUNO: el rango NO aplica y la linea sale al precio
+ *             normal. Nunca un default permisivo.
+ *
+ *      🔴 Y el ORDEN entre el criterio 3 y el 4 tampoco se toca: el ganador se elige SOLO por
+ *      `amount`, sin mirarle ni el `price` ni el `porcentaje`, y recien sobre el ganador se
+ *      pregunta el modo. El gemelo elige primero por `amount` y despues hace
+ *      `Number(range.price)`, donde `Number(null) === 0` es falsy. O sea que un ganador sin valor
+ *      usable NO deja competir al segundo — se cae al precio normal. Filtrar los tramos sin valor
+ *      ANTES del desempate daria otro precio en ese borde exacto, y esta MEDIDO: el 16/9/2026,
+ *      $3.000 mostrados contra $3.948 cobrados.
+ *
+ * 🔴 LA COLUMNA `porcentaje` LA MIGRA `empresa-api`, NO ESTE REPO, y llega a cada cliente con el
+ * release del ERP mientras la tienda la despliega Lucas a mano, sitio por sitio. O sea que va a
+ * haber clientes con la tienda nueva contra una base SIN la columna durante dias. Eloquent
+ * devuelve null para un atributo que no existe en la tabla, asi que LEERLA es seguro y el tramo
+ * cae solo en el criterio 4.c. Lo que reventaria es NOMBRARLA EN UNA QUERY: nada de
+ * `whereNotNull('porcentaje')`, ni un `select` explicito, ni un `orderBy`. Este helper no la
+ * nombra en ningun lado y no tiene que empezar a hacerlo.
  *
  * ──────────────────────────────────────────────────────────────────────────────────────────────
  * DONDE SE USA
@@ -180,9 +209,12 @@ class ArticlePriceRangeHelper
      * @param  mixed  $article_id
      * @param  mixed  $cantidad
      * @param  array  $ids_del_lote  Los ids del resto de las lineas, para traerlas todas juntas.
+     * @param  mixed  $precio_base   El precio que la linea iba a tener si ningun tramo matcheara,
+     *                               EN LA MISMA ESCALA en la que el llamador va a usar el
+     *                               resultado. Solo lo necesita el modo PORCENTAJE. Ver `precio()`.
      * @return float|null
      */
-    public static function precio_de_articulo($article_id, $cantidad, array $ids_del_lote = [])
+    public static function precio_de_articulo($article_id, $cantidad, array $ids_del_lote = [], $precio_base = null)
     {
         if (!self::hay_tabla()) {
             return null;
@@ -197,7 +229,7 @@ class ArticlePriceRangeHelper
         $ids_del_lote[] = $article_id;
         self::precargar($ids_del_lote);
 
-        return self::precio(self::$rangos_por_articulo[$article_id], $cantidad);
+        return self::precio(self::$rangos_por_articulo[$article_id], $cantidad, $precio_base);
     }
 
     /**
@@ -244,12 +276,21 @@ class ArticlePriceRangeHelper
      * El precio unitario que le corresponde a `$cantidad` segun los tramos de `$rangos`, o null si
      * ningun tramo aplica (y entonces la linea sale al precio normal).
      *
-     * @param  mixed  $rangos    Coleccion de Eloquent, array de arrays o array de objetos. Puede venir
-     *                           de la base (`$article->article_price_ranges`) o del payload del SPA.
-     * @param  mixed  $cantidad  La cantidad de ESA linea.
+     * 🔴 `$precio_base` es el precio que la linea IBA A TENER si ningun tramo hubiera matcheado,
+     * y tiene que venir EN LA MISMA ESCALA en la que el llamador va a usar el resultado. Sin el,
+     * un tramo por porcentaje no tiene sobre que aplicarse y cae al precio normal (que es el lado
+     * seguro): el default `null` existe para que un llamador viejo que solo conoce el precio fijo
+     * siga dando exactamente lo mismo que antes, byte por byte. Los tres llamadores de
+     * `CartHelper` lo pasan; cada uno dice de donde saca su numero.
+     *
+     * @param  mixed  $rangos       Coleccion de Eloquent, array de arrays o array de objetos. Puede
+     *                              venir de la base (`$article->article_price_ranges`) o del
+     *                              payload del SPA.
+     * @param  mixed  $cantidad     La cantidad de ESA linea.
+     * @param  mixed  $precio_base  El precio normal de la linea, para el modo PORCENTAJE.
      * @return float|null
      */
-    public static function precio($rangos, $cantidad)
+    public static function precio($rangos, $cantidad, $precio_base = null)
     {
         $rango = self::rango($rangos, $cantidad);
 
@@ -257,21 +298,73 @@ class ArticlePriceRangeHelper
             return null;
         }
 
-        $price = self::valor($rango, 'price');
+        /* Criterio 4.a — PRECIO FIJO, y gana primero.
 
-        /* Criterio 4, y va sobre el GANADOR: `price` es nullable en la base y el gemelo hace
-           Number(null) === 0, que es falsy. Nulo, no numerico o cero -> el rango no aplica.
+           `price` es nullable en la base y el gemelo hace Number(null) === 0, que es falsy. Nulo,
+           no numerico o cero -> no hay precio fijo y se sigue con el porcentaje.
 
            El `<=` y no `==` es deliberado: un tramo con precio negativo es un dato imposible de
            cargar con sentido (el ABM del articulo usa un input numerico), pero si llegara a
            existir, aceptarlo seria cobrar plata al reves. Con `==` este lado lo aceptaba y el
            gemelo del SPA lo descartaba, o sea que volvia a haber dos criterios para la misma
            regla. Los dos descartan, y descartan hacia el lado seguro. */
-        if (is_null($price) || !is_numeric($price) || (float) $price <= 0.0) {
+        $price = self::valor($rango, 'price');
+
+        if (!is_null($price) && is_numeric($price) && (float) $price > 0.0) {
+            return (float) $price;
+        }
+
+        /* Criterio 4.b — PORCENTAJE.
+
+           ⚠️ `porcentaje` se LEE y no se consulta: contra una base sin la columna (cliente con la
+           tienda nueva y el ERP viejo) Eloquent devuelve null y el tramo cae solo en el criterio
+           4.c. Nombrarla en una query seria un "Unknown column" en el medio del carrito. */
+        $porcentaje = self::valor($rango, 'porcentaje');
+
+        if (!self::es_porcentaje_usable($porcentaje)) {
             return null;
         }
 
-        return (float) $price;
+        /* Sin precio base no hay a que aplicarle el porcentaje. Devolver 0 seria regalar el
+           articulo; devolver null lo manda al precio normal, que es el lado seguro. */
+        if (!is_numeric($precio_base) || (float) $precio_base <= 0.0) {
+            return null;
+        }
+
+        /* 🔴 El redondeo a centavos no es cosmetico y va acá, no en el llamador. Son dos motivos:
+           el gemelo del SPA muestra `Math.round(base * (1 - p / 100) * 100) / 100` (el mismo molde
+           que `precio_con_oferta_por_cantidad()`), asi que sin esto pantalla y servidor dirian
+           numeros distintos por fracciones de centavo; y `article_cart.price` es `double(20,2)`,
+           o sea que MySQL redondea igual al escribir — y entonces la comparacion
+           `(float) $precio === (float) $linea->price` de `resincronizar_precios_por_rango()` no
+           daria nunca igual y cada recalculo del carrito escribiria una fila al pedo. */
+        return round((float) $precio_base * (1 - ((float) $porcentaje / 100)), 2);
+    }
+
+    /**
+     * True si el valor es un porcentaje de descuento USABLE: mayor a 0 y menor a 100.
+     *
+     * 🔴 Es el criterio 4.b, y es el gemelo literal de
+     * `CriterioDeOfertaPorCantidadHelper::es_porcentaje_usable()` de `empresa-api` (quien
+     * PERSISTE) y del mismo borde en `tienda-spa/src/mixins/generals.js` (quien MUESTRA). El 100
+     * queda afuera en los tres: dejaria el precio en cero, y un articulo regalado no es un
+     * descuento por cantidad, es un dato mal cargado.
+     *
+     * Una cadena vacia, `null` o texto no numerico no son positivos, asi que no son usables — el
+     * mismo lado seguro de siempre.
+     *
+     * @param  mixed  $valor
+     * @return bool
+     */
+    private static function es_porcentaje_usable($valor)
+    {
+        if (is_null($valor) || !is_numeric($valor)) {
+            return false;
+        }
+
+        $valor = (float) $valor;
+
+        return $valor > 0.0 && $valor < 100.0;
     }
 
     /**

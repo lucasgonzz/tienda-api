@@ -46,6 +46,15 @@ trait ArmaComercioConCombosYRangos
     /** Tramo `Mayor o igual 10`, el mas profundo de la escala normal. */
     const TRAMO_10 = 3000.00;
 
+    /**
+     * El porcentaje de la oferta por cantidad de la mision oferta-por-cantidad-porcentaje
+     * (24/9/2026). Sobre PRECIO_NORMAL da PRECIO_CON_PORCENTAJE.
+     */
+    const PORCENTAJE_15 = 15.00;
+
+    /** `3948.00 × (1 - 15/100)` redondeado a centavos: lo que tiene que quedar en el pivote. */
+    const PRECIO_CON_PORCENTAJE = 3355.80;
+
     /** Precio del combo publicado de las fixtures. */
     const PRECIO_COMBO = 9000.00;
 
@@ -141,6 +150,31 @@ trait ArmaComercioConCombosYRangos
             'modo'       => $modo,
             'amount'     => $amount,
             'price'      => $price,
+        ]);
+    }
+
+    /**
+     * Un tramo por PORCENTAJE: `price` en null y el descuento en la columna nueva.
+     *
+     * Asi lo deja el ABM del ERP cuando el comercio elige el porcentaje —
+     * `CriterioDeOfertaPorCantidadHelper::normalizar_par()` limpia el otro valor—, y asi lo tiene
+     * que leer la tienda.
+     *
+     * @param  \App\Article  $articulo
+     * @param  string  $modo
+     * @param  mixed  $amount
+     * @param  mixed  $porcentaje
+     * @param  mixed  $price  Solo para el caso que carga LOS DOS y mide cual gana.
+     * @return \App\ArticlePriceRange
+     */
+    protected function tramoConPorcentaje(Article $articulo, $modo, $amount, $porcentaje, $price = null)
+    {
+        return ArticlePriceRange::create([
+            'article_id' => $articulo->id,
+            'modo'       => $modo,
+            'amount'     => $amount,
+            'price'      => $price,
+            'porcentaje' => $porcentaje,
         ]);
     }
 

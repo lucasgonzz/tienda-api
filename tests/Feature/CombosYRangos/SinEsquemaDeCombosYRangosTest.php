@@ -391,6 +391,89 @@ class SinEsquemaDeCombosYRangosTest extends TestCase
     }
 
     /**
+     * 🔴 LA COLUMNA `porcentaje` QUE TODAVIA NO LLEGO (mision oferta-por-cantidad-porcentaje,
+     * 24/9/2026).
+     *
+     * Es el escenario del contrato, no un borde: la columna la migra `empresa-api` y llega a cada
+     * cliente con el release del ERP, mientras la tienda la despliega Lucas a mano, sitio por
+     * sitio. O sea que va a haber clientes con la tienda NUEVA contra una base sin la columna
+     * durante dias.
+     *
+     * Lo que se fija acá son las dos mitades de esa compatibilidad, y la segunda es la que
+     * ninguna prueba con arrays puede ver:
+     *
+     *   1. LEER el atributo es seguro: Eloquent devuelve null para una columna que no existe, el
+     *      tramo cae en "ninguno" y la linea sale al precio normal.
+     *   2. Y nadie NOMBRA la columna en una query. Si alguien agregara un `whereNotNull`, un
+     *      `select` explicito o un `orderBy` sobre `porcentaje`, este caso se pone rojo con
+     *      "Unknown column" en el listado, en la ficha o en el carrito — que es exactamente donde
+     *      lo sufriria el cliente.
+     *
+     * ⚠️ Los tramos se cargan ANTES de esconder la columna: el INSERT si la nombra, y lo que se
+     * quiere medir es la LECTURA contra una base vieja, no el alta.
+     */
+    public function test_sin_la_columna_porcentaje_la_tienda_sigue_andando_y_cobra_el_precio_normal()
+    {
+        $comercio = $this->comercioCreado();
+        $articulo = $this->articuloPublicado($comercio, ['name' => 'Articulo Porcentaje Sin Columna']);
+
+        $this->tramoConPorcentaje($articulo, ArticlePriceRangeHelper::MODO_MAYOR_O_IGUAL, 10, self::PORCENTAJE_15);
+
+        /* Con la columna puesta el descuento SI se cobra: la contraprueba que impide que el caso
+           de abajo de verde contra un helper que no aplique nunca ningun porcentaje. */
+        $con_columna = $this->crearCarrito($comercio, [
+            'articles' => [$this->lineaDelPayload($articulo, 10)],
+        ]);
+        $con_columna->assertStatus(201);
+        $this->assertSame(self::PRECIO_CON_PORCENTAJE, $this->precioGuardado($this->carritoCreado($con_columna), $articulo->id),
+            'el escenario arranca con el porcentaje funcionando: si no, el caso seria vacuo');
+
+        $this->esconderColumnaPorcentaje();
+
+        try {
+            $this->olvidarLasMemorias();
+
+            $this->assertFalse(Schema::hasColumn('article_price_ranges', 'porcentaje'),
+                'el escenario es con la columna ESCONDIDA');
+            $this->assertTrue(ArticlePriceRangeHelper::hay_tabla(),
+                'la TABLA sigue estando: lo que falta es la columna, que es el caso del cliente atrasado');
+
+            /* 1. La home, que es el camino de `scopeWithAll()` y por lo tanto del eager load. */
+            $respuesta = $this->json('GET', '/api/articles/featured-last-uploads/'.$comercio->id.'?page=1');
+            $respuesta->assertStatus(200);
+            $this->assertNotEmpty($respuesta->json('articles'),
+                'el listado sigue llegando: ninguna query puede nombrar la columna nueva');
+
+            /* 2. La ficha del articulo, el otro camino de `scopeWithAll()`. */
+            $this->json('GET', '/api/articles/'.$articulo->slug.'/'.$comercio->id)
+                ->assertStatus(200);
+
+            /* 3. El carrito: se guarda al precio normal, porque el tramo se queda sin forma. */
+            $creado = $this->crearCarrito($comercio, [
+                'articles' => [$this->lineaDelPayload($articulo, 10)],
+            ]);
+            $creado->assertStatus(201);
+
+            $cart_id = $this->carritoCreado($creado);
+
+            $this->assertSame(self::PRECIO_NORMAL, $this->precioGuardado($cart_id, $articulo->id),
+                'sin la columna el tramo no tiene ni precio ni porcentaje: la linea sale al precio normal');
+
+            /* 4. Y el boton "Actualizar", que es el camino de la resincronizacion. */
+            $this->actualizarCantidad($cart_id, ['id' => $articulo->id, 'amount' => 12])
+                ->assertStatus(200);
+
+            $this->assertSame(self::PRECIO_NORMAL, $this->precioGuardado($cart_id, $articulo->id));
+        } finally {
+            $this->restaurarColumnaPorcentaje();
+            $this->limpiarLoCreado();
+        }
+
+        $this->assertTrue(Schema::hasColumn('article_price_ranges', 'porcentaje'),
+            'la base volvio a tener article_price_ranges.porcentaje');
+    }
+
+    /**
      * 🔴 EL ULTIMO CASO, Y NO ES DECORATIVO: la base quedo exactamente como estaba.
      *
      * Los cuatro casos de arriba hacen DDL sobre la base que comparten TODOS los tests de este
@@ -406,6 +489,9 @@ class SinEsquemaDeCombosYRangosTest extends TestCase
 
         $this->assertTrue(Schema::hasColumn('combos', 'online'));
         $this->assertFalse(Schema::hasColumn('combos', 'online'.self::SUFIJO));
+
+        $this->assertTrue(Schema::hasColumn('article_price_ranges', 'porcentaje'));
+        $this->assertFalse(Schema::hasColumn('article_price_ranges', 'porcentaje'.self::SUFIJO));
 
         $this->olvidarLasMemorias();
 
@@ -560,9 +646,30 @@ class SinEsquemaDeCombosYRangosTest extends TestCase
     private function restaurarElEsquema()
     {
         $this->restaurarColumnaOnline();
+        $this->restaurarColumnaPorcentaje();
 
         foreach (self::TABLAS as $tabla) {
             $this->restaurarTabla($tabla);
+        }
+    }
+
+    /**
+     * Esconde `article_price_ranges.porcentaje`, que es lo que le falta a la base de un cliente
+     * que todavia no recibio el release del ERP.
+     *
+     * ⚠️ Si la tabla esta escondida, la columna no existe: el `hasTable` evita un DDL que tiraria.
+     */
+    private function esconderColumnaPorcentaje()
+    {
+        if (Schema::hasTable('article_price_ranges') && Schema::hasColumn('article_price_ranges', 'porcentaje')) {
+            DB::statement('ALTER TABLE `article_price_ranges` RENAME COLUMN `porcentaje` TO `porcentaje'.self::SUFIJO.'`');
+        }
+    }
+
+    private function restaurarColumnaPorcentaje()
+    {
+        if (Schema::hasTable('article_price_ranges') && Schema::hasColumn('article_price_ranges', 'porcentaje'.self::SUFIJO)) {
+            DB::statement('ALTER TABLE `article_price_ranges` RENAME COLUMN `porcentaje'.self::SUFIJO.'` TO `porcentaje`');
         }
     }
 

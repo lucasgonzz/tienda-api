@@ -264,6 +264,57 @@ class CarritoConAjustesTest extends TestCase
         $this->assertSame(945.0, $this->precioDeLaLinea('article_cart', $cart_id));
     }
 
+    /**
+     * 🔴 EL TRAMO POR PORCENTAJE MUERDE LA BASE CRUDA, Y RECIEN DESPUES VA EL FACTOR
+     * (mision oferta-por-cantidad-porcentaje, 24/9/2026).
+     *
+     * Es el unico lugar donde la forma nueva de la oferta por cantidad puede equivocarse de
+     * ESCALA, y el error seria invisible sin ajustes de cliente: sin contrato el precio crudo y el
+     * ajustado son el mismo numero, asi que toda la carpeta `CombosYRangos` daria verde con la
+     * cuenta hecha sobre el numero equivocado.
+     *
+     * Las dos cadenas posibles, con 20% sobre un articulo de $1.000 y un comprador con 10% de
+     * descuento y 5% de recargo (factor 0,945):
+     *
+     *   · CORRECTA:   1000 × 0,80 = 800   ->  × 0,945 = 756,00
+     *   · EQUIVOCADA: 945  × 0,80 = 756   ->  × 0,945 = 714,42   (el factor va dos veces)
+     *
+     * O sea el mismo defecto de doble factor que documenta el bloque largo de `get_price()`, por
+     * un eslabon nuevo. Y el 756 no es casual: es exactamente lo que da el tramo de PRECIO FIJO de
+     * $800 del caso de arriba, que es la comprobacion de que las dos formas de la oferta terminan
+     * en la misma escala.
+     */
+    public function test_el_tramo_por_porcentaje_muerde_la_base_cruda_y_el_factor_va_una_sola_vez()
+    {
+        list($comprador, $articulo) = $this->compradorConDescuentoYRecargo(1000);
+
+        $tramo_id = DB::table('article_price_ranges')->insertGetId([
+            'article_id' => $articulo->id,
+            'modo'       => 'Mayor o igual',
+            'amount'     => 5,
+            'price'      => null,
+            'porcentaje' => 20,
+            'created_at' => Carbon::now(),
+            'updated_at' => Carbon::now(),
+        ]);
+        $this->anotar('article_price_ranges', $tramo_id);
+
+        $cart_id = $this->guardarCarrito([$this->lineaDelSpa($articulo, 5)]);
+
+        $this->assertSame(756.0, $this->precioDeLaLinea('article_cart', $cart_id),
+            '1000 menos 20% son 800, y recien ahi el factor del cliente: 756. Nunca 714,42.');
+
+        /* Y "Actualizar" no lo mueve: la resincronizacion resuelve la MISMA base cruda. */
+        $this->actualizarCantidad($cart_id, $articulo->id, 6);
+
+        $this->assertSame(756.0, $this->precioDeLaLinea('article_cart', $cart_id));
+
+        /* Bajar a 1 sale del tramo: vuelve al precio normal ajustado, 945. */
+        $this->actualizarCantidad($cart_id, $articulo->id, 1);
+
+        $this->assertSame(945.0, $this->precioDeLaLinea('article_cart', $cart_id));
+    }
+
     /** Decision 2: la promocion de vinoteca tambien lleva el factor, una vez. 2000 -> 1890. */
     public function test_la_promo_en_el_carrito_guarda_el_precio_ajustado()
     {

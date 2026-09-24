@@ -90,6 +90,42 @@ class PrecioDelCarritoPorCantidadTest extends TestCase
         return (int) $respuesta->json('cart.id');
     }
 
+    /**
+     * Un articulo del comercio con UN tramo `Mayor o igual 10 -> 15%` y nada mas.
+     *
+     * Deliberadamente sin la escala de precios fijos: asi el unico numero que puede explicar lo
+     * guardado es el del porcentaje.
+     *
+     * @param  string  $nombre
+     * @return \App\Article
+     */
+    private function articuloConPorcentaje($nombre)
+    {
+        $articulo = $this->articuloPublicado($this->comercio, ['name' => $nombre]);
+
+        $this->tramoConPorcentaje($articulo, ArticlePriceRangeHelper::MODO_MAYOR_O_IGUAL, 10, self::PORCENTAJE_15);
+
+        return $articulo;
+    }
+
+    /**
+     * Un carrito nuevo con N unidades de UN articulo cualquiera, y su id.
+     *
+     * @param  \App\Article  $articulo
+     * @param  int|float  $amount
+     * @return int
+     */
+    private function carritoDe($articulo, $amount)
+    {
+        $respuesta = $this->crearCarrito($this->comercio, [
+            'articles' => [$this->lineaDelPayload($articulo, $amount)],
+        ]);
+
+        $respuesta->assertStatus(201);
+
+        return (int) $respuesta->json('cart.id');
+    }
+
     /*
     |---------------------------------------------------------------------------------------------
     | Agregar al carrito: el precio guardado sigue a la cantidad
@@ -383,6 +419,214 @@ class PrecioDelCarritoPorCantidadTest extends TestCase
         $respuesta->assertStatus(201);
 
         $this->assertSame(3000.00, $this->precioGuardado((int) $respuesta->json('cart.id'), $articulo->id));
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | La OFERTA POR CANTIDAD EN PORCENTAJE, cobrada de punta a punta
+    | (mision oferta-por-cantidad-porcentaje, 24/9/2026)
+    |
+    | `MatcheoDeTramosTest` fija el criterio sobre arrays; estos casos lo fijan sobre la fila de
+    | `article_cart` que se cobra al confirmar el pedido, que es donde el defecto se paga.
+    |---------------------------------------------------------------------------------------------
+    */
+
+    /**
+     * Un articulo con `Mayor o igual 10 -> 15%` y un comprador llevando 10: el pivote guarda
+     * $3.355,80, que es $3.948 menos el 15%.
+     *
+     * Es el pedido literal de Lucas ("a partir de 10 unidades, 15% de descuento") medido donde
+     * importa: en la plata.
+     */
+    public function test_un_tramo_por_porcentaje_se_cobra_de_punta_a_punta()
+    {
+        $articulo = $this->articuloConPorcentaje('Articulo Porcentaje');
+
+        $cart_id = $this->carritoDe($articulo, 10);
+
+        $this->assertSame(self::PRECIO_CON_PORCENTAJE, $this->precioGuardado($cart_id, $articulo->id),
+            '3948 menos el 15% son 3355,80');
+
+        $this->assertSame(round(self::PRECIO_CON_PORCENTAJE * 10, 2), $this->totalGuardado($cart_id));
+    }
+
+    /**
+     * Y una unidad menos no alcanza: con 9 no matchea el tramo y la linea sale al precio normal.
+     *
+     * Sin este caso, un helper que descontara siempre daria verde arriba.
+     */
+    public function test_por_debajo_del_tramo_el_porcentaje_no_muerde()
+    {
+        $articulo = $this->articuloConPorcentaje('Articulo Porcentaje Borde');
+
+        $cart_id = $this->carritoDe($articulo, 9);
+
+        $this->assertSame(self::PRECIO_NORMAL, $this->precioGuardado($cart_id, $articulo->id));
+    }
+
+    /**
+     * 🔴 EL BOTON "ACTUALIZAR" CON UN TRAMO POR PORCENTAJE: bajar la cantidad devuelve el precio,
+     * y volver a subirla lo vuelve a descontar.
+     *
+     * Es el mismo hueco que la mision del 16/9 tapo para el precio fijo, por el mismo camino
+     * (`update_article_amount()` no vuelve a pasar por `get_price()`), y hay que probarlo aparte
+     * porque la rama del porcentaje es codigo nuevo: la resincronizacion tiene que resolverle el
+     * PRECIO BASE ademas del tramo, y ahi es donde se puede equivocar de escala sin que nada
+     * avise.
+     */
+    public function test_el_boton_actualizar_baja_y_sube_el_precio_con_el_porcentaje()
+    {
+        $articulo = $this->articuloConPorcentaje('Articulo Porcentaje Actualizar');
+
+        $cart_id = $this->carritoDe($articulo, 10);
+
+        $this->assertSame(self::PRECIO_CON_PORCENTAJE, $this->precioGuardado($cart_id, $articulo->id),
+            'el escenario arranca con el descuento puesto: si no, el caso seria vacuo');
+
+        /* Bajar a 1: el descuento ya no corresponde. */
+        $this->actualizarCantidad($cart_id, ['id' => $articulo->id, 'amount' => 1])
+            ->assertStatus(200);
+
+        $this->assertSame(1.0, $this->cantidadGuardada($cart_id, $articulo->id));
+        $this->assertSame(self::PRECIO_NORMAL, $this->precioGuardado($cart_id, $articulo->id),
+            'con 1 unidad no hay oferta por cantidad: el 15% no se puede conseguir apretando un boton');
+        $this->assertSame(self::PRECIO_NORMAL, $this->totalGuardado($cart_id));
+
+        /* Y volver a subir: el descuento vuelve. */
+        $this->actualizarCantidad($cart_id, ['id' => $articulo->id, 'amount' => 12])
+            ->assertStatus(200);
+
+        $this->assertSame(self::PRECIO_CON_PORCENTAJE, $this->precioGuardado($cart_id, $articulo->id));
+
+        /* `round()` en el numero ESPERADO y no en el medido: `3355.80 * 12` da
+           40269.600000000006 en un float de PHP, mientras que `carts.total` es una columna
+           decimal y guarda 40269.60. Lo que se afloja es la aritmetica del test, no la asercion:
+           el valor exigido sigue siendo el centavo exacto. */
+        $this->assertSame(round(self::PRECIO_CON_PORCENTAJE * 12, 2), $this->totalGuardado($cart_id));
+    }
+
+    /**
+     * 🔴 EL PORCENTAJE MUERDE EL PRECIO DE LA BASE, NO EL DEL PAYLOAD.
+     *
+     * Es la unica punta de esta funcionalidad donde el agujero preexistente de "el cliente fija el
+     * precio base" se podia AGRANDAR: si el descuento se calculara sobre el `final_price` que
+     * manda el navegador y ese numero fuera lo unico que decide, cualquiera podria mandarse un
+     * precio de $1 y llevarse el articulo. La resincronizacion relee el articulo de la base y
+     * reescribe la fila, asi que lo que queda guardado es el 15% sobre los $3.948 de verdad.
+     *
+     * ⚠️ Lo que este caso NO dice es que el agujero este cerrado para un articulo SIN tramos: ese
+     * sigue saliendo al precio del payload, igual que en master, y arreglarlo es otra mision (ver
+     * `test_un_articulo_sin_tramos_no_lo_toca_nadie`).
+     */
+    public function test_el_porcentaje_se_calcula_sobre_el_precio_de_la_base_y_no_sobre_el_del_payload()
+    {
+        $articulo = $this->articuloConPorcentaje('Articulo Porcentaje Payload');
+
+        $respuesta = $this->crearCarrito($this->comercio, [
+            'articles' => [$this->lineaDelPayload($articulo, 10, ['final_price' => 1])],
+        ]);
+
+        $respuesta->assertStatus(201);
+
+        $this->assertSame(self::PRECIO_CON_PORCENTAJE, $this->precioGuardado((int) $respuesta->json('cart.id'), $articulo->id),
+            'el 15% sale de los $3.948 de la base, no del $1 que mando el navegador');
+    }
+
+    /**
+     * Con `price` y `porcentaje` cargados en la MISMA fila gana el precio fijo, tambien por el
+     * camino real.
+     *
+     * Es compatibilidad hacia atras: `price` es lo unico que existia, y una fila vieja no puede
+     * cambiar de precio porque alguien le agregue un porcentaje despues.
+     */
+    public function test_con_los_dos_valores_cargados_el_carrito_cobra_el_precio_fijo()
+    {
+        $articulo = $this->articuloPublicado($this->comercio, ['name' => 'Articulo Los Dos']);
+
+        $this->tramoConPorcentaje($articulo, ArticlePriceRangeHelper::MODO_MAYOR_O_IGUAL, 10, 90, self::TRAMO_10);
+
+        $cart_id = $this->carritoDe($articulo, 10);
+
+        $this->assertSame(self::TRAMO_10, $this->precioGuardado($cart_id, $articulo->id),
+            'gana el precio fijo de $3.000, no los $394,80 que daria el 90%');
+    }
+
+    /**
+     * Un porcentaje de 100 NO regala el articulo: el tramo no aplica y se cobra el precio normal.
+     *
+     * Por el camino real importa mas que en el helper, porque el final de esta cadena es una fila
+     * de `article_cart` con `price` NOT NULL: un $0 guardado ahi es un pedido confirmado a cero
+     * contra la cuenta corriente de una persona.
+     */
+    public function test_un_porcentaje_de_cien_no_regala_el_articulo_en_el_carrito()
+    {
+        $articulo = $this->articuloPublicado($this->comercio, ['name' => 'Articulo Porcentaje Cien']);
+
+        $this->tramoConPorcentaje($articulo, ArticlePriceRangeHelper::MODO_MAYOR_O_IGUAL, 10, 100);
+
+        $cart_id = $this->carritoDe($articulo, 10);
+
+        $this->assertSame(self::PRECIO_NORMAL, $this->precioGuardado($cart_id, $articulo->id),
+            'el 100% no aplica: la linea sale al precio normal, nunca a $0');
+        $this->assertSame(self::PRECIO_NORMAL * 10, $this->totalGuardado($cart_id));
+    }
+
+    /**
+     * Y el eslabon solo: `get_price()` resuelve el porcentaje por su cuenta, sin depender de la
+     * resincronizacion posterior.
+     *
+     * Mismo motivo que `test_get_price_resuelve_el_tramo_por_su_cuenta` para el precio fijo: las
+     * dos defensas se tapan una a la otra y ninguna prueba de punta a punta las distingue.
+     */
+    public function test_get_price_resuelve_el_porcentaje_por_su_cuenta()
+    {
+        $articulo = $this->articuloConPorcentaje('Articulo Porcentaje get_price');
+
+        $linea = $this->lineaDelPayload($articulo, 10);
+
+        $this->assertSame(self::PRECIO_CON_PORCENTAJE, (float) \App\Http\Controllers\Helpers\CartHelper::get_price(
+            [$linea],
+            $linea,
+            false,
+            collect([]),
+            $this->comercio->id
+        ), 'get_price aplica el 15% sobre el final_price de la linea, sin esperar a set_total');
+
+        /* Y con una cantidad sin tramo devuelve el precio de siempre. */
+        $sin_tramo = $this->lineaDelPayload($articulo, 2);
+
+        $this->assertSame(self::PRECIO_NORMAL, (float) \App\Http\Controllers\Helpers\CartHelper::get_price(
+            [$sin_tramo],
+            $sin_tramo,
+            false,
+            collect([]),
+            $this->comercio->id
+        ));
+    }
+
+    /**
+     * Un articulo con la escala de precios fijos de siempre MAS un tramo por porcentaje mas
+     * profundo: cada cantidad toma lo suyo.
+     *
+     * Los dos modos conviven en el mismo articulo porque la exclusion es POR FILA, no por
+     * articulo, y quien elige sigue siendo el `amount`.
+     */
+    public function test_los_dos_modos_conviven_en_el_mismo_articulo_y_manda_la_cantidad()
+    {
+        $articulo = $this->conLaEscalaDeLaReproduccion(
+            $this->articuloPublicado($this->comercio, ['name' => 'Articulo Escala Mixta'])
+        );
+
+        $this->tramoConPorcentaje($articulo, ArticlePriceRangeHelper::MODO_MAYOR_O_IGUAL, 20, 15);
+
+        $this->assertSame(self::TRAMO_5, $this->precioGuardado($this->carritoDe($articulo, 5), $articulo->id),
+            'con 5 gana el tramo de 5, que es por precio fijo');
+
+        $this->assertSame(self::TRAMO_10, $this->precioGuardado($this->carritoDe($articulo, 10), $articulo->id),
+            'con 10 gana el de 10, tambien por precio fijo');
+
+        $this->assertSame(self::PRECIO_CON_PORCENTAJE, $this->precioGuardado($this->carritoDe($articulo, 20), $articulo->id),
+            'con 20 gana el de 20, que es por porcentaje');
     }
 
     /*
