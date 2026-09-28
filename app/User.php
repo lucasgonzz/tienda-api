@@ -61,6 +61,10 @@ class User extends Authenticatable
         'visible_password',
         'prev_password',
         'google_custom_search_api_key',
+        // Clave de Serper del comercio (misión serper-en-user-setup, 28/9/2026): la guarda el ERP en
+        // users al crear el sistema desde el admin. Es una clave paga de ComercioCity: nunca a la vidriera
+        // (CuponController@index devuelve el dueño entero con ->with('user')).
+        'serper_api_key',
         'articles_export_key',
         'clave_eliminar_article',
         'base_de_datos',
