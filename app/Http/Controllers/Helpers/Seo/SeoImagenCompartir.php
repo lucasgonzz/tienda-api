@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\Seo;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -17,9 +18,27 @@ use Illuminate\Support\Facades\Storage;
  * 🔴 `src` es un query PUBLICO: antes de pedirle nada a nadie se valida con origenPermitido()
  * contra un allowlist de host (parse_url(), nunca un regex sobre la URL completa). Y el
  * fallback es SIEMPRE un redirect 302 al `$src` original -ya validado-: si GD no tiene soporte
- * webp, si la descarga falla o tarda, o si lo descargado no decodifica como webp, esto tiene
- * que devolver lo mismo que el comprador ve HOY (sin conversion), nunca un 500 ni una
- * respuesta rota.
+ * webp, si la descarga falla o tarda, si el origen manda mas de la cuenta, o si lo descargado
+ * no decodifica como webp, esto tiene que devolver lo mismo que el comprador ve HOY (sin
+ * conversion), nunca un 500 ni una respuesta rota.
+ *
+ * 🔴 SSRF, tres capas (chequeo independiente del 28/9/2026, los tres casos reales que encontro):
+ *   1. El allowlist de host de origenPermitido() -que ademas exige el PATH exacto para
+ *      Cloudinary, no solo el host: `res.cloudinary.com` es el CDN compartido de cualquiera con
+ *      una cuenta gratis, no un host exclusivo de ComercioCity.
+ *   2. `withoutRedirecting()` en la descarga: sin esto, un host que SI esta en el allowlist
+ *      pero responde un 3xx corre el allowlist entero -Guzzle sigue el redirect solo, hacia
+ *      donde sea (una IP interna, el metadata de una nube), sin volver a validar nada.
+ *   3. Un tope de bytes leyendo con `stream => true` (leerConTope()): sin esto, un origen que
+ *      manda -o miente que va a mandar- un archivo gigante hace que cada pedido bufferee eso
+ *      entero en memoria antes de llegar siquiera a mirar si es un webp valido.
+ *
+ * 🔴 Y aparte del SSRF, un circuit breaker (segundo chequeo independiente del 28/9/2026): un
+ * webp con el CONTENEDOR bien formado pero el bitstream de adentro corrupto pasa
+ * pareceWebpCompleto() y hace fatalear a GD igual -no hay forma de evitar ESE primer fatal sin
+ * aislar en un subproceso, ver el motivo en pareceWebpCompleto(). decodificarWebp() arma un
+ * `register_shutdown_function()` para que, si eso pasa, la imagen quede marcada "rota" y los
+ * pedidos siguientes a ESA MISMA imagen vayan directo al fallback sin volver a arriesgarse.
  */
 class SeoImagenCompartir
 {
@@ -38,19 +57,30 @@ class SeoImagenCompartir
      *  el contenido bajo esa clave nunca cambia. */
     const MAX_AGE = 2592000;
 
-    /**
-     * Los unicos dos hosts que puede haber armado SeoContexto::absolutizarImagen(): el storage
-     * propio de cada comercio (api-<slug>.comerciocity.com) y Cloudinary. Cualquier otro host
-     * se rechaza antes de pedir nada.
-     */
-    const HOST_CLOUDINARY = 'res.cloudinary.com';
+    /** Techo de bytes que se acepta descargar: unos pocos MB de sobra para una foto de articulo.
+     *  Frena un origen que manda -o miente, via Content-Length, que va a mandar- un archivo
+     *  gigante: sin esto cada pedido bufferea eso entero en memoria antes de mirar si es un
+     *  webp valido siquiera. */
+    const TOPE_BYTES = 8388608; // 8 MB
+
+    /** Cuanto queda marcada "rota" una imagen que hizo fatalear a GD, antes de volver a
+     *  arriesgarla: ni permanente (por si el origen se corrige) ni tan corto que un crawler
+     *  insistente dispare el mismo fatal de nuevo en minutos. Mismo orden de magnitud que el
+     *  cache del sitemap (SeoController::CACHE_DEL_SITEMAP). */
+    const TTL_ROTO = 3600;
 
     const REGEX_HOST_COMERCIOCITY = '/(^|\.)comerciocity\.com$/i';
 
     /**
-     * ¿Es seguro pedirle esta URL a un servidor externo? `https` nada mas, y el host tiene que
-     * matchear el allowlist. SIEMPRE con parse_url() sobre el host solo -nunca un regex contra
-     * la URL completa, que un host como `comerciocity.com.evil.com` burla.
+     * ¿Es seguro pedirle esta URL a un servidor externo? SIEMPRE con parse_url() sobre el host
+     * solo -nunca un regex contra la URL completa, que un host como `comerciocity.com.evil.com`
+     * burla- y solo dos caminos:
+     *   - `https` + host `*.comerciocity.com` (el storage propio de cada comercio).
+     *   - El prefijo EXACTO de la cuenta de Cloudinary de ComercioCity
+     *     (`SeoContexto::CLOUDINARY`), no solo el host `res.cloudinary.com`: ese host es el CDN
+     *     COMPARTIDO de cualquiera con una cuenta gratis de Cloudinary (multi-tenant por path,
+     *     `res.cloudinary.com/<cloud_name>/...`), no algo exclusivo de ComercioCity -chequeo
+     *     independiente del 28/9/2026, el segundo de los tres hallazgos reales.
      *
      * @param  string|null  $src
      * @return bool
@@ -60,6 +90,11 @@ class SeoImagenCompartir
         if (!is_string($src) || trim($src) === '') {
             return false;
         }
+
+        if (str_starts_with($src, SeoContexto::CLOUDINARY)) {
+            return true;
+        }
+
         if (parse_url($src, PHP_URL_SCHEME) !== 'https') {
             return false;
         }
@@ -69,7 +104,7 @@ class SeoImagenCompartir
             return false;
         }
 
-        return preg_match(self::REGEX_HOST_COMERCIOCITY, $host) === 1 || strcasecmp($host, self::HOST_CLOUDINARY) === 0;
+        return preg_match(self::REGEX_HOST_COMERCIOCITY, $host) === 1;
     }
 
     /**
@@ -114,7 +149,8 @@ class SeoImagenCompartir
 
     /**
      * Descarga `$src` y lo convierte a JPEG, o null ante CUALQUIER falla (GD sin soporte webp,
-     * descarga que no llega, timeout, webp corrupto): el llamador cae al redirect.
+     * imagen ya marcada rota, descarga que no llega, timeout, mas bytes de la cuenta, webp
+     * corrupto): el llamador cae al redirect.
      *
      * @param  string  $src
      * @return string|null  Los bytes del JPEG.
@@ -125,8 +161,19 @@ class SeoImagenCompartir
             return null;
         }
 
+        /* Circuit breaker (ver decodificarWebp()): si un pedido anterior a esta MISMA imagen ya
+           hizo fatalear a GD, ni se intenta de nuevo -directo al fallback, sin gastar ni la
+           descarga. */
+        if (Cache::has(self::claveRoto($src))) {
+            return null;
+        }
+
         try {
-            $respuesta = Http::timeout(self::TIMEOUT_TOTAL)->connectTimeout(self::TIMEOUT_CONEXION)->get($src);
+            $respuesta = Http::timeout(self::TIMEOUT_TOTAL)
+                ->connectTimeout(self::TIMEOUT_CONEXION)
+                ->withOptions(['stream' => true])
+                ->withoutRedirecting()
+                ->get($src);
         } catch (\Throwable $e) {
             Log::warning('SeoImagenCompartir: no se pudo descargar el origen.', ['src' => $src, 'error' => $e->getMessage()]);
             return null;
@@ -136,7 +183,12 @@ class SeoImagenCompartir
             return null;
         }
 
-        $origen = self::decodificarWebp($respuesta->body());
+        $binario = self::leerConTope($respuesta);
+        if (is_null($binario)) {
+            return null;
+        }
+
+        $origen = self::decodificarWebp($binario, $src);
         if (is_null($origen)) {
             return null;
         }
@@ -145,14 +197,75 @@ class SeoImagenCompartir
     }
 
     /**
+     * Lee el body de a bloques y corta apenas se pasa de TOPE_BYTES, sin llegar a acumular un
+     * archivo entero en memoria si el origen manda -o miente que va a mandar, via
+     * Content-Length- mas de la cuenta. Con `stream => true` puesto en la request, Guzzle
+     * todavia no leyo nada del body en este punto: recien ahora se empieza a bajar.
+     *
+     * @param  \Illuminate\Http\Client\Response  $respuesta
+     * @return string|null
+     */
+    private static function leerConTope($respuesta)
+    {
+        $largo_declarado = $respuesta->header('Content-Length');
+        if (is_numeric($largo_declarado) && (int) $largo_declarado > self::TOPE_BYTES) {
+            return null;
+        }
+
+        $stream = null;
+        try {
+            $stream = $respuesta->toPsrResponse()->getBody();
+            $binario = '';
+            while (!$stream->eof()) {
+                $binario .= $stream->read(65536);
+                if (strlen($binario) > self::TOPE_BYTES) {
+                    return null;
+                }
+            }
+            return $binario;
+        } catch (\Throwable $e) {
+            Log::warning('SeoImagenCompartir: fallo leyendo el body del origen.', ['error' => $e->getMessage()]);
+            return null;
+        } finally {
+            if ($stream !== null) {
+                try {
+                    $stream->close();
+                } catch (\Throwable $e) {
+                    // Nada mas para hacer: ya se leyo o se corto, cerrar es prolijidad.
+                }
+            }
+        }
+    }
+
+    /**
      * imagecreatefromwebp() pide un archivo, no un string: se vuelca a un temporal y se borra
      * apenas se decodifica (haya salido bien o no). Antes de llamarlo, pareceWebpCompleto()
      * -ver el motivo ahi- descarta lo que ni vale la pena intentar.
      *
+     * 🔴 Circuit breaker para lo que pareceWebpCompleto() NO puede agarrar: un webp con el
+     * contenedor RIFF perfectamente consistente (tamaño declarado = tamaño real) pero el
+     * bitstream de adentro corrupto -medido con un segundo chequeo independiente el 28/9/2026:
+     * getimagesizefromstring() lo reconoce como webp valido igual, y imagecreatefromwebp()
+     * fatalea lo mismo. Nada en PHP evita ESTE primer fatal sin aislar en un subproceso (ver el
+     * motivo en pareceWebpCompleto()), pero lo que SI se puede evitar es que CADA pedido
+     * siguiente a esta MISMA imagen repita el mismo fatal:
+     *   1. Se arma un `register_shutdown_function()` ANTES de arriesgar la llamada.
+     *   2. Si `imagecreatefromwebp()` vuelve -bien o mal, no importa- se marca `$desarmado` y el
+     *      shutdown handler, cuando corra (corre SIEMPRE, tambien en el camino feliz), no hace
+     *      nada.
+     *   3. Si el proceso termina sin haber llegado a desarmarlo es porque fataleo ahi adentro:
+     *      el shutdown handler lo detecta con error_get_last() y cachea "esta imagen esta rota"
+     *      por TTL_ROTO segundos (convertir() la chequea ANTES de siquiera descargar).
+     *
+     * Confirmado con un script standalone -fuera de PHPUnit, para no arriesgar la corrida
+     * entera-: un register_shutdown_function() SI llega a correr despues de este fatal
+     * especifico, en el GD de esta maquina.
+     *
      * @param  string  $binario
+     * @param  string  $src  Para la clave del circuit breaker si esto fatalea.
      * @return \GdImage|resource|null
      */
-    private static function decodificarWebp($binario)
+    private static function decodificarWebp($binario, $src)
     {
         if (!self::pareceWebpCompleto($binario)) {
             return null;
@@ -163,13 +276,45 @@ class SeoImagenCompartir
             return null;
         }
 
+        $clave_rota = self::claveRoto($src);
+        $desarmado = false;
+        register_shutdown_function(function () use ($src, $clave_rota, &$desarmado) {
+            if ($desarmado) {
+                return;
+            }
+            try {
+                $error = error_get_last();
+                if ($error && in_array($error['type'], [E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR, E_PARSE], true)) {
+                    Cache::put($clave_rota, true, self::TTL_ROTO);
+                    Log::warning('SeoImagenCompartir: circuit breaker armado tras un fatal de GD decodificando.', ['src' => $src]);
+                }
+            } catch (\Throwable $e) {
+                // El shutdown handler es la ULTIMA linea de codigo que corre: si esto tira, el
+                // proximo pedido a esta imagen vuelve a arriesgar el mismo fatal -no es peor que
+                // no tener circuit breaker, no vale la pena complicar mas esto.
+            }
+        });
+
         try {
             file_put_contents($temporal, $binario);
             $origen = @imagecreatefromwebp($temporal);
+            $desarmado = true;
             return $origen !== false ? $origen : null;
         } finally {
             @unlink($temporal);
         }
+    }
+
+    /**
+     * La clave de cache del circuit breaker (decodificarWebp()). No privada a proposito: el
+     * test que reproduce el bitstream corrupto necesita pre-armarla sin arriesgar el fatal real.
+     *
+     * @param  string  $src
+     * @return string
+     */
+    static function claveRoto($src)
+    {
+        return 'seo:imagen-compartir:rota:'.md5($src);
     }
 
     /**
@@ -194,6 +339,11 @@ class SeoImagenCompartir
      * deshabilitados en el shared hosting donde vive tienda-api -romper la conversion en todos
      * lados por blindarla del todo en ninguno no es negocio). Cubre los dos casos reales que se
      * reprodujeron ahi: contenido que no es webp, y descarga cortada a mitad.
+     *
+     * 🔴 Lo que este chequeo NO agarra -un RIFF perfectamente consistente por fuera pero con el
+     * bitstream corrupto por dentro- lo cubre el circuit breaker de decodificarWebp(): no evita
+     * el primer fatal (nada lo evita sin el subproceso de arriba), pero evita que se repita en
+     * cada pedido siguiente a la MISMA imagen.
      *
      * @param  string  $binario
      * @return bool
