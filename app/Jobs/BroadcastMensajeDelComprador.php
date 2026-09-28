@@ -35,11 +35,19 @@ class BroadcastMensajeDelComprador implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     /**
-     * Tope del texto que viaja en el evento. Pusher corta en 10 KB por evento, y un texto de 5000
-     * caracteres multibyte (el maximo que acepta store) lo pasaria. Si se recorta, el payload lo
-     * avisa con `text_truncado: true` y la SPA va a buscar el mensaje completo por HTTP.
+     * Tope del texto que viaja en el evento, en CARACTERES. Contrato C1: 500, igual que empresa-api.
+     *
+     * 🔴 Pusher corta en 10.240 bytes el `data` del evento, y los bytes no son los caracteres: el
+     * SDK (pusher-php-server) lo codifica con json_encode SIN JSON_UNESCAPED_UNICODE, asi que cada
+     * letra acentuada viaja como `\u00e1` (6 bytes) y cada emoji como un par sustituto
+     * `\ud83d\ude00` (12 bytes). Con 2000 caracteres acentuados el payload media 12.437 bytes y
+     * Pusher lo rechazaba. Con 500, el peor caso del texto (500 emojis) son 6000 bytes y el payload
+     * entero queda por debajo del tope: lo fija un test que mide con el SDK real.
+     *
+     * Si se recorta, el payload lo avisa con `text_truncado: true` y la SPA va a buscar el mensaje
+     * completo por HTTP. En la base el mensaje queda siempre entero.
      */
-    const LARGO_MAXIMO_TEXTO = 2000;
+    const LARGO_MAXIMO_TEXTO = 500;
 
     /**
      * @var int

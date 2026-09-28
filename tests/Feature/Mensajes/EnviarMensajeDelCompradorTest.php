@@ -189,11 +189,11 @@ class EnviarMensajeDelCompradorTest extends TestCase
     }
 
     /**
-     * Pusher corta en 10 KB por evento: el texto viaja recortado a 2000 caracteres (no bytes) y lo
-     * avisa. En la base queda completo. Con caracteres multibyte, para que un substr por bytes se
-     * note (partiria una ñ y el json_encode del broadcaster fallaria).
+     * El texto viaja recortado a 500 caracteres (no bytes) y lo avisa (contrato C1). En la base
+     * queda completo. Con caracteres multibyte, para que un substr por bytes se note (partiria una
+     * ñ y el json_encode del broadcaster fallaria).
      */
-    public function test_un_texto_largo_viaja_recortado_a_2000_caracteres_y_avisa()
+    public function test_un_texto_largo_viaja_recortado_a_500_caracteres_y_avisa()
     {
         $capturados = $this->capturarBroadcasts();
 
@@ -209,24 +209,117 @@ class EnviarMensajeDelCompradorTest extends TestCase
 
         $this->assertCount(1, $capturados);
         $mensaje = $capturados[0]['payload']['message'];
-        $this->assertSame(str_repeat('ñ', 2000), $mensaje['text']);
+        $this->assertSame(str_repeat('ñ', 500), $mensaje['text']);
         $this->assertTrue($mensaje['text_truncado']);
         $this->assertNotFalse(json_encode($capturados[0]['payload']), 'el payload tiene que poder viajar como JSON');
     }
 
-    public function test_un_texto_de_2000_caracteres_viaja_entero()
+    /**
+     * El borde de arriba: 501 caracteres ya se recortan.
+     */
+    public function test_501_caracteres_se_recortan_a_500()
     {
         $capturados = $this->capturarBroadcasts();
 
         $comprador = $this->comprador($this->comercio());
 
         $this->actingAs($comprador, 'buyer')
-            ->postJson(self::RUTA, ['text' => str_repeat('a', 2000)])
+            ->postJson(self::RUTA, ['text' => str_repeat('a', 501)])
             ->assertStatus(201);
 
         $this->assertCount(1, $capturados);
-        $this->assertSame(2000, mb_strlen($capturados[0]['payload']['message']['text']));
+        $this->assertSame(500, mb_strlen($capturados[0]['payload']['message']['text']));
+        $this->assertTrue($capturados[0]['payload']['message']['text_truncado']);
+    }
+
+    /**
+     * Y el de abajo: 500 justos viajan enteros y sin aviso de recorte.
+     */
+    public function test_500_caracteres_justos_viajan_enteros()
+    {
+        $capturados = $this->capturarBroadcasts();
+
+        $comprador = $this->comprador($this->comercio());
+
+        $this->actingAs($comprador, 'buyer')
+            ->postJson(self::RUTA, ['text' => str_repeat('a', 500)])
+            ->assertStatus(201);
+
+        $this->assertCount(1, $capturados);
+        $this->assertSame(500, mb_strlen($capturados[0]['payload']['message']['text']));
         $this->assertFalse($capturados[0]['payload']['message']['text_truncado']);
+    }
+
+    /**
+     * 🔴 El motivo del tope de 500: Pusher rechaza un `data` de mas de 10.240 bytes, y el SDK lo
+     * codifica con json_encode SIN JSON_UNESCAPED_UNICODE, asi que una letra acentuada viaja como
+     * `\u00e1` (6 bytes). Con el tope viejo de 2000, un texto acentuado media 12.437 bytes.
+     *
+     * No se reimplementa la codificacion en el test: el evento pasa por el PusherBroadcaster de
+     * Laravel y el SDK real, y se mide el `data` del cuerpo HTTP que el SDK le mandaria a Pusher.
+     * Lo unico falso es la red (ver capturarLoQueLeLlegaAPusher).
+     */
+    public function test_500_caracteres_acentuados_entran_en_el_tope_de_pusher()
+    {
+        $historial = $this->capturarLoQueLeLlegaAPusher();
+
+        $duenio    = $this->comercio();
+        $comprador = $this->comprador($duenio, ['name' => 'María José', 'surname' => 'Güemes Pérez']);
+
+        $this->actingAs($comprador, 'buyer')
+            ->postJson(self::RUTA, ['text' => str_repeat('á', 500)])
+            ->assertStatus(201);
+
+        $data = $this->dataQueLeLlegaAPusher($historial, $duenio->id);
+
+        $this->assertStringContainsString('\u00e1', $data, 'el SDK escapa los acentos: si esto cambia, la medicion deja de ser el peor caso');
+        $this->assertSame(str_repeat('á', 500), json_decode($data, true)['message']['text']);
+        $this->assertFalse(json_decode($data, true)['message']['text_truncado']);
+        $this->assertLessThan(10240, strlen($data), 'el data del evento no entra en el tope de Pusher: mide '.strlen($data).' bytes');
+    }
+
+    /**
+     * El peor caso del texto: un emoji fuera del plano basico viaja como par sustituto
+     * `\ud83d\ude00`, 12 bytes. Se manda el maximo que acepta store (5000) para que ademas quede
+     * probado que el recorte deja 500 emojis enteros (mb_substr no parte ningun par).
+     */
+    public function test_500_emojis_entran_en_el_tope_de_pusher()
+    {
+        $historial = $this->capturarLoQueLeLlegaAPusher();
+
+        $duenio    = $this->comercio();
+        $comprador = $this->comprador($duenio, ['name' => 'María José', 'surname' => 'Güemes Pérez']);
+
+        $this->actingAs($comprador, 'buyer')
+            ->postJson(self::RUTA, ['text' => str_repeat('😀', 5000)])
+            ->assertStatus(201);
+
+        $data = $this->dataQueLeLlegaAPusher($historial, $duenio->id);
+
+        $this->assertStringContainsString('\ud83d\ude00', $data, 'el SDK escapa los emojis como par sustituto: si esto cambia, la medicion deja de ser el peor caso');
+        $this->assertSame(str_repeat('😀', 500), json_decode($data, true)['message']['text']);
+        $this->assertTrue(json_decode($data, true)['message']['text_truncado']);
+        $this->assertLessThan(10240, strlen($data), 'el data del evento no entra en el tope de Pusher: mide '.strlen($data).' bytes');
+    }
+
+    /**
+     * Saca del historial de Guzzle el unico POST a Pusher y devuelve su `data` tal como lo
+     * codifico el SDK, despues de verificar que es nuestro evento y va al canal del duenio.
+     *
+     * @return string
+     */
+    private function dataQueLeLlegaAPusher(\ArrayObject $historial, $owner_id)
+    {
+        $this->assertCount(1, $historial, 'tiene que haber exactamente un POST a Pusher');
+
+        $cuerpo = json_decode((string) $historial[0]['request']->getBody(), true);
+
+        $this->assertSame('TiendaChatActualizado', $cuerpo['name']);
+        $this->assertSame('private-tienda-mensajes.'.$owner_id, $cuerpo['channel']);
+        $this->assertIsString($cuerpo['data']);
+        $this->assertArrayNotHasKey('socket', json_decode($cuerpo['data'], true), 'socket no viaja: el broadcaster lo saca antes');
+
+        return $cuerpo['data'];
     }
 
     /**

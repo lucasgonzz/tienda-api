@@ -5,10 +5,17 @@ namespace Tests\Feature\Mensajes;
 use App\Buyer;
 use App\Message;
 use App\User;
+use GuzzleHttp\Client;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\Response;
 use Illuminate\Broadcasting\Broadcasters\Broadcaster;
+use Illuminate\Broadcasting\Broadcasters\PusherBroadcaster;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Str;
+use Pusher\Pusher;
 
 /**
  * Datos y herramientas compartidas por los tests de mensajes de la tienda (mision
@@ -105,5 +112,42 @@ trait ArmaChatDeTienda
         ]);
 
         return $capturados;
+    }
+
+    /**
+     * Arma el camino de Pusher REAL hasta el ultimo paso antes de la red: el PusherBroadcaster de
+     * Laravel y el SDK pusher-php-server de verdad, con credenciales de mentira y un cliente HTTP
+     * de Guzzle con respuestas enlatadas. Lo unico falso es la red.
+     *
+     * Sirve para medir los bytes que le llegan a Pusher tal cual los codifica el SDK (que es lo que
+     * Pusher compara contra su tope de 10.240 bytes), sin reimplementar esa codificacion en el test.
+     *
+     * @return \ArrayObject  historial de Guzzle: cada elemento trae ['request' => ..., 'response' => ...]
+     */
+    protected function capturarLoQueLeLlegaAPusher()
+    {
+        $historial = new \ArrayObject();
+
+        $pila = HandlerStack::create(new MockHandler(array_fill(0, 5, new Response(200, [], '{}'))));
+        $pila->push(Middleware::history($historial));
+
+        $pusher = new Pusher(
+            'key-de-prueba',
+            'secreto-de-prueba',
+            'app-de-prueba',
+            ['cluster' => 'sa1', 'useTLS' => true],
+            new Client(['handler' => $pila])
+        );
+
+        Broadcast::extend('pusher-medido', function () use ($pusher) {
+            return new PusherBroadcaster($pusher);
+        });
+
+        config([
+            'broadcasting.connections.pusher-medido' => ['driver' => 'pusher-medido'],
+            'broadcasting.default'                   => 'pusher-medido',
+        ]);
+
+        return $historial;
     }
 }
