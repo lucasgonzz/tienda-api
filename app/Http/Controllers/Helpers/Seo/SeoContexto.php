@@ -280,6 +280,41 @@ class SeoContexto
     }
 
     /**
+     * La URL que va en el campo `imagen` del contrato -el que termina en og:image/twitter:image
+     * del <head>-: si `$urlAbsoluta` termina en `.webp` (sin importar mayusculas ni un posible
+     * `?query`), la cambia por el conversor propio (GET /api/seo/imagen-compartir); si no, o si
+     * es null, la devuelve tal cual.
+     *
+     * Por que: WhatsApp -sobre todo en Android- no siempre decodifica webp para armar la
+     * miniatura del preview al compartir un link, aunque el archivo sea valido y cualquier
+     * navegador lo abra sin drama (confirmado con curl contra una ficha real: 200,
+     * Content-Type image/webp). La foto de un articulo SIEMPRE se guarda en .webp
+     * (ImageController de empresa-api) y no hay ninguna version alternativa guardada en ningun
+     * lado, asi que no hay backfill posible: hay que convertir al vuelo.
+     *
+     * 🔴 SOLO para este campo singular. `imagenes()` e `imagenPrincipal()` NO pasan por aca: las
+     * usa el array `image` del JSON-LD (Google decodifica webp sin drama) y el `<img>` del
+     * cuerpo pre-render (lo tapa un overlay hasta que Vue monta). Convertir esos tambien seria
+     * trabajo -y riesgo de una transformacion mal aplicada- sin ningun premio.
+     *
+     * @param  string|null  $urlAbsoluta
+     * @return string|null
+     */
+    static function paraCompartir($urlAbsoluta)
+    {
+        if (!is_string($urlAbsoluta) || trim($urlAbsoluta) === '') {
+            return $urlAbsoluta;
+        }
+
+        $sin_query = preg_replace('/\?.*$/', '', $urlAbsoluta);
+        if (!preg_match('/\.webp$/i', $sin_query)) {
+            return $urlAbsoluta;
+        }
+
+        return url('/api/seo/imagen-compartir').'?src='.rawurlencode($urlAbsoluta);
+    }
+
+    /**
      * Pasa una URL de imagen guardada en la base a URL absoluta, o null si no se puede.
      *
      * Replica components/catalogo/Category.vue::resolve_tile_image_url(): lo que ya es http(s)
