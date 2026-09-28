@@ -29,15 +29,18 @@ class MessageController extends Controller
         return response()->json(['messages' => $messages], 200);
     }
 
+    /**
+     * Marca como leidos los mensajes del comercio a este comprador.
+     *
+     * Un solo UPDATE con el mismo filtro que tenia el loop de save() que habia antes (que hacia
+     * un SELECT y despues un UPDATE por cada mensaje). El resultado en la base es el mismo:
+     * `read = 1` y `updated_at` al dia en esas filas, y ninguna otra.
+     */
     function setRead() {
-        $messages = Message::where('buyer_id', $this->buyerId())
-                            ->where('read', 0)
-                            ->where('from_buyer', 0)
-                            ->get();
-        foreach ($messages as $message) {
-            $message->read = 1;
-            $message->save();
-        }
+        Message::where('buyer_id', $this->buyerId())
+                ->where('read', 0)
+                ->where('from_buyer', 0)
+                ->update(['read' => 1]);
         return response(null, 200);
     }
 
