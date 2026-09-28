@@ -10,6 +10,7 @@ use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
+use Illuminate\Broadcasting\BroadcastException;
 use Illuminate\Broadcasting\Broadcasters\Broadcaster;
 use Illuminate\Broadcasting\Broadcasters\PusherBroadcaster;
 use Illuminate\Support\Arr;
@@ -68,19 +69,26 @@ trait ArmaChatDeTienda
      * Del payload se saca `socket` igual que hace PusherBroadcaster antes de enviar (Arr::pull):
      * lo que queda es exactamente lo que recibe la SPA.
      *
+     * Con $evento_que_falla, ese evento (y solo ese) se anota y despues tira BroadcastException,
+     * que es lo que hace PusherBroadcaster cuando Pusher lo rechaza. Sirve para romper un aviso
+     * sin romper los demas que salen en el mismo pedido.
+     *
+     * @param string|null $evento_que_falla
      * @return \ArrayObject  cada elemento: ['canales' => string[], 'evento' => string, 'payload' => array]
      */
-    protected function capturarBroadcasts()
+    protected function capturarBroadcasts($evento_que_falla = null)
     {
         $capturados = new \ArrayObject();
 
-        Broadcast::extend('captura', function () use ($capturados) {
-            return new class($capturados) extends Broadcaster {
+        Broadcast::extend('captura', function () use ($capturados, $evento_que_falla) {
+            return new class($capturados, $evento_que_falla) extends Broadcaster {
                 private $capturados;
+                private $evento_que_falla;
 
-                public function __construct(\ArrayObject $capturados)
+                public function __construct(\ArrayObject $capturados, $evento_que_falla)
                 {
-                    $this->capturados = $capturados;
+                    $this->capturados       = $capturados;
+                    $this->evento_que_falla = $evento_que_falla;
                 }
 
                 public function auth($request)
@@ -102,6 +110,10 @@ trait ArmaChatDeTienda
                         'evento'  => $event,
                         'payload' => $payload,
                     ]);
+
+                    if ($event === $this->evento_que_falla) {
+                        throw new BroadcastException('Pusher error: rechazo simulado de '.$event.'.');
+                    }
                 }
             };
         });
