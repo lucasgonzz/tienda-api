@@ -96,6 +96,67 @@ class ImagenCompartirTest extends TestCase
         return substr_replace($truncado, pack('V', $nuevo_declarado), 4, 4);
     }
 
+    /** @var string|null Memoiza webpGrandeDePrueba(): los dos tests del tope de tamaño lo piden
+     *  cada uno, y a calidad 100 la codificacion tarda unos segundos -no vale la pena pagarlo dos
+     *  veces en la misma corrida. */
+    private static $webp_grande_de_prueba;
+
+    /**
+     * Un webp REAL y VALIDO de mas de SeoImagenCompartir::TOPE_BYTES (8 MB): lo que a los dos
+     * tests del tope de tamaño les faltaba (chequeo independiente del 28/9/2026) para no
+     * confundir el corte por TAMAÑO con el gate de FORMATO -ver el docblock de esos dos tests.
+     *
+     * Tiene que ser ruido genuino, no un patron -si no, WebP lo comprime por debajo del tope y
+     * el fixture deja de servir-, pero pixel por pixel con imagesetpixel() en 2900x2900 (8.4
+     * millones de pixeles) tarda mas de veinte segundos. En cambio, armar a mano un BMP de 24
+     * bits sin compresion con random_bytes() y decodificarlo con imagecreatefromstring() -que
+     * hace el trabajo pixel por pixel en C, no en PHP- tarda bien menos de un segundo. Medido en
+     * esta maquina: 2900x2900 a calidad 100 da ~9.3 MB, con margen comodo sobre el tope de 8 MB.
+     *
+     * @return string
+     */
+    private function webpGrandeDePrueba()
+    {
+        if (self::$webp_grande_de_prueba !== null) {
+            return self::$webp_grande_de_prueba;
+        }
+
+        $ancho = 2900;
+        $alto = 2900;
+        $tamano_fila = intdiv($ancho * 3 + 3, 4) * 4; // BMP: cada fila alineada a 4 bytes.
+        $relleno = $tamano_fila - $ancho * 3;
+        $tamano_pixeles = $tamano_fila * $alto;
+
+        /* A archivo, fila por fila -no concatenado en un string gigante en memoria-: con los
+           ~25 MB del BMP crudo mas la copia de la concatenacion, el limite de 128 MB de PHPUnit
+           explotaba antes de llegar siquiera a imagecreatefromstring() (medido armando esta
+           misma skill: "Allowed memory size of 134217728 bytes exhausted"). Escribiendo a disco
+           el pico se queda en unos 80 MB (el buffer interno de GD para 2900x2900 truecolor mas
+           la codificacion a webp), sin tocar memory_limit. */
+        $temporal = tempnam(sys_get_temp_dir(), 'seobmp');
+        $recurso = fopen($temporal, 'wb');
+        fwrite($recurso, pack('a2VvvV', 'BM', 14 + 40 + $tamano_pixeles, 0, 0, 14 + 40));
+        fwrite($recurso, pack('VVVvvVVVVVV', 40, $ancho, $alto, 1, 24, 0, $tamano_pixeles, 2835, 2835, 0, 0));
+        $relleno_bytes = $relleno > 0 ? str_repeat("\0", $relleno) : '';
+        for ($y = 0; $y < $alto; $y++) {
+            fwrite($recurso, random_bytes($ancho * 3));
+            if ($relleno > 0) {
+                fwrite($recurso, $relleno_bytes);
+            }
+        }
+        fclose($recurso);
+
+        $img = imagecreatefrombmp($temporal);
+        @unlink($temporal);
+
+        ob_start();
+        imagewebp($img, null, 100);
+        $bytes = ob_get_clean();
+        imagedestroy($img);
+
+        return self::$webp_grande_de_prueba = $bytes;
+    }
+
     private function pedir($src)
     {
         return $this->get(self::RUTA.'?src='.urlencode($src));
@@ -246,19 +307,38 @@ class ImagenCompartirTest extends TestCase
      * hacer que se termine pidiendo lo que sea que diga su `Location` -sin withoutRedirecting(),
      * Guzzle lo seguiria solo, corriendo el allowlist entero. Cae al fallback de siempre: la URL
      * ORIGINAL, nunca el Location ajeno, y sin una segunda request de por medio.
+     *
+     * 🔴 El Location tiene su PROPIO fake, con un webp valido y decodificable (webpDePrueba()):
+     * asi, si el dia de mañana alguien saca el withoutRedirecting() del codigo real, Guzzle SI
+     * seguiria el redirect, bajaria y decodificaria ese webp, y responder() devolveria 200 con
+     * ESE jpeg -nunca un 302 al original-, asi que assertStatus(302) ya alcanza para que la
+     * regresion se note sola. Antes de este fixture el señuelo no tenia ninguna respuesta armada:
+     * un intento real de seguirlo (aunque el codigo lo intentara) fallaria por timeout contra una
+     * IP que no responde, y una request que termina en excepcion nunca se graba en
+     * Http::recorded() -asi que ni assertSentCount(1) ni assertStatus(302)/assertRedirect()
+     * distinguian "no se siguio" (rapido) de "se siguio y fallo" (~6s de timeout): la unica
+     * diferencia real era el TIEMPO, y ningun assert lo miraba (chequeo independiente del
+     * 28/9/2026).
      */
     public function test_un_redirect_del_origen_no_se_sigue_y_cae_al_fallback_del_original()
     {
+        if (!function_exists('imagecreatefromwebp')) {
+            $this->markTestSkipped('Este PHP no tiene soporte GD para webp.');
+        }
+
         $src = 'https://api-imgtest.comerciocity.com/public/storage/con-redirect.webp';
+        $location_ajeno = 'http://169.254.169.254/latest/meta-data/senuelo.webp';
+
         Http::fake([
-            'api-imgtest.comerciocity.com/*' => Http::response('', 302, ['Location' => 'http://169.254.169.254/latest/meta-data/']),
+            $src => Http::response('', 302, ['Location' => $location_ajeno]),
+            $location_ajeno => Http::response($this->webpDePrueba(), 200, ['Content-Type' => 'image/webp']),
         ]);
 
         $respuesta = $this->pedir($src);
 
         $respuesta->assertStatus(302);
         $respuesta->assertRedirect($src);
-        Http::assertSentCount(1, 'una sola request -al original- nunca se sigue el Location ajeno');
+        Http::assertSentCount(1, 'una sola request -al original- nunca se sigue el Location ajeno: si se siguiera, esto daria 200 con el jpeg del señuelo, no 302');
     }
 
     /*
@@ -267,11 +347,32 @@ class ImagenCompartirTest extends TestCase
     |---------------------------------------------------------------------------------------------
     */
 
+    /**
+     * 🔴 Antes este test (y el siguiente) usaban contenido BASURA como body fake ('poca cosa',
+     * 9 bytes): esa basura ya fallaba pareceWebpCompleto() ANTES de que el corte por tamaño
+     * entrara en juego, asi que si alguien sacara el corte por tamaño del codigo real, el test
+     * seguia en verde igual -por el motivo EQUIVOCADO, el gate de formato- (chequeo independiente
+     * del 28/9/2026). Con webpGrandeDePrueba() -un webp REAL y VALIDO de mas de TOPE_BYTES- sacar
+     * el corte por tamaño hace que esto decodifique bien y devuelva 200, no 302: recien ahi el
+     * 302 de este test prueba lo que dice probar.
+     */
     public function test_un_content_length_declarado_mas_grande_que_el_tope_no_descarga_nada_mas()
     {
+        if (!function_exists('imagecreatefromwebp')) {
+            $this->markTestSkipped('Este PHP no tiene soporte GD para webp.');
+        }
+
+        $binario = $this->webpGrandeDePrueba();
+        $this->assertTrue(
+            SeoImagenCompartir::pareceWebpCompleto($binario),
+            'el fixture tiene que pasar el gate de formato: si no, este test prueba ese gate, no el corte por tamaño'
+        );
+
         $src = 'https://api-imgtest.comerciocity.com/public/storage/gigante.webp';
         Http::fake([
-            'api-imgtest.comerciocity.com/*' => Http::response('poca cosa', 200, ['Content-Length' => '999999999']),
+            // El Content-Length MENTIDO es mas grande incluso que el binario real -asi el corte
+            // por header tiene que disparar solo, sin que haga falta leer nada del body.
+            $src => Http::response($binario, 200, ['Content-Type' => 'image/webp', 'Content-Length' => '999999999']),
         ]);
 
         $respuesta = $this->pedir($src);
@@ -280,15 +381,31 @@ class ImagenCompartirTest extends TestCase
         $respuesta->assertRedirect($src);
     }
 
+    /** Ver el docblock del test anterior: mismo motivo, mismo arreglo. */
     public function test_un_body_mas_grande_que_el_tope_corta_sin_agotar_memoria()
     {
+        if (!function_exists('imagecreatefromwebp')) {
+            $this->markTestSkipped('Este PHP no tiene soporte GD para webp.');
+        }
+
+        $binario = $this->webpGrandeDePrueba();
+        $this->assertTrue(
+            SeoImagenCompartir::pareceWebpCompleto($binario),
+            'el fixture tiene que pasar el gate de formato: si no, este test prueba ese gate, no el corte por tamaño'
+        );
+        $this->assertGreaterThan(
+            SeoImagenCompartir::TOPE_BYTES,
+            strlen($binario),
+            'el fixture tiene que superar el tope de verdad -si no, esto no ejercita el loop de lectura'
+        );
+
         $src = 'https://api-imgtest.comerciocity.com/public/storage/body-gigante.webp';
-        /* Un body genuinamente mas grande que TOPE_BYTES (8 MB): no hace falta que sea un webp
-           valido -el tope corta antes de llegar siquiera a mirar eso-, pero tiene que ser mas
-           grande que el limite para probar el corte real, no el atajo de Content-Length. */
-        $body_enorme = str_repeat('a', 8 * 1024 * 1024 + 1024);
         Http::fake([
-            'api-imgtest.comerciocity.com/*' => Http::response($body_enorme, 200),
+            // Sin Content-Length -Http::response() no lo calcula solo (GuzzleHttp\Psr7\Response
+            // no deriva el header del body: confirmado leyendo su constructor)-: el chequeo por
+            // header no dispara, y lo que corta el body es el loop de leerConTope() leyendo de a
+            // bloques, que es lo que este test tiene que ejercitar.
+            $src => Http::response($binario, 200, ['Content-Type' => 'image/webp']),
         ]);
 
         $respuesta = $this->pedir($src);
