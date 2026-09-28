@@ -56,6 +56,9 @@ Route::get('/seo/pagina/{commerce_id}', 'SeoController@pagina')
 	->where('commerce_id', '[0-9]+')
 	->middleware('throttle:120,1,seo-pagina')
 	->withoutMiddleware('throttle:api');
+Route::get('/seo/imagen-compartir', 'SeoController@imagenCompartir')
+	->middleware('throttle:120,1,seo-imagen-compartir')
+	->withoutMiddleware('throttle:api');
 Route::get('/seo/sitemap/{commerce_id}', 'SeoController@sitemap')
 	->where('commerce_id', '[0-9]+')
 	->middleware('throttle:30,1,seo-sitemap')

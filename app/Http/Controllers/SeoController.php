@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\Seo\SeoContexto;
+use App\Http\Controllers\Helpers\Seo\SeoImagenCompartir;
 use App\Http\Controllers\Helpers\Seo\SeoPaginas;
 use App\Http\Controllers\Helpers\Seo\SeoSitemap;
 use Illuminate\Http\Request;
@@ -76,6 +77,29 @@ class SeoController extends Controller
         });
 
         return response($xml, 200, ['Content-Type' => 'application/xml; charset=UTF-8']);
+    }
+
+    /**
+     * GET /api/seo/imagen-compartir?src=<url-absoluta>
+     *
+     * El conversor que arma SeoContexto::paraCompartir() cuando el og:image/twitter:image de
+     * una pagina es un .webp (mision og-image-webp-whatsapp). Valida el host de `src` ANTES de
+     * pedir nada (SeoImagenCompartir::origenPermitido(), nunca un regex sobre la URL completa) y
+     * devuelve el JPEG convertido o, ante cualquier falla, un redirect al original: el detalle
+     * completo esta en SeoImagenCompartir.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\Response|\Illuminate\Http\RedirectResponse|\Illuminate\Http\JsonResponse
+     */
+    function imagenCompartir(Request $request)
+    {
+        $src = $request->query('src');
+
+        if (!SeoImagenCompartir::origenPermitido($src)) {
+            return response()->json(['message' => 'src invalido o con un host no permitido.'], 400);
+        }
+
+        return SeoImagenCompartir::responder($src);
     }
 
     /**
