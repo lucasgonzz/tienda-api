@@ -306,6 +306,31 @@ class FichaDelArticuloTest extends TestCase
         $this->assertSame(['https://cdn.test/default.jpg'], $this->jsonLd($pagina, 'Product')['image']);
     }
 
+    /**
+     * 🔴 Con una imagen `.webp`, `imagen` -el campo que termina en og:image/twitter:image del
+     * <head>- apunta al conversor nuevo (SeoContexto::paraCompartir(), mision
+     * og-image-webp-whatsapp), pero `json_ld[].image` -el array del Product que consume
+     * Google- sigue con la URL original SIN convertir: ahi no hace falta (Google decodifica
+     * webp sin drama) y correr GD en cada rastreo seria trabajo sin ningun premio.
+     */
+    public function test_con_imagen_webp_el_campo_imagen_usa_el_conversor_pero_el_json_ld_no()
+    {
+        $articulo = $this->articulo('Malbec Webp');
+        $this->imagen($articulo, 'https://cdn.test/malbec.webp');
+
+        $pagina = $this->pagina($this->rutaDe($articulo));
+
+        $this->assertStringContainsString(
+            '/api/seo/imagen-compartir?src='.rawurlencode('https://cdn.test/malbec.webp'),
+            $pagina['imagen'],
+            '`imagen` pasa por el conversor'
+        );
+        $this->assertNotSame('https://cdn.test/malbec.webp', $pagina['imagen']);
+
+        $producto = $this->jsonLd($pagina, 'Product');
+        $this->assertSame(['https://cdn.test/malbec.webp'], $producto['image'], 'json_ld.image se queda con el original, sin convertir');
+    }
+
     /** Una PromocionVinoteca online es ficha valida por la misma ruta; offline, 404. */
     public function test_promocion_vinoteca_online_es_ficha()
     {
