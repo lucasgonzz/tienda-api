@@ -7,6 +7,7 @@ use App\StockMovement;
 use App\User;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 /**
@@ -19,8 +20,10 @@ use Tests\TestCase;
  * juntas son imposibles y la seccion llegaba SIEMPRE vacia a la tienda, hubiera o no ingresos
  * de stock. El primer test de esta clase esta rojo sobre ese codigo.
  *
- * Novedades = articulos no borrados con movimiento de stock reciente (stock_resultante > 0),
- * los mas nuevos primero segun la fecha del movimiento.
+ * Novedades = los ultimos 20 articulos no borrados con un INGRESO de mercaderia (compra a
+ * proveedor, ingreso manual, importacion de excel o produccion), el ingreso mas nuevo primero.
+ * Una venta, una devolucion o un movimiento entre depositos NO es novedad (mision
+ * tienda-novedades-ingresos, 30/9/2026).
  *
  * ⚠️ Sobre la base: tienda-api no tiene database/migrations (el esquema lo gobierna
  * empresa-api), asi que aca NO se usa RefreshDatabase ni migrate. Se corre contra la base real
@@ -64,25 +67,54 @@ class NovedadesDeLaHomeTest extends TestCase
     }
 
     /**
-     * Registra un ingreso de stock del articulo. Los segundos en el futuro garantizan que el
-     * movimiento sea mas nuevo que cualquier cosa sembrada en la base del slot, y ordenan a
-     * los movimientos de un mismo test entre si.
+     * Id del concepto de stock con ese nombre, creandolo si la base del slot no lo trae. Los ids
+     * varian entre bases, por eso la home los resuelve por nombre.
+     *
+     * @param  string  $nombre
+     * @return int
+     */
+    private function concepto($nombre)
+    {
+        $id = DB::table('concepto_stock_movements')->where('name', $nombre)->value('id');
+        if ($id) {
+            return $id;
+        }
+        return DB::table('concepto_stock_movements')->insertGetId([
+            'name'       => $nombre,
+            'created_at' => Carbon::now(),
+            'updated_at' => Carbon::now(),
+        ]);
+    }
+
+    /**
+     * Registra un movimiento de stock del articulo. Los segundos en el futuro garantizan que sea
+     * mas nuevo que cualquier cosa sembrada en la base del slot, y ordenan a los movimientos de
+     * un mismo test entre si.
      *
      * @param  \App\Article  $articulo
      * @param  int  $segundos_en_el_futuro
+     * @param  string  $concepto
+     * @param  float  $cantidad
      * @return \App\StockMovement
      */
-    private function ingresoDeStock($articulo, $segundos_en_el_futuro)
+    private function movimientoDeStock($articulo, $segundos_en_el_futuro, $concepto, $cantidad)
     {
         $movimiento = new StockMovement;
-        $movimiento->article_id       = $articulo->id;
-        $movimiento->user_id          = $this->comercio->id;
-        $movimiento->amount           = 5;
-        $movimiento->stock_resultante = 10;
-        $movimiento->created_at       = Carbon::now()->addSeconds($segundos_en_el_futuro);
+        $movimiento->article_id                 = $articulo->id;
+        $movimiento->user_id                    = $this->comercio->id;
+        $movimiento->concepto_stock_movement_id = $this->concepto($concepto);
+        $movimiento->amount                     = $cantidad;
+        $movimiento->stock_resultante           = 10;
+        $movimiento->created_at                 = Carbon::now()->addSeconds($segundos_en_el_futuro);
         $movimiento->save();
 
         return $movimiento;
+    }
+
+    /** Un ingreso de mercaderia: compra a proveedor de 5 unidades. */
+    private function ingresoDeStock($articulo, $segundos_en_el_futuro)
+    {
+        return $this->movimientoDeStock($articulo, $segundos_en_el_futuro, 'Compra a proveedor', 5);
     }
 
     /**
@@ -164,5 +196,60 @@ class NovedadesDeLaHomeTest extends TestCase
 
         $this->assertSame(1, count(array_keys($ids, $articulo->id)),
             'El mismo articulo no puede repetirse en novedades por tener varios movimientos.');
+    }
+
+    /** 🔴 Una venta mueve stock pero no es mercaderia nueva: no puede ser novedad. */
+    public function test_un_articulo_que_solo_tuvo_ventas_no_aparece_en_novedades()
+    {
+        $vendido = $this->articulo('Novedad Vendida Test');
+        $this->movimientoDeStock($vendido, 60, 'Venta', -3);
+
+        $ids = array_column($this->novedades(), 'id');
+
+        $this->assertNotContains($vendido->id, $ids,
+            'Un movimiento de venta no es un ingreso de mercaderia.');
+    }
+
+    /** Una devolucion suma stock (amount > 0) pero tampoco es mercaderia nueva. */
+    public function test_una_devolucion_no_aparece_en_novedades()
+    {
+        $devuelto = $this->articulo('Novedad Devuelta Test');
+        $this->movimientoDeStock($devuelto, 60, 'Nota de credito', 2);
+
+        $ids = array_column($this->novedades(), 'id');
+
+        $this->assertNotContains($devuelto->id, $ids,
+            'Una devolucion suma stock pero no es un ingreso de mercaderia.');
+    }
+
+    /** Un articulo con un ingreso Y una venta posterior sigue siendo novedad por su ingreso. */
+    public function test_una_venta_posterior_al_ingreso_no_saca_al_articulo_de_novedades()
+    {
+        $articulo = $this->articulo('Novedad Ingreso Y Venta Test');
+        $this->ingresoDeStock($articulo, 60);
+        $this->movimientoDeStock($articulo, 120, 'Venta', -1);
+
+        $ids = array_column($this->novedades(), 'id');
+
+        $this->assertContains($articulo->id, $ids);
+    }
+
+    /** El tope son 20 ARTICULOS, no 20 movimientos: un articulo repetido no ocupa lugares. */
+    public function test_novedades_devuelve_como_maximo_veinte_articulos_distintos()
+    {
+        $repetido = $this->articulo('Novedad Repetida Tope Test');
+        for ($i = 1; $i <= 5; $i++) {
+            $this->ingresoDeStock($repetido, 1000 + $i);
+        }
+
+        for ($i = 1; $i <= 22; $i++) {
+            $this->ingresoDeStock($this->articulo('Novedad Tope '.$i), 100 + $i);
+        }
+
+        $ids = array_column($this->novedades(), 'id');
+
+        $this->assertCount(20, $ids, 'Tienen que ser 20 articulos.');
+        $this->assertSame(count($ids), count(array_unique($ids)), 'Sin articulos repetidos.');
+        $this->assertSame($repetido->id, $ids[0], 'El ingreso mas nuevo va primero.');
     }
 }

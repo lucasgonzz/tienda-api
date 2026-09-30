@@ -36,7 +36,7 @@ class HomeController extends Controller
             $in_offer = HomeHelper::getInOffer($request->commerce_id);
             $promociones_vinoteca = HomeHelper::get_promociones_vinoteca($request->commerce_id);
 
-            // Novedades son los que han tenido movimiento de stock en las ultimas 2 semanas
+            // Novedades: los ultimos 20 articulos con un INGRESO de mercaderia (no ventas ni ajustes)
             $novedades = HomeHelper::getNovedades($request->commerce_id);
 
             /*

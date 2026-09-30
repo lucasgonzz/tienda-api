@@ -8,6 +8,8 @@ use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Icon;
 use App\PromocionVinoteca;
 use App\StockMovement;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 
 class HomeHelper
@@ -163,34 +165,88 @@ class HomeHelper
      * imposible: la seccion Novedades llegaba SIEMPRE vacia a la tienda. Los borrados ya
      * los excluye SoftDeletes solo, asi que no hace falta ninguna condicion extra.
      */
+    /**
+     * Conceptos de stock que cuentan como INGRESO DE MERCADERIA. Van por nombre y no por id:
+     * los ids de `concepto_stock_movements` varian entre bases (ver los seeders de empresa-api).
+     *
+     * Quedan afuera a proposito los movimientos que suman stock sin que entre mercaderia nueva:
+     * devoluciones (nota de credito, "se elimino de la venta"), movimientos entre depositos,
+     * reseteos y ajustes.
+     */
+    const CONCEPTOS_DE_INGRESO = [
+        'Ingreso manual',
+        'Compra a proveedor',
+        'Act Compra a proveedor',
+        'Importacion de excel',
+        'Produccion',
+    ];
+
+    /** Cuantos articulos muestra la seccion Novedades. */
+    const CANTIDAD_DE_NOVEDADES = 20;
+
+    /**
+     * Novedades de la home: los ULTIMOS 20 articulos que recibieron un INGRESO de mercaderia
+     * (compra a proveedor, ingreso manual, importacion de excel o produccion), el ingreso mas
+     * nuevo primero. Una venta, una devolucion o un movimiento entre depositos NO es novedad.
+     *
+     * Se diferencia de "Ultimos ingresos", que ordena por la fecha en que el articulo se cargo
+     * al sistema (`articles.created_at`).
+     *
+     * Solo entran articulos visibles hoy en la tienda (online, con stock, no borrados: el
+     * SoftDeletes de Article ya excluye los borrados). Un articulo con varios ingresos es UNA
+     * novedad, con la fecha de su ingreso mas nuevo.
+     *
+     * Tolerante a una base sin `concepto_stock_movements` (cliente con la tienda mas nueva que
+     * el ERP): devuelve vacio y el SPA esconde la seccion.
+     *
+     * @param  int  $commerce_id
+     * @return \Illuminate\Support\Collection
+     */
     static function getNovedades($commerce_id) {
-        $stock_movements = StockMovement::where('user_id', $commerce_id)
+        if (!Schema::hasTable('concepto_stock_movements')) {
+            return collect();
+        }
+
+        $ids_conceptos = DB::table('concepto_stock_movements')
+                            ->whereIn('name', Self::CONCEPTOS_DE_INGRESO)
+                            ->pluck('id');
+
+        if ($ids_conceptos->isEmpty()) {
+            return collect();
+        }
+
+        /* Un articulo con ingresos repetidos puede ocupar muchos movimientos: se traen de mas
+           y se dedupica por articulo, para que salgan 20 ARTICULOS y no 20 movimientos. */
+        $ids_articulos = StockMovement::where('user_id', $commerce_id)
+                                    ->whereIn('concepto_stock_movement_id', $ids_conceptos)
+                                    ->where('amount', '>', 0)
+                                    ->whereNotNull('article_id')
                                     ->orderBy('created_at', 'DESC')
-                                    ->where('stock_resultante', '>', 0)
-                                    ->take(20)
-                                    ->get();
+                                    ->orderBy('id', 'DESC')
+                                    ->limit(Self::CANTIDAD_DE_NOVEDADES * 10)
+                                    ->pluck('article_id')
+                                    ->unique()
+                                    ->values();
 
-        $articulos_novedades = collect();
+        if ($ids_articulos->isEmpty()) {
+            return collect();
+        }
 
-        foreach ($stock_movements as $stock_movement) {
-
-            /* Un articulo con varios movimientos recientes es UNA novedad. Se saltea por id
-               y antes de la query: el contains($article) que habia aca comparaba instancias
-               enteras (con relaciones cargadas adentro) y encima pagaba la consulta aunque
-               el articulo ya estuviera en la lista. Nunca se noto porque con la condicion
-               imposible de arriba este loop no empujaba nada. */
-            if ($articulos_novedades->contains('id', $stock_movement->article_id)) {
-                continue;
-            }
-
-            $article = Article::where('id', $stock_movement->article_id)
+        $articulos = Article::whereIn('id', $ids_articulos)
                             ->checkStock()
                             ->checkOnline()
                             ->withAll()
-                            ->first();
+                            ->get()
+                            ->keyBy('id');
 
-            if (!is_null($article)) {
-                $articulos_novedades->push($article);
+        /* El orden es el del ingreso mas nuevo, no el que devuelva la base. */
+        $articulos_novedades = collect();
+        foreach ($ids_articulos as $article_id) {
+            if (isset($articulos[$article_id])) {
+                $articulos_novedades->push($articulos[$article_id]);
+            }
+            if ($articulos_novedades->count() >= Self::CANTIDAD_DE_NOVEDADES) {
+                break;
             }
         }
         return $articulos_novedades;
