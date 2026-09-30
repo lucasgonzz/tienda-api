@@ -204,7 +204,22 @@ class CartController extends Controller
                 CartHelper::attach_combos($cart, $combos);
             }
 
-            CartHelper::set_total($cart);
+            /* 🔴 `attach_combos()` descarta los combos sin precio vendible (NULL o <= 0). Si el
+               payload traia SOLO combos y se descartaron todos, el carrito quedo sin una sola
+               linea: es un carrito vacio y se comporta como tal (se borra, igual que cuando el
+               payload llega con los tres arrays vacios). Sin esto quedaba vivo, con total 0 y sin
+               lineas, y el comprador no podia deshacerse de el. Solo se mira cuando el payload no
+               traia articulos ni promociones: el camino de los articulos no cambia. */
+            $solo_combos_y_todos_descartados = count($request->articles) == 0
+                && count($request->promociones_vinoteca) == 0
+                && (!ComboEsquemaHelper::disponible() || !$cart->combos()->exists());
+
+            if ($solo_combos_y_todos_descartados) {
+                $cart->delete();
+                $cart_deleted = true;
+            } else {
+                CartHelper::set_total($cart);
+            }
         } else {
             $cart->delete();
             $cart_deleted = true;

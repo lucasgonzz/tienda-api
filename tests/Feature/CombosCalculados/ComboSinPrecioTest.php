@@ -198,6 +198,85 @@ class ComboSinPrecioTest extends TestCase
     }
 
     /**
+     * 🔴 Un payload de SOLO combos sin precio deja el carrito sin una linea vendible: tiene que
+     * comportarse como un carrito vacio y borrarse (igual que el `PUT` con los tres arrays
+     * vacios), no quedar vivo con total 0 y sin lineas.
+     */
+    public function test_el_put_con_solo_combos_sin_precio_borra_el_carrito()
+    {
+        $creado = $this->crearCarrito($this->comercio, [
+            'combos' => [$this->lineaDeComboDelPayload($this->con_precio, 1)],
+        ]);
+        $creado->assertStatus(201);
+        $cart_id = (int) $creado->json('cart.id');
+
+        $respuesta = $this->withSession(['carritos_propios' => [$cart_id]])
+            ->putJson('/api/carts', [
+                'id'                   => $cart_id,
+                'articles'             => [],
+                'promociones_vinoteca' => [],
+                'combos'               => [
+                    $this->lineaDeComboDelPayload($this->en_cero, 1),
+                    $this->lineaDeComboDelPayload($this->en_null, 1),
+                ],
+            ]);
+
+        $respuesta->assertStatus(200);
+        $this->assertNull($respuesta->json('cart'), 'igual que un PUT vacio: la respuesta es cart null');
+        $this->assertSame([], $this->lineasDelCarrito($cart_id), 'y no queda ninguna linea colgada');
+        $this->assertNull(DB::table('carts')->where('id', $cart_id)->first(),
+            'el carrito se borro');
+    }
+
+    /** Contraprueba: con un combo vendible entre los descartados el carrito NO se borra. */
+    public function test_el_put_con_un_combo_vendible_entre_los_descartados_no_borra_el_carrito()
+    {
+        $creado = $this->crearCarrito($this->comercio, [
+            'combos' => [$this->lineaDeComboDelPayload($this->con_precio, 1)],
+        ]);
+        $cart_id = (int) $creado->json('cart.id');
+
+        $respuesta = $this->withSession(['carritos_propios' => [$cart_id]])
+            ->putJson('/api/carts', [
+                'id'                   => $cart_id,
+                'articles'             => [],
+                'promociones_vinoteca' => [],
+                'combos'               => [
+                    $this->lineaDeComboDelPayload($this->en_cero, 1),
+                    $this->lineaDeComboDelPayload($this->con_precio, 2),
+                ],
+            ]);
+
+        $respuesta->assertStatus(200);
+        $this->assertNotNull($respuesta->json('cart'));
+        $this->assertEquals(4321.50 * 2, $this->totalGuardado($cart_id));
+    }
+
+    /** Y con articulos en el payload el camino de siempre no cambia: los combos descartados no borran nada. */
+    public function test_el_put_con_articulos_y_combos_sin_precio_conserva_el_carrito()
+    {
+        $articulo = $this->articuloPublicado($this->comercio);
+
+        $creado = $this->crearCarrito($this->comercio, [
+            'articles' => [$this->lineaDelPayload($articulo, 1)],
+        ]);
+        $cart_id = (int) $creado->json('cart.id');
+
+        $respuesta = $this->withSession(['carritos_propios' => [$cart_id]])
+            ->putJson('/api/carts', [
+                'id'                   => $cart_id,
+                'articles'             => [$this->lineaDelPayload($articulo, 2)],
+                'promociones_vinoteca' => [],
+                'combos'               => [$this->lineaDeComboDelPayload($this->en_cero, 1)],
+            ]);
+
+        $respuesta->assertStatus(200);
+        $this->assertNotNull($respuesta->json('cart'));
+        $this->assertSame([], $this->lineasDelCarrito($cart_id));
+        $this->assertEquals(self::PRECIO_NORMAL * 2, $this->totalGuardado($cart_id));
+    }
+
+    /**
      * La resincronizacion de "Actualizar" no reescribe una linea a $0 si el ERP dejo despues el
      * combo sin precio: conserva el precio con el que entro al carrito.
      */
