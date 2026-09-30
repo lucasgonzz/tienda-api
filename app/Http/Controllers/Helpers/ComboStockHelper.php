@@ -69,8 +69,9 @@ class ComboStockHelper
         foreach ($filas as $fila) {
             $por_combo[(int) $fila->combo_id][] = [
                 /* El articulo del RENGLON (`ac.article_id`), que es la clave con la que `calcular()`
-                   agrupa los renglones repetidos. Va el del pivote y no el de `articles`: en una
-                   fila huerfana el segundo es null y dos huerfanos distintos se agruparian juntos. */
+                   agrupa los renglones repetidos. Se toma del pivote y no del JOIN para no depender
+                   de que el articulo exista; un renglon huerfano es "borrado" igual y deja el combo
+                   en 0, agrupado o no. */
                 'article_id' => $fila->article_id,
                 'amount'     => $fila->amount,
                 'stock'      => $fila->stock,
