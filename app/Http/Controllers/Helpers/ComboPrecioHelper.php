@@ -113,6 +113,17 @@ class ComboPrecioHelper
      * en 0.00 en un combo calculado sin articulos o con componentes sin precio, y la tienda lo
      * ofrecia y lo cobraba igual. La home no lo lista y el carrito no lo acepta.
      *
+     * ── Es INTENCIONAL que tambien oculte un combo MANUAL con precio 0 ──────────────────────────
+     *
+     * Por ejemplo un "regalo" que el comerciante cargo a mano en $0 y marco "Mostrar en la tienda".
+     * La tienda no vende a $0: desde afuera un combo en cero es indistinguible de uno roto (sin
+     * articulos, o con componentes sin precio), y cobrar de menos en silencio es peor que no
+     * mostrar. Si Lucas quisiera lo contrario, la alternativa es distinguir por origen —dejar pasar
+     * el precio 0 solo si `combos.calcular_desde_articulos = 0` (precio cargado a mano a
+     * proposito) y seguir cortando el 0 de un combo calculado— o, mas explicito, agregar un check
+     * "permitir precio cero" en el ABM. Cualquiera de las dos cambia este unico metodo (y pide
+     * leer `calcular_desde_articulos`, que hoy la tienda esconde en `Combo::$hidden`).
+     *
      * @param  mixed  $precio  El valor de `precios_base()` (decimal como string, o null).
      * @return bool
      */
