@@ -54,9 +54,15 @@ class Combo extends Model
      * devuelve el modelo entero). Es un defecto preexistente, no se arregla en esta mision para no
      * cambiar una respuesta que el SPA ya consume — queda denunciado.
      *
+     * Las tres columnas de la mision combos-calculados tambien se esconden: `calcular_desde_articulos`,
+     * `descuento_tipo` y `descuento_valor` son instrucciones para el calculo que hace `empresa-api`
+     * y la tienda no las usa — el precio que cobra ya viene con el descuento aplicado (`combos.price`
+     * y `combo_price_type.price`). Publicarlas solo le diria al visitante como se arma el precio.
+     * Si la base todavia no las tiene, el `$hidden` de una columna que no existe no hace nada.
+     *
      * @var array<int, string>
      */
-    protected $hidden = ['cost'];
+    protected $hidden = ['cost', 'calcular_desde_articulos', 'descuento_tipo', 'descuento_valor'];
 
     /**
      * Las columnas de los componentes que VIAJAN al navegador.
