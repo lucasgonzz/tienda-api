@@ -233,6 +233,60 @@ class ImagenesDelComboTest extends TestCase
     }
 
     /**
+     * 🔴 El costo del combo que `attach_combos()` y `OrderHelper::attachCombos()` congelan en
+     * `cart_combo.cost` / `order_combo.cost` NO viaja al navegador: ni en el carrito, ni en
+     * `GET /api/orders/current`, ni en el listado de "Mis pedidos". `Combo::$hidden` solo cubre el
+     * `cost` del modelo; el del PIVOT lo cubre que `Cart::combos()` y `Order::combos()` no lo
+     * declaren en `withPivot` (medido igual en `origin/master`: no es un cambio de esta mision).
+     * Si alguien lo agrega al `withPivot`, este caso se pone rojo.
+     */
+    public function test_el_costo_congelado_del_pivote_no_viaja_al_navegador()
+    {
+        $comprador = $this->compradorSinCliente($this->comercio);
+        $this->actingAs($comprador, 'buyer');
+
+        /* Un costo que no aparece en ningun otro lado de las fixtures: si sale, se ve. */
+        $creado = $this->crearCarrito($this->comercio, [
+            'combos' => [$this->lineaDeComboDelPayload($this->combo, 1)],
+        ]);
+        $creado->assertStatus(201);
+
+        $this->assertEquals(self::COSTO_COMBO, DB::table('cart_combo')->value('cost'),
+            'el escenario guarda el costo en el pivote del carrito: si no, el caso seria vacuo');
+        $this->assertArrayNotHasKey('cost', $creado->json('cart.combos.0.pivot'));
+
+        $pedido_id = DB::table('orders')->insertGetId([
+            'user_id'         => $this->comercio->id,
+            'buyer_id'        => $comprador->id,
+            'deliver'         => 0,
+            'order_status_id' => 1,
+            'status'          => 'unconfirmed',
+            'created_at'      => now(),
+            'updated_at'      => now(),
+        ]);
+        DB::table('order_combo')->insert([
+            'order_id'   => $pedido_id,
+            'combo_id'   => $this->combo->id,
+            'amount'     => 1,
+            'price'      => 9000,
+            'cost'       => 777.77,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $actual = $this->getJson('/api/orders/current/'.$this->comercio->id);
+        $actual->assertStatus(200);
+        $this->assertArrayNotHasKey('cost', $actual->json('order.combos.0.pivot'));
+        $this->assertStringNotContainsString('777.77', $actual->getContent());
+
+        $listado = $this->getJson('/api/orders');
+        $listado->assertStatus(200);
+        $this->assertNotEmpty($listado->json('orders.data.0.combos'), 'el listado trae los combos del pedido');
+        $this->assertArrayNotHasKey('cost', $listado->json('orders.data.0.combos.0.pivot'));
+        $this->assertStringNotContainsString('777.77', $listado->getContent());
+    }
+
+    /**
      * El select acotado no rompe la receta del pedido: `OrderTotalsHelper::comboDescription()` lee
      * `name` y `pivot.amount` de cada componente, que son justamente lo que se conserva.
      */
