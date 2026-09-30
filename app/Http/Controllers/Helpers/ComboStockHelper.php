@@ -57,7 +57,7 @@ class ComboStockHelper
         $filas = DB::table('article_combo as ac')
                     ->leftJoin('articles as a', 'a.id', '=', 'ac.article_id')
                     ->whereIn('ac.combo_id', $combo_ids)
-                    ->select('ac.combo_id', 'ac.amount', 'a.id as article_id', 'a.stock', 'a.deleted_at')
+                    ->select('ac.combo_id', 'ac.article_id', 'ac.amount', 'a.id as articulo_existente', 'a.stock', 'a.deleted_at')
                     ->get();
 
         $por_combo = [];
@@ -68,9 +68,13 @@ class ComboStockHelper
 
         foreach ($filas as $fila) {
             $por_combo[(int) $fila->combo_id][] = [
-                'amount'  => $fila->amount,
-                'stock'   => $fila->stock,
-                'borrado' => is_null($fila->article_id) || !is_null($fila->deleted_at),
+                /* El articulo del RENGLON (`ac.article_id`), que es la clave con la que `calcular()`
+                   agrupa los renglones repetidos. Va el del pivote y no el de `articles`: en una
+                   fila huerfana el segundo es null y dos huerfanos distintos se agruparian juntos. */
+                'article_id' => $fila->article_id,
+                'amount'     => $fila->amount,
+                'stock'      => $fila->stock,
+                'borrado'    => is_null($fila->articulo_existente) || !is_null($fila->deleted_at),
             ];
         }
 
@@ -93,13 +97,19 @@ class ComboStockHelper
      *     que quiere decir "sin control": hay siempre. NO es 0.
      *   - cantidad del componente <= 0 (dato roto) -> ese componente no limita: dividir por cero
      *     no puede tumbar la home.
+     *   - 🔴 el MISMO articulo en mas de un renglon se AGRUPA por `article_id` y se SUMAN sus
+     *     cantidades antes de dividir. Un combo con A (stock 2) en dos renglones de 1 necesita 2
+     *     unidades de A por combo: dividir renglon por renglon daba 2 combos cuando solo se arma
+     *     1 (sobreventa). La misma regla, con la misma clave de agrupacion, esta en el
+     *     `ComboStockHelper` de `empresa-api`. Un renglon sin `article_id` no se agrupa con nadie.
      *
      * Es el stock GLOBAL `articles.stock`, no el de un deposito.
      *
      * Ejemplo de Lucas: A x2 (stock 2), B x3 (stock 3), C x4 (stock 4): 2/2 = 1, 3/3 = 1,
      * 4/4 = 1 -> se puede armar 1 combo. El limitante manda.
      *
-     * @param  array  $componentes  Cada uno ['amount' => int|float|string, 'stock' => numerico|null,
+     * @param  array  $componentes  Cada uno ['article_id' => int|null (clave de agrupacion),
+     *                              'amount' => int|float|string, 'stock' => numerico|null,
      *                              'borrado' => bool].
      * @return int|null
      */
@@ -107,7 +117,7 @@ class ComboStockHelper
 
         $minimo = null;
 
-        foreach ($componentes as $componente) {
+        foreach (self::agrupar_por_articulo($componentes) as $componente) {
 
             /* El borrado gana sobre todo lo demas, incluso sobre un stock NULL: un componente que
                ya no existe no se puede poner en la caja. */
@@ -138,5 +148,42 @@ class ComboStockHelper
         }
 
         return $minimo;
+    }
+
+    /**
+     * Junta los renglones del mismo articulo en uno solo, sumando sus cantidades.
+     *
+     * El borrado de cualquiera de los renglones borra el grupo; el stock es el del articulo (el
+     * mismo en todos sus renglones, se toma el primero). Sin `article_id` el renglon queda solo.
+     *
+     * @param  array  $componentes
+     * @return array  Mismo formato que `calcular()`, un elemento por articulo distinto.
+     */
+    private static function agrupar_por_articulo(array $componentes) {
+
+        $grupos = [];
+
+        foreach ($componentes as $indice => $componente) {
+
+            $clave = isset($componente['article_id']) ? 'a'.$componente['article_id'] : 'r'.$indice;
+
+            if (!isset($grupos[$clave])) {
+                $grupos[$clave] = [
+                    'amount'  => 0,
+                    'stock'   => isset($componente['stock']) ? $componente['stock'] : null,
+                    'borrado' => false,
+                ];
+            }
+
+            if (!empty($componente['borrado'])) {
+                $grupos[$clave]['borrado'] = true;
+            }
+
+            if (isset($componente['amount']) && is_numeric($componente['amount'])) {
+                $grupos[$clave]['amount'] += (float) $componente['amount'];
+            }
+        }
+
+        return $grupos;
     }
 }

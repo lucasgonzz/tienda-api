@@ -47,9 +47,9 @@ class StockDelComboTest extends TestCase
     */
 
     /** Un componente para `calcular()`. */
-    private function comp($amount, $stock, $borrado = false)
+    private function comp($amount, $stock, $borrado = false, $article_id = null)
     {
-        return ['amount' => $amount, 'stock' => $stock, 'borrado' => $borrado];
+        return ['article_id' => $article_id, 'amount' => $amount, 'stock' => $stock, 'borrado' => $borrado];
     }
 
     /**
@@ -60,6 +60,65 @@ class StockDelComboTest extends TestCase
     {
         $this->assertSame(1, ComboStockHelper::calcular([
             $this->comp(2, 2), $this->comp(3, 3), $this->comp(4, 4),
+        ]));
+    }
+
+    /**
+     * 🔴 SOBREVENTA: el mismo articulo en dos renglones suma sus cantidades antes de dividir. A con
+     * stock 2 en dos renglones de 1 necesita 2 unidades por combo: se arma UNO, no dos. Dividir
+     * renglon por renglon (2/1 = 2 en cada uno) daba 2.
+     */
+    public function test_el_mismo_articulo_repetido_suma_las_cantidades_antes_de_dividir()
+    {
+        $this->assertSame(1, ComboStockHelper::calcular([
+            $this->comp(1, 2, false, 7), $this->comp(1, 2, false, 7),
+        ]));
+
+        $this->assertSame(1, ComboStockHelper::calcular([
+            $this->comp(1, 5, false, 7), $this->comp(2, 5, false, 7), $this->comp(1, 100, false, 8),
+        ]), 'A x1 + A x2 = x3 sobre 5 -> floor(5/3) = 1; B x1 sobre 100 -> 100; manda A');
+    }
+
+    /** El articulo repetido y el limitante de otro componente: manda el menor de los grupos. */
+    public function test_el_repetido_compite_con_los_demas_componentes()
+    {
+        $this->assertSame(2, ComboStockHelper::calcular([
+            $this->comp(1, 6, false, 7), $this->comp(2, 6, false, 7), $this->comp(1, 100, false, 8),
+        ]), 'A: 6 / (1 + 2) = 2; B: 100 / 1 = 100 -> 2 (por renglon daria 6, 3 y 100 -> 3)');
+    }
+
+    /** Repetido con uno "sin control" (stock NULL): el grupo sin stock no limita, el otro si. */
+    public function test_repetido_con_un_articulo_sin_control_de_stock()
+    {
+        $this->assertSame(3, ComboStockHelper::calcular([
+            $this->comp(1, null, false, 7), $this->comp(1, null, false, 7), $this->comp(2, 6, false, 8),
+        ]), 'A sin control (repetido) no limita; B: 6 / 2 = 3');
+
+        $this->assertNull(ComboStockHelper::calcular([
+            $this->comp(1, null, false, 7), $this->comp(1, null, false, 7),
+        ]), 'y si solo hay articulos sin control el combo esta "sin control"');
+    }
+
+    /** Repetido y borrado en uno de los renglones: el combo no se arma. */
+    public function test_repetido_con_un_renglon_borrado_deja_el_combo_en_cero()
+    {
+        $this->assertSame(0, ComboStockHelper::calcular([
+            $this->comp(1, 50, false, 7), $this->comp(1, 50, true, 7),
+        ]));
+    }
+
+    /**
+     * El caso literal de Lucas con cantidad 1 de cada uno: A, B, C con stock 2 / 3 / 4 -> 2 combos
+     * (manda A). Con cantidades 2 / 3 / 4 sobre los mismos stocks da 1 (ya cubierto arriba).
+     */
+    public function test_a_b_c_con_cantidad_uno_y_stock_dos_tres_cuatro_da_dos()
+    {
+        $this->assertSame(2, ComboStockHelper::calcular([
+            $this->comp(1, 2, false, 1), $this->comp(1, 3, false, 2), $this->comp(1, 4, false, 3),
+        ]));
+
+        $this->assertSame(1, ComboStockHelper::calcular([
+            $this->comp(2, 2, false, 1), $this->comp(3, 3, false, 2), $this->comp(4, 4, false, 3),
         ]));
     }
 
@@ -193,6 +252,24 @@ class StockDelComboTest extends TestCase
         ]);
 
         $this->assertSame([$combo->id => 0], ComboStockHelper::para([$combo->id]));
+    }
+
+    /**
+     * 🔴 El mismo articulo en dos filas de `article_combo` (lo que permite el esquema, que no tiene
+     * unique): `para()` tiene que agrupar por el `article_id` del pivote, tambien para dos filas
+     * huerfanas distintas, que no se agrupan entre si.
+     */
+    public function test_para_agrupa_el_articulo_repetido_en_el_pivote()
+    {
+        $comercio = $this->comercioConTienda();
+        $combo = $this->combo($comercio);
+
+        $a = $this->articuloConStock($comercio, 2);
+        $this->componente($combo, $a, 1);
+        $this->componente($combo, $a, 1);
+
+        $this->assertSame([$combo->id => 1], ComboStockHelper::para([$combo->id]),
+            'A stock 2 en dos renglones de 1 -> se arma un combo, no dos');
     }
 
     /** Un componente con stock NULL de verdad en la base no limita. */
