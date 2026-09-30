@@ -157,15 +157,6 @@ class HomeHelper
     }
 
     /**
-     * Novedades de la home: articulos NO borrados con movimiento de stock reciente,
-     * los mas nuevos primero (el orden lo da la query de movimientos, created_at DESC).
-     *
-     * Aca habia un whereNotNull('deleted_at') sobre la query del articulo que, contra el
-     * global scope de SoftDeletes de Article (deleted_at IS NULL), armaba una condicion
-     * imposible: la seccion Novedades llegaba SIEMPRE vacia a la tienda. Los borrados ya
-     * los excluye SoftDeletes solo, asi que no hace falta ninguna condicion extra.
-     */
-    /**
      * Conceptos de stock que cuentan como INGRESO DE MERCADERIA. Van por nombre y no por id:
      * los ids de `concepto_stock_movements` varian entre bases (ver los seeders de empresa-api).
      *
