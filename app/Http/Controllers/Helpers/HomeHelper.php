@@ -141,6 +141,13 @@ class HomeHelper
         $stock = ComboStockHelper::para($combos->pluck('id')->all());
         $precios = ComboPrecioHelper::precios_base($combos, $commerce_id);
 
+        /* 🔴 Un combo sin precio vendible (NULL o <= 0 despues de elegir la lista) no se ofrece: se
+           podia comprar a $0. Se mira el precio RESUELTO, el que sale de `ComboPrecioHelper`, y no
+           `combos.price`: una lista puede tener precio aunque el de la columna sea 0. */
+        $combos = $combos->filter(function ($combo) use ($precios) {
+            return ComboPrecioHelper::es_vendible($precios[$combo->id]);
+        })->values();
+
         foreach ($combos as $combo) {
             $combo->is_combo = true;
             $combo->final_price = $precios[$combo->id];

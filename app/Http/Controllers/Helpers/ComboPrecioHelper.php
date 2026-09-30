@@ -107,6 +107,20 @@ class ComboPrecioHelper
     }
 
     /**
+     * ¿El precio resuelto de un combo se puede cobrar? Solo si es numerico y mayor que cero.
+     *
+     * 🔴 Un combo publicado con precio NULL o 0 se podia comprar a $0: empresa deja `combos.price`
+     * en 0.00 en un combo calculado sin articulos o con componentes sin precio, y la tienda lo
+     * ofrecia y lo cobraba igual. La home no lo lista y el carrito no lo acepta.
+     *
+     * @param  mixed  $precio  El valor de `precios_base()` (decimal como string, o null).
+     * @return bool
+     */
+    static function es_vendible($precio) {
+        return is_numeric($precio) && (float) $precio > 0;
+    }
+
+    /**
      * El id de la lista de precios que le toca al comprador de esta sesion, o null si el combo
      * tiene que cobrar `combos.price`. Ver el docblock de la clase por cada caso.
      *

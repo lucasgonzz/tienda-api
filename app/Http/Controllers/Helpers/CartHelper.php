@@ -197,6 +197,14 @@ class CartHelper {
                 continue;
             }
 
+            /* 🔴 Un combo sin precio vendible (NULL o <= 0) no se cuelga del carrito, igual que uno
+               sin publicar o de otro comercio: el servidor manda, no el payload. Pasa, por ejemplo,
+               con un combo calculado sin articulos o cuyos componentes no tienen precio (empresa
+               deja `combos.price` en 0.00): sin esta guarda se compraba a $0. */
+            if (!ComboPrecioHelper::es_vendible($precios[$id])) {
+                continue;
+            }
+
             $ya_colgados[$id] = true;
 
             $modelo = $modelos->get($id);
@@ -797,7 +805,12 @@ class CartHelper {
         $precios = ComboPrecioHelper::precios_base($combos, $cart->user_id);
 
         foreach ($combos as $combo) {
-            $combo->precio_de_lista = $precios[$combo->id];
+            /* Si la base quedo sin precio vendible (el ERP lo dejo en 0 o NULL) NO se cuelga: el
+               escritor saltea las lineas sin base numerica y la linea conserva el precio con el
+               que entro, en vez de reescribirse a $0. */
+            if (ComboPrecioHelper::es_vendible($precios[$combo->id])) {
+                $combo->precio_de_lista = $precios[$combo->id];
+            }
         }
 
         return Self::escribir_lineas_de_precio_fijo('cart_combo', $lineas, 'combo_id', $combos, 'precio_de_lista', $ajustes);
