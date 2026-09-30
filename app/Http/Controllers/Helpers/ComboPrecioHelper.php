@@ -98,10 +98,9 @@ class ComboPrecioHelper
                         ->get();
 
         foreach ($filas as $fila) {
-            /* Una fila sin precio numerico no pisa nada: se queda `combos.price`. */
-            if (array_key_exists($fila->combo_id, $precios) && is_numeric($fila->price)) {
-                $precios[$fila->combo_id] = $fila->price;
-            }
+            /* `price` es NOT NULL en la tabla y la consulta ya filtro por los ids de arriba: toda
+               fila que llega pisa el precio de un combo que esta en `$precios`. */
+            $precios[$fila->combo_id] = $fila->price;
         }
 
         return $precios;

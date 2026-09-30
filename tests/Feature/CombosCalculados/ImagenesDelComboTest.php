@@ -194,6 +194,45 @@ class ImagenesDelComboTest extends TestCase
     }
 
     /**
+     * 🔴 La pagina de "gracias" (`GET /api/orders/current/{commerce_id}`) arma sus propios `with`
+     * a mano —el `withAll()` no participa ahi— y es el cuarto lugar donde viajan los combos. Es
+     * justo el que se olvida cuando se acota el select en los otros tres.
+     */
+    public function test_el_pedido_de_la_pagina_de_gracias_trae_la_foto_y_no_el_costo()
+    {
+        $comprador = $this->compradorSinCliente($this->comercio);
+        $this->actingAs($comprador, 'buyer');
+
+        $this->fotoDelCombo($this->combo, 'https://cdn.test/combo-propio.jpg');
+
+        $pedido_id = DB::table('orders')->insertGetId([
+            'user_id'         => $this->comercio->id,
+            'buyer_id'        => $comprador->id,
+            'deliver'         => 0,
+            'order_status_id' => 1,
+            'status'          => 'unconfirmed',
+            'created_at'      => now(),
+            'updated_at'      => now(),
+        ]);
+        DB::table('order_combo')->insert([
+            'order_id'   => $pedido_id,
+            'combo_id'   => $this->combo->id,
+            'amount'     => 1,
+            'price'      => 9000,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $respuesta = $this->getJson('/api/orders/current/'.$this->comercio->id);
+        $respuesta->assertStatus(200);
+
+        $combo = $respuesta->json('order.combos.0');
+
+        $this->assertSame('https://cdn.test/combo-propio.jpg', $combo['images'][0]['hosting_url']);
+        $this->afirmarComponentesAcotados($combo, 'pedido actual');
+    }
+
+    /**
      * El select acotado no rompe la receta del pedido: `OrderTotalsHelper::comboDescription()` lee
      * `name` y `pivot.amount` de cada componente, que son justamente lo que se conserva.
      */
