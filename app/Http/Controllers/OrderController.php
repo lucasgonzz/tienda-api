@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Buyer;
 use App\Cart;
+use App\Combo;
 use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartHelper;
@@ -109,7 +110,7 @@ class OrderController extends Controller
         // Y los combos, con el mismo criterio y por el mismo motivo (misión
         // combos-y-rangos-de-precio): acá el `withAll()` no participa, así que va a mano.
         if (ComboEsquemaHelper::disponible()) {
-            $order->with('combos.articles.images');
+            $order->with(Combo::relaciones_para_la_tienda('combos.'));
         }
 
         if (!is_null($buyer_id)) {

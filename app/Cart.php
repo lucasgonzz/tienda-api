@@ -37,7 +37,7 @@ class Cart extends Model
         $query->with('cupon', 'articles.images', 'articles', 'articles.colors', 'articles.sizes', 'payment_method.type', 'payment_method.payment_method_installments', 'delivery_zone', 'promociones_vinoteca.images');
 
         if (ComboEsquemaHelper::disponible()) {
-            $query->with('combos.articles.images');
+            $query->with(Combo::relaciones_para_la_tienda('combos.'));
         }
     }
 

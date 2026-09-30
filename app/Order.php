@@ -34,7 +34,7 @@ class Order extends Model
         /* Mismo criterio que `envio`, y la misma guarda: `order_combo` la crea `empresa-api`.
            Ver `ComboEsquemaHelper`. */
         if (ComboEsquemaHelper::disponible()) {
-            $query->with('combos.articles.images');
+            $query->with(Combo::relaciones_para_la_tienda('combos.'));
         }
     }
 

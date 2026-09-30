@@ -51,6 +51,11 @@ class AppServiceProvider extends ServiceProvider
         Relation::morphMap([
             'article' => 'App\Article',
             'promocion_vinoteca' => 'App\PromocionVinoteca',
+            /* El combo con foto propia (mision combos-calculados). `empresa-api` guarda las fotos
+               con `imageable_type = 'combo'`; sin este alias `Combo::images()` buscaria el nombre
+               de la clase y nunca las encontraria. No es enforceMorphMap: los alias que ya estaban
+               siguen conviviendo con nombres de clase completos, como hasta ahora. */
+            'combo' => 'App\Combo',
         ]);
 
     }
