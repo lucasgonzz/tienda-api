@@ -54,8 +54,18 @@ class ComboEsquemaHelper
     /** Pivote pedido <-> combo. */
     const TABLA_ORDER_COMBO = 'order_combo';
 
+    /**
+     * Precio del combo por lista de precios (mision combos-calculados, 30/9/2026). La crea
+     * `empresa-api` y solo se llena para los combos que se calculan desde sus articulos, en
+     * cuentas que usan listas. Ver `precios_por_lista_disponible()`.
+     */
+    const TABLA_PRECIOS_POR_LISTA = 'combo_price_type';
+
     /** @var bool|null Memo de `disponible()` para este request. */
     private static $disponible = null;
+
+    /** @var bool|null Memo de `precios_por_lista_disponible()` para este request. */
+    private static $precios_por_lista = null;
 
     /** @var bool Para no repetir el aviso del log una vez por linea. */
     private static $aviso_dado = false;
@@ -72,6 +82,57 @@ class ComboEsquemaHelper
         }
 
         return self::$disponible;
+    }
+
+    /**
+     * True si esta base ya tiene la tabla `combo_price_type` (precio del combo por lista).
+     *
+     * ── Por que es una guarda APARTE de `disponible()` ────────────────────────────────────────
+     *
+     * `disponible()` apaga los combos ENTEROS y su esquema llego con la mision anterior
+     * (combos-y-rangos-de-precio). Esta tabla llega con otra migracion de `empresa-api`
+     * (combos-calculados), asi que hay un tercer escenario que la primera guarda no ve: una base
+     * con los combos publicables pero SIN precios por lista. Ahi los combos tienen que seguir
+     * andando al precio de siempre (`combos.price`), y no apagarse ni, peor, reventar con "Base
+     * table or view not found" en la home.
+     *
+     * Es tambien la direccion inversa de la compatibilidad: el ERP nuevo llena `combos.price` con
+     * el precio de la lista por defecto justamente para que una tienda vieja —que solo lee esa
+     * columna— siga cobrando bien. Esta guarda es lo mismo pero para la tienda nueva contra un
+     * ERP viejo.
+     *
+     * Mismo criterio de memoria que `disponible()`: estatica por request, y en consola no se
+     * memoiza para que un test que esconde la tabla en caliente vea el cambio.
+     *
+     * @return bool
+     */
+    public static function precios_por_lista_disponible()
+    {
+        if (is_null(self::$precios_por_lista) || app()->runningInConsole()) {
+            self::$precios_por_lista = self::medir_precios_por_lista();
+        }
+
+        return self::$precios_por_lista;
+    }
+
+    /**
+     * La medicion de `precios_por_lista_disponible()`, con su try/catch: ante la duda, false —
+     * que es "el combo cuesta `combos.price`", el comportamiento de siempre.
+     *
+     * @return bool
+     */
+    private static function medir_precios_por_lista()
+    {
+        try {
+            return Schema::hasTable(self::TABLA_PRECIOS_POR_LISTA);
+        } catch (\Throwable $e) {
+            Log::warning('ComboEsquemaHelper: no se pudo leer el esquema de precios por lista, los combos quedan al precio unico.', [
+                'excepcion' => get_class($e),
+                'mensaje'   => $e->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     /**
@@ -116,6 +177,7 @@ class ComboEsquemaHelper
     public static function olvidar()
     {
         self::$disponible = null;
+        self::$precios_por_lista = null;
         self::$aviso_dado = false;
     }
 }

@@ -175,9 +175,15 @@ class CartHelper {
         $ya_colgados = [];
 
         /* Los ajustes del cliente tambien van sobre los combos (decision 2 de Lucas). Aca el
-           precio sale de la BASE (`combos.price`, sin ajustar), asi que el factor se aplica
-           derecho y una sola vez. Sin ajustes, `ajustar()` devuelve el precio intacto. */
+           precio sale de la BASE (la de la lista del comprador, o `combos.price` si no hay fila,
+           sin ajustar), asi que el factor se aplica derecho y una sola vez. Sin ajustes,
+           `ajustar()` devuelve el precio intacto. */
         $ajustes = AjustesDeClienteHelper::del_comprador($cart->user_id);
+
+        /* 🔴 El precio sale de la BASE y de la sesion —lista del comprador logueado, o la publica
+           si es anonimo—, NUNCA del payload: `$combo['final_price']` / `['price']` que mande el
+           navegador no se lee. Una consulta para todos los combos del carrito. */
+        $precios = ComboPrecioHelper::precios_base($modelos, $cart->user_id);
 
         foreach ($combos as $combo) {
 
@@ -196,7 +202,7 @@ class CartHelper {
             $modelo = $modelos->get($id);
 
             $cart->combos()->attach($modelo->id, [
-                                        'price'     => AjustesDeClienteHelper::ajustar($modelo->price, $ajustes),
+                                        'price'     => AjustesDeClienteHelper::ajustar($precios[$modelo->id], $ajustes),
                                         'cost'      => $modelo->cost,
                                         'amount'    => isset($combo['pivot']['amount']) ? $combo['pivot']['amount'] : 1,
                                         'notes'     => isset($combo['pivot']['notes']) ? $combo['pivot']['notes'] : null,
@@ -760,7 +766,13 @@ class CartHelper {
     }
 
     /**
-     * Las lineas de combos de `resincronizar_ajustes_de_cliente()`. La base es `combos.price`.
+     * Las lineas de combos de `resincronizar_ajustes_de_cliente()`. La base es el precio del combo
+     * para la LISTA del comprador (`ComboPrecioHelper`), que cae a `combos.price` si no hay fila.
+     *
+     * 🔴 Tiene que usar la MISMA base que `attach_combos()`. Si esta resincronizacion leyera
+     * `combos.price` pelado, un comprador con lista propia veria el precio de su lista al armar el
+     * carrito y, en cuanto tuviera un descuento de cliente y tocara "Actualizar", la linea volveria
+     * en silencio al precio de la lista por defecto.
      *
      * @param  \App\Cart  $cart
      * @param  array  $ajustes
@@ -779,7 +791,16 @@ class CartHelper {
                         ->get()
                         ->keyBy('id');
 
-        return Self::escribir_lineas_de_precio_fijo('cart_combo', $lineas, 'combo_id', $combos, 'price', $ajustes);
+        /* La base de cada combo, resuelta contra la base de datos. Se cuelga en un atributo local
+           (estos modelos no salen de esta funcion, no se serializan) para reusar el escritor
+           generico de lineas de precio fijo sin tocarlo. */
+        $precios = ComboPrecioHelper::precios_base($combos, $cart->user_id);
+
+        foreach ($combos as $combo) {
+            $combo->precio_de_lista = $precios[$combo->id];
+        }
+
+        return Self::escribir_lineas_de_precio_fijo('cart_combo', $lineas, 'combo_id', $combos, 'precio_de_lista', $ajustes);
     }
 
     /**
@@ -1228,9 +1249,17 @@ class CartHelper {
            pertenece cada linea del carrito. `final_price` es `price` con el nombre que el SPA ya
            usa para todo lo comprable. */
         if (ComboEsquemaHelper::disponible()) {
+            /* El precio de la lista del comprador (o `combos.price` si no hay fila) y el stock, en
+               una consulta cada uno para todos los combos del carrito. `stock_disponible` es lo
+               que le permite a la interfaz poner el tope de cantidad; el servidor no lo valida,
+               igual que hoy con los articulos. */
+            $precios = ComboPrecioHelper::precios_base($model->combos, $model->user_id);
+            $stock = ComboStockHelper::para($model->combos->pluck('id')->all());
+
             foreach ($model->combos as $combo) {
                 $combo->is_combo = true;
-                $combo->final_price = $combo->price;
+                $combo->final_price = $precios[$combo->id];
+                $combo->stock_disponible = $stock[$combo->id];
             }
 
             AjustesDeClienteHelper::aplicar_a_precios_fijos($model->combos, $model->user_id);

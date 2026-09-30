@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Icon;
 use App\PromocionVinoteca;
 use App\StockMovement;
+use App\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -101,11 +102,25 @@ class HomeHelper
      * `online = 1` es el check "Mostrar en la tienda" del ABM de empresa, y su default es 0: ningun
      * cliente ve combos aparecer en su ecommerce sin haberlos prendido.
      *
-     * Las dos claves que se agregan a cada combo son el contrato con `tienda-spa`:
+     * Las claves que se agregan a cada combo son el contrato con `tienda-spa`:
      *   - `is_combo`, para que el carrito sepa a que coleccion pertenece la linea (igual que
      *     `is_promocion_vinoteca`).
-     *   - `final_price`, que es `price` con otro nombre: el SPA lee el precio de todo lo comprable
-     *     por `final_price`, asi que la tarjeta del combo no necesita un caso aparte.
+     *   - `final_price`, que es el precio con otro nombre: el SPA lee el precio de todo lo comprable
+     *     por `final_price`, asi que la tarjeta del combo no necesita un caso aparte. Desde la
+     *     mision combos-calculados NO es siempre `combos.price`: es el precio de la LISTA del
+     *     comprador (ver `ComboPrecioHelper`), con los ajustes de cliente encima.
+     *   - `stock_disponible` (int|null): cuantos combos se pueden armar con lo que hay de cada
+     *     componente. `null` = sin control de stock. Ver `ComboStockHelper`.
+     *   - `images`: la foto propia del combo (vacio si no tiene; entonces la tarjeta hace el
+     *     collage con `articles[].images`).
+     *
+     * ── Los agotados ─────────────────────────────────────────────────────────────────────────
+     *
+     * Un combo con `stock_disponible === 0` no se lista, con el mismo criterio que
+     * `Article::scopeCheckStock()` para un articulo: se oculta salvo que la tienda haya prendido
+     * `ignorar_stock` o `show_articles_without_stock`. Un `null` (sin control) NUNCA se oculta, aun
+     * con `stock_null_equal_0`: un combo cuyos componentes no llevan stock no esta agotado, no
+     * tiene la nocion de stock.
      *
      * @param  int  $commerce_id
      * @return \Illuminate\Support\Collection
@@ -121,15 +136,61 @@ class HomeHelper
                             ->orderBy('id', 'DESC')
                             ->get();
 
+        /* Una consulta para el stock de todos y una para los precios por lista de todos: nada de
+           accessors por combo en la pagina mas visitada de la tienda. */
+        $stock = ComboStockHelper::para($combos->pluck('id')->all());
+        $precios = ComboPrecioHelper::precios_base($combos, $commerce_id);
+
         foreach ($combos as $combo) {
             $combo->is_combo = true;
-            $combo->final_price = $combo->price;
+            $combo->final_price = $precios[$combo->id];
+            $combo->stock_disponible = $stock[$combo->id];
+        }
+
+        if (self::ocultar_combos_agotados($commerce_id)) {
+            $combos = $combos->filter(function ($combo) {
+                return $combo->stock_disponible !== 0;
+            })->values();
         }
 
         /* Idem promos: el combo se muestra con los ajustes del cliente aplicados. */
         AjustesDeClienteHelper::aplicar_a_precios_fijos($combos, $commerce_id);
 
         return $combos;
+    }
+
+    /**
+     * ¿Esta tienda oculta lo agotado? Espejo de `Article::scopeCheckStock()`, que es quien decide
+     * lo mismo para los articulos:
+     *
+     *   - `ignorar_stock` prendido -> nada se oculta, nunca (la tienda entera se comporta como si
+     *     ningun articulo llevara stock).
+     *   - si no, se oculta cuando `show_articles_without_stock` esta apagado.
+     *
+     * ⚠️ `ignorar_stock` no existe en todas las bases (lo crea una migracion de `empresa-api` que
+     * puede no haber llegado). Leer un atributo ausente de un modelo da null, no una excepcion, asi
+     * que sin la columna cuenta como apagado: el mismo resultado que tiene el articulo.
+     *
+     * Un comercio sin fila de configuracion online no oculta nada: la tabla arranca con
+     * `show_articles_without_stock = 1`.
+     *
+     * @param  int|string  $commerce_id
+     * @return bool
+     */
+    static function ocultar_combos_agotados($commerce_id) {
+        $commerce = User::find($commerce_id);
+
+        $configuration = is_null($commerce) ? null : $commerce->online_configuration;
+
+        if (is_null($configuration)) {
+            return false;
+        }
+
+        if ($configuration->ignorar_stock) {
+            return false;
+        }
+
+        return !$configuration->show_articles_without_stock;
     }
 
     /**
