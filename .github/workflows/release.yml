@@ -1,0 +1,122 @@
+name: Release
+
+# Release de tienda-api (misión versiones-tienda, 1/10/2026).
+#
+# Se dispara con un commit en master cuyo mensaje trae [release:X.Y.Z] (en la práctica un commit
+# vacío "release: version X.Y.Z [release:X.Y.Z]", que se pushea a la vez en tienda-api y en
+# tienda-spa). A diferencia de empresa NO hay merge: tienda no tiene develop, master ya es la rama
+# de la que sale la versión. El tag vX.Y.Z se crea sobre el commit que disparó el job.
+#
+# Lo que deja: el tag vX.Y.Z y un GitHub Release con UN asset, tienda-api-vX.Y.Z.zip: el repo con
+# vendor/ ADENTRO (composer install sin dev), listo para descomprimir. admin-api lo baja POR NOMBRE
+# EXACTO al instalar o actualizar una tienda (verifica artisan y vendor/autoload.php), lo sube al
+# hosting, lo descomprime (en una actualización sin pisar public/, storage/ ni .env) y corre ahí el
+# composer install con scripts. Si se cambia el nombre del asset hay que cambiar también el admin
+# (contrato del plan de la misión, sección 1).
+#
+# Hasta esta misión el admin armaba la API de cada tienda en el VPS de builds de producción
+# (composer install por cliente). Desde acá el paquete se arma UNA vez por versión, en este runner.
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.message, '[release:')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extraer version del commit
+        id: version
+        # Misma extracción que el release de empresa. El mensaje entra por variable de entorno y no
+        # interpolado adentro del script: así una comilla o un $( ) del mensaje no se ejecuta. La
+        # versión se valida con la misma regla que admin-api (VersionNumberComparator: tres o más
+        # números separados por punto): un tag "v" vacío o con basura sería una versión que el
+        # admin después no puede dar de alta.
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          VERSION=$(printf '%s\n' "$MSG" | grep -oP '(?<=\[release:)[^\]]+' | head -1)
+          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+(\.[0-9]+){2,}$'; then
+            echo "Version invalida en el mensaje del commit: '$VERSION' (se espera [release:X.Y.Z])"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------------------------------
+      # 🔴 EL TAG Y EL RELEASE VAN DESPUÉS DEL PAQUETE, y el orden importa. Una versión publicada
+      # sin su zip es una versión que no se puede desplegar: el admin la ve, la ofrece, y la
+      # instalación falla al buscar el asset. Por eso, si cualquiera de los pasos de abajo falla,
+      # el job corta ANTES de crear nada: no queda ni tag ni release. Se arregla en master y se
+      # vuelve a pushear el [release:X.Y.Z], o se relanza el job si el fallo fue transitorio.
+      # ------------------------------------------------------------------------------------
+
+      - name: Preparar PHP 8.4
+        uses: shivammathur/setup-php@v2
+        with:
+          # tienda-api corre en PHP 8.4 en el hosting (composer.json fija config.platform.php en
+          # 8.2.0 para resolver dependencias: el lock exige >= 8.2 y 8.4 lo cumple).
+          php-version: '8.4'
+          # Las ext-* que piden los paquetes del composer.lock (mbstring, curl, dom, fileinfo, iconv,
+          # xml; ctype, filter, hash, json, libxml, openssl, pcre, session y tokenizer vienen
+          # compiladas adentro del PHP que instala setup-php) más las que Laravel 10 usa en runtime
+          # y ningún paquete declara (pdo_mysql, bcmath, intl, gd, zip), para que el runner se
+          # parezca al hosting.
+          extensions: mbstring, curl, dom, fileinfo, gd, iconv, xml, zip, pdo_mysql, bcmath, intl
+          tools: composer:v2
+          coverage: none
+
+      - name: composer install (mismas banderas que el admin)
+        # `--no-dev --optimize-autoloader --no-interaction --no-ansi` como el admin en el VPS de
+        # builds, más `--no-scripts`: el post-autoload-dump (artisan package:discover) necesita un
+        # .env que acá no existe; lo corre el `composer install` CON scripts que el admin hace en el
+        # hosting después de descomprimir, como hoy. `--prefer-dist` no hace falta: composer.json
+        # ya fija config.preferred-install = dist.
+        env:
+          COMPOSER_ALLOW_SUPERUSER: 1
+          COMPOSER_MEMORY_LIMIT: -1
+        run: composer install --no-dev --optimize-autoloader --no-interaction --no-ansi --no-scripts
+
+      - name: Empaquetar la API con vendor adentro
+        # Afuera: .git/*, los .env (el de cada tienda vive solo en su hosting), tests/, cualquier
+        # *.zip (el repo trae uno viejo, y el propio paquete se escribe en esta carpeta) y
+        # node_modules/. public/ y storage/ (solo su esqueleto de .gitignore) VAN adentro: en una
+        # instalación hacen falta, y en una actualización el admin decide al descomprimir qué no
+        # pisa (public/*, storage/* y .env).
+        run: |
+          ZIP="tienda-api-v${{ steps.version.outputs.VERSION }}.zip"
+          zip -qr "$ZIP" . -x '.git/*' '.env' '.env.*' 'tests/*' '*.zip' 'node_modules/*'
+          unzip -tq "$ZIP"
+          # Lo que el admin verifica al bajarlo: artisan en la raíz y el autoload de composer.
+          # awk '{print $NF}' deja solo la ruta de cada entrada; grep -x exige la ruta entera.
+          for ARCHIVO in artisan vendor/autoload.php public/index.php; do
+            unzip -l "$ZIP" | awk '{print $NF}' | grep -qxF "$ARCHIVO" || { echo "FALTA $ARCHIVO en el zip"; exit 1; }
+          done
+          if unzip -l "$ZIP" | awk '{print $NF}' | grep -qE '^(\.env|\.git/|tests/)'; then
+            echo 'El zip trae .env, .git o tests: revisar las exclusiones'
+            exit 1
+          fi
+          unzip -l "$ZIP" | tail -1
+          ls -la "$ZIP"
+
+      - name: Crear tag y release
+        # target_commitish es el commit que disparó el job (no "master": si mientras empaquetaba
+        # entró otro commit, el tag igual queda sobre el que se empaquetó).
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: v${{ steps.version.outputs.VERSION }}
+          generate_release_notes: true
+          target_commitish: ${{ github.sha }}
+          fail_on_unmatched_files: true
+          files: tienda-api-v${{ steps.version.outputs.VERSION }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
