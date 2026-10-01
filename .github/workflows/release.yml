@@ -28,7 +28,11 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    if: contains(github.event.head_commit.message, '[release:')
+    # Dispara solo si la PUNTA del push es el commit de release ("release: version X.Y.Z
+    # [release:X.Y.Z]"): una mención de la marca en el cuerpo de otro commit (p.ej. un commit que
+    # documenta cómo se publica) no publica nada. Un merge cuya punta no es ese commit, tampoco.
+    # Entre comillas dobles: 'release: version ' lleva ": " adentro y YAML lo leeria como otro mapeo.
+    if: "startsWith(github.event.head_commit.message, 'release: version ') && contains(github.event.head_commit.message, '[release:')"
 
     steps:
       - name: Checkout
@@ -47,6 +51,15 @@ jobs:
           VERSION=$(printf '%s\n' "$MSG" | grep -oP '(?<=\[release:)[^\]]+' | head -1)
           if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+(\.[0-9]+){2,}$'; then
             echo "Version invalida en el mensaje del commit: '$VERSION' (se espera [release:X.Y.Z])"
+            exit 1
+          fi
+          # Una versión publicada no se vuelve a publicar. Sin este corte, re-pushear el mismo
+          # [release:X.Y.Z] (p.ej. porque falló el otro repo de tienda) reemplazaba el asset con un
+          # build de OTRO commit y el tag seguía en el viejo: dos tiendas "en X.Y.Z" corriendo
+          # código distinto sin que nada lo avise. Si una corrida dejó el release a medias, se borra
+          # a mano el release y el tag en GitHub y se vuelve a pushear; si no, se usa un número nuevo.
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "El tag v$VERSION ya existe: esa version ya esta publicada. Usa un numero nuevo."
             exit 1
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
