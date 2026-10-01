@@ -11,7 +11,8 @@ name: Release
 # vendor/ ADENTRO (composer install sin dev), listo para descomprimir. admin-api lo baja POR NOMBRE
 # EXACTO al instalar o actualizar una tienda (verifica artisan y vendor/autoload.php), lo sube al
 # hosting, lo descomprime (en una actualización sin pisar public/, storage/ ni .env) y corre ahí el
-# composer install con scripts. Si se cambia el nombre del asset hay que cambiar también el admin
+# composer install (--no-scripts) y después `artisan package:discover` en su paso finalize. Si se
+# cambia el nombre del asset hay que cambiar también el admin
 # (contrato del plan de la misión, sección 1).
 #
 # Hasta esta misión el admin armaba la API de cada tienda en el VPS de builds de producción
@@ -90,8 +91,9 @@ jobs:
       - name: composer install (mismas banderas que el admin)
         # `--no-dev --optimize-autoloader --no-interaction --no-ansi` como el admin en el VPS de
         # builds, más `--no-scripts`: el post-autoload-dump (artisan package:discover) necesita un
-        # .env que acá no existe; lo corre el `composer install` CON scripts que el admin hace en el
-        # hosting después de descomprimir, como hoy. `--prefer-dist` no hace falta: composer.json
+        # .env que acá no existe; en el hosting, después de descomprimir, el admin corre su propio
+        # `composer install --no-scripts` y el `artisan package:discover` lo hace su paso finalize,
+        # como hoy. `--prefer-dist` no hace falta: composer.json
         # ya fija config.preferred-install = dist.
         env:
           COMPOSER_ALLOW_SUPERUSER: 1
