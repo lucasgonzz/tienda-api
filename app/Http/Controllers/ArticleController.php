@@ -6,6 +6,7 @@ use App\Article;
 use App\Events\ArticleViewedEvent;
 use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\HomeHelper;
 use App\Http\Controllers\Helpers\RecomendacionesHelper;
 use App\Http\Controllers\Helpers\TagHelper;
@@ -21,9 +22,22 @@ use Illuminate\Support\Facades\Log;
 
 class ArticleController extends Controller {
     
+    /**
+     * La ficha de un articulo (o de una promocion de vinoteca) por slug.
+     *
+     * Catalogo por lista (mision catalogo-por-lista-tienda, 5/10/2026): un articulo que el
+     * comprador no puede ver por su lista de precios responde IGUAL que un slug inexistente —
+     * `{"article": null}` con 200, que es lo que esta ruta ya devolvia— y no con un 403 ni un 404
+     * distinto: un codigo propio le confirmaria a quien prueba links que ese articulo existe.
+     *
+     * ⚠️ Esta ruta NO pasa por `checkOnline()`, y hoy un articulo offline o inactivo se puede abrir
+     * por su slug. Eso es un hallazgo aparte (queda en el informe) y no se arregla acá: el scope
+     * que se suma agrega SOLO la restriccion de la lista.
+     */
     function show($slug, $commerce_id) {
     	$article = Article::where('slug', $slug)
                             ->where('user_id', $commerce_id)
+                            ->visibleParaLaLista($commerce_id)
                             ->withAll()
     						->with(['questions' => function($query) {
                                 $query->whereHas('answer')->with('answer');
@@ -49,12 +63,27 @@ class ArticleController extends Controller {
 
     }
 
+    /**
+     * Una seleccion de articulos por id ("A-B-C"), en el orden pedido. Un id que no existe deja un
+     * `null` en su lugar, desde siempre.
+     *
+     * Catalogo por lista (mision catalogo-por-lista-tienda): un articulo que el comprador no puede
+     * ver por su lista de precios queda IGUAL que uno inexistente, `null` en su posicion. La ruta no
+     * trae `commerce_id`, asi que el comercio sale de cada articulo (`user_id`), que lo escribio el
+     * ERP y no el navegador. Sin lista restringida `ids_no_visibles()` no hace ninguna query.
+     */
     function seleccionEspecial($articles_id) {
         $articles = [];
         foreach (explode('-', $articles_id) as $article_id) {
-            $articles[] = Article::where('id', $article_id)
+            $article = Article::where('id', $article_id)
                                 ->withAll()
                                 ->first();
+
+            if (!is_null($article) && count(CatalogoPorListaHelper::ids_no_visibles([$article->id], $article->user_id)) > 0) {
+                $article = null;
+            }
+
+            $articles[] = $article;
         }
         return response()->json(['models' => $articles], 200);
     }
@@ -169,8 +198,24 @@ class ArticleController extends Controller {
         return response()->json(['questions' => $questions], 200);
     }
 
+    /**
+     * Los favoritos del comprador logueado (la ruta va en `auth:buyer`).
+     *
+     * Catalogo por lista (mision catalogo-por-lista-tienda): un favorito que el comprador ya no
+     * puede ver por su lista de precios no se lista. La ruta no trae `commerce_id`: el comercio es
+     * el del comprador de la SESION (`buyers.user_id`), nunca uno de la URL. Esta ruta no pasa por
+     * `checkOnline()` y no se le suma: se agrega SOLO la restriccion de la lista.
+     */
     function favorites() {
+        $buyer = Auth::guard('buyer')->user();
+
+        /* 0 y no null: con null el scope caeria al `commerce_id` del request, o sea a uno que
+           podria venir en la query string. Un comprador viejo sin `user_id` queda con el comercio 0,
+           que no tiene listas: vale solo la lista de su cliente del ERP, si la tiene. */
+        $commerce_id = (!is_null($buyer) && !is_null($buyer->user_id)) ? $buyer->user_id : 0;
+
         $articles = Article::whereLikedBy($this->buyerId())
+                            ->visibleParaLaLista($commerce_id)
                             ->withAll()
                             ->with(['questions' => function($query) {
                                 $query->whereHas('answer')->with('answer');

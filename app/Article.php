@@ -3,6 +3,7 @@
 namespace App;
 
 use App\Http\Controllers\Helpers\ArticlePriceRangeHelper;
+use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\User;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -73,6 +74,31 @@ class Article extends Model
                             $sub_query->whereHas('answer')
                                     ->with('answer');
                         }]);
+
+        /* El catalogo por lista de precios (mision catalogo-por-lista-tienda, 5/10/2026): el
+           comprador cuya lista es restringida ve solo los articulos habilitados para ella.
+           Colgarlo aca cubre de una todo lo que ya pasa por checkOnline(): la home, la busqueda,
+           los similares, las ofertas personalizadas, las recomendaciones, las marcas, el SEO y
+           los nombres del buscador. Sin lista restringida no toca la consulta. */
+        $query->visibleParaLaLista($commerce->id);
+    }
+
+    /**
+     * Solo los articulos que el comprador de esta sesion puede ver segun su lista de precios. La
+     * decision vive entera en `CatalogoPorListaHelper::restringir()` (ver su docblock): este scope
+     * es solo la forma comoda de pedirla desde una consulta.
+     *
+     * Va por separado de `checkOnline()` porque hay caminos que NO pasan por ahi y tambien tienen que
+     * respetar la lista: la ficha por slug, los favoritos y la seleccion especial
+     * (`ArticleController`). En esos caminos se agrega SOLO esta restriccion; lo que `checkOnline()`
+     * filtra de mas (online, status, imagenes) no se les suma, porque no es parte de este pedido.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $query
+     * @param  int|string|null  $commerce_id  Comercio de la pagina. Sin el, el del request.
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    function scopeVisibleParaLaLista($query, $commerce_id = null) {
+        return CatalogoPorListaHelper::restringir($query, $commerce_id);
     }
 
     /**
