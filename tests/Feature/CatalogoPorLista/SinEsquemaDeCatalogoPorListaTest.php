@@ -278,6 +278,53 @@ class SinEsquemaDeCatalogoPorListaTest extends TestCase
 
         $comercios = $this->comercios_creados;
 
+        /* ⚠️ El MySQL local de wamp tiene `table_definition_cache = 600` contra cientos de tablas por
+           base y decenas de bases de testing, y despues de los RENAME COLUMN de esta clase un
+           prepared statement puede caer con `1615 Prepared statement needs to be re-prepared` (le
+           pasa igual al molde, `SinEsquemaDeCombosYRangosTest`, en la linea base). Es del entorno, no
+           del codigo — pero si la limpieza muere a mitad, los datos quedan en la base que comparten
+           TODOS los tests del slot. Por eso, y SOLO ante ese codigo, la limpieza se reintenta: es
+           idempotente (borra por los ids de los comercios creados) y un reintento prepara de nuevo. */
+        $this->reintentandoSi1615(function () use ($comercios) {
+            $this->borrarLoDeLosComercios($comercios);
+        });
+
+        $this->comercios_creados = [];
+    }
+
+    /**
+     * Corre el borrado y lo reintenta (hasta tres veces) SOLO si MySQL contesta 1615. Cualquier otro
+     * error sube tal cual.
+     *
+     * @param  callable  $borrado
+     * @return void
+     */
+    private function reintentandoSi1615(callable $borrado)
+    {
+        for ($intento = 1; ; $intento++) {
+            try {
+                $borrado();
+
+                return;
+            } catch (\Illuminate\Database\QueryException $e) {
+                $codigo = isset($e->errorInfo[1]) ? (int) $e->errorInfo[1] : null;
+
+                if ($codigo !== 1615 || $intento >= 3) {
+                    throw $e;
+                }
+            }
+        }
+    }
+
+    /**
+     * El borrado en si, por los ids exactos de los comercios. Ver `limpiarLoCreado()`.
+     *
+     * @param  array  $comercios
+     * @return void
+     */
+    private function borrarLoDeLosComercios(array $comercios)
+    {
+
         $carritos = DB::table('carts')->whereIn('user_id', $comercios)->pluck('id')->all();
 
         if (!empty($carritos)) {
@@ -322,8 +369,6 @@ class SinEsquemaDeCatalogoPorListaTest extends TestCase
         DB::table('brands')->whereIn('user_id', $comercios)->delete();
         DB::table('online_configurations')->whereIn('user_id', $comercios)->delete();
         DB::table('users')->whereIn('id', $comercios)->delete();
-
-        $this->comercios_creados = [];
     }
 
     /*
