@@ -10,7 +10,6 @@ use App\Http\Controllers\Helpers\ClientOfferHelper;
 use App\Http\Controllers\Helpers\CommerceHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
-use App\PriceType;
 use App\Size;
 use App\User;
 use Illuminate\Support\Facades\Log;
@@ -72,7 +71,14 @@ class ArticleHelper
 
         } else if (!is_null($buyer) && !is_null($buyer->comercio_city_client) && !is_null($buyer->comercio_city_client->price_type)) {
             // Caso 3: buyer logueado con lista de precios asignada — usar final_price del pivot
-            $price_type_id = $buyer->comercio_city_client->price_type->id;
+            /* La ELECCION de la lista sale de CatalogoPorListaHelper (mision
+               catalogo-por-lista-tienda, 5/10/2026): es la misma funcion que decide que articulos
+               ve este comprador, asi que el precio y el catalogo no pueden salir de listas
+               distintas. Para este caso devuelve exactamente la lista de la condicion de arriba
+               (el `price_type` del cliente del comprador de la sesion), memoizada por request. No
+               se vuelve a leer la relacion aca "para simplificar": eso es justamente copiar la
+               eleccion en dos lugares. */
+            $price_type_id = CatalogoPorListaHelper::lista_del_comprador($commerce_id)->id;
             foreach ($articles as $article) {
                 if (!is_null($article)) {
                     // Buscar la lista del buyer entre las price_types cargadas del artículo
@@ -105,7 +111,9 @@ class ArticleHelper
              *
              * 🔴 Sigue valiendo lo verificado el 12/8/2026: `online_configuration->online_price_type`
              * NO es "que lista ve el anonimo" sino "QUIEN ve precios". La lista del anonimo la
-             * sigue eligiendo el orderBy('position','DESC') de aca abajo. Fuentes del esquema
+             * sigue eligiendo el orderBy('position','DESC') de
+             * CatalogoPorListaHelper::eleccion_de_lista() (la consulta que antes estaba aca
+             * abajo, movida tal cual el 5/10/2026). Fuentes del esquema
              * (la tienda comparte la base del ERP y este repo no tiene migraciones):
              *   - empresa-api/database/migrations/2023_04_12_162001_create_online_price_types_table.php
              *     → la tabla es (id, name, slug): catalogo global.
@@ -125,24 +133,25 @@ class ArticleHelper
 
             } else {
 
-                $price_types = PriceType::where('user_id', $articles[0]->user_id)
-                                        ->whereNotNull('position')
-                                        ->orderBy('position', 'DESC')
-                                        ->get();
+                /* La eleccion de la lista (la de `position` mas alta del comercio, y para el
+                   anonimo sin contar las (b) ocultas al publico) vive en
+                   CatalogoPorListaHelper::eleccion_de_lista() desde la mision
+                   catalogo-por-lista-tienda (5/10/2026). Es la MISMA consulta que estaba aca
+                   —mismo where, mismo orderBy, sin desempate— y la misma lista con la que esa
+                   mision decide que articulos ve el comprador: precio y catalogo salen de una
+                   sola funcion. Se memoiza por request, asi que las hasta cinco llamadas de la
+                   home pagan la consulta una sola vez.
 
-                $el_comercio_tiene_listas = count($price_types) >= 1;
+                   `el_comercio_tiene_listas` se mide ANTES de sacar las ocultas, como antes: es
+                   lo que distingue "no tiene listas" (vale la columna) de "todas ocultas" (el
+                   anonimo se queda sin precios), mas abajo. */
+                $eleccion = CatalogoPorListaHelper::eleccion_de_lista($articles[0]->user_id);
 
-                if ($es_anonimo) {
-                    /* (b) Las ocultas al publico no juegan para el anonimo. Loose a proposito:
-                       NULL y 0 son "visible". */
-                    $price_types = $price_types->filter(function ($price_type) {
-                        return $price_type->ocultar_al_publico != 1;
-                    })->values();
-                }
+                $el_comercio_tiene_listas = $eleccion['el_comercio_tiene_listas'];
 
-                if (count($price_types) >= 1) {
+                if (!is_null($eleccion['lista'])) {
                     // La primera es la de posición más alta (precio público más caro)
-                    $public_price_type = $price_types->first();
+                    $public_price_type = $eleccion['lista'];
                     foreach ($articles as $article) {
                         if (!is_null($article)) {
                             $matched = $article->price_types->firstWhere('id', $public_price_type->id);
