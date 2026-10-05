@@ -8,6 +8,7 @@ use App\Combo;
 use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartHelper;
+use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
@@ -171,6 +172,41 @@ class OrderController extends Controller
             // antes y se dice que pasa.
             if (is_null($buyer_id)) {
                 return response()->json(['error' => 'No hay comprador identificado para este pedido'], 401);
+            }
+
+            /*
+             * Catalogo por lista (mision catalogo-por-lista-tienda, 5/10/2026): un pedido no puede
+             * llevar articulos que el comprador de la SESION no puede ver por su lista de precios.
+             *
+             * Es la red de seguridad, no el camino normal: el carrito ya descarta esas lineas al
+             * guardarse (CartHelper::attachArticles). Lo que llega hasta aca es un carrito guardado
+             * antes de que cambiara la lista, el de un visitante que despues se logueo como
+             * mayorista sin volver a guardarlo, o un POST armado a mano.
+             *
+             * Va ANTES de cualquier escritura (el set_total() de los ajustes, la creacion del
+             * pedido): un 422 aca deja el carrito exactamente como estaba, para que el comprador
+             * saque esas lineas y vuelva a confirmar. Mismo estilo que los 422 con `codigo` del
+             * envio de mas abajo (`opcion_envio`, `destino`), y es el contrato C3 con tienda-spa.
+             * Un SPA viejo no conoce el codigo y cae en su aviso generico de "no pudimos guardar
+             * tu pedido", que es lo correcto: el pedido no se creo.
+             *
+             * Sin lista restringida no lee ni las lineas del carrito: cero queries de mas.
+             */
+            $no_disponibles = CatalogoPorListaHelper::no_visibles_del_carrito($cart);
+
+            if (count($no_disponibles) > 0) {
+                Log::warning('OrderController@store: el carrito tiene articulos que el comprador no puede ver por su lista de precios', [
+                    'cart_id'   => $cart->id,
+                    'articulos' => array_column($no_disponibles, 'id'),
+                ]);
+
+                return response()->json([
+                    'codigo'    => 'articulos_no_disponibles',
+                    'message'   => 'Algunos artículos de tu carrito no están disponibles para tu cuenta: '
+                        .implode(', ', array_column($no_disponibles, 'name'))
+                        .'. Sacalos del carrito para confirmar el pedido.',
+                    'articulos' => $no_disponibles,
+                ], 422);
             }
 
             /*
