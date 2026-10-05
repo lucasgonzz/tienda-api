@@ -31,10 +31,47 @@ class CartHelper {
         }
     }
 
-    static function attachArticles($cart, $articles) {
-        
+    /**
+     * Cuelga del carrito las lineas de articulo del payload.
+     *
+     * ── Catalogo por lista (mision catalogo-por-lista-tienda, 5/10/2026) ────────────────────────
+     *
+     * Una linea de un articulo que el comprador de la sesion NO puede ver por su lista de precios
+     * no se guarda: se DESCARTA y se devuelve, para que el controller se la diga al SPA
+     * (`articulos_no_disponibles`). Es el mismo criterio que `attach_combos()` con lo que no se
+     * puede vender: el servidor manda, no el payload. Pasa con un carrito armado como visitante que
+     * despues se loguea como mayorista, con una lista que cambio con el carrito abierto, o con un
+     * payload armado a mano.
+     *
+     * Las lineas descartadas se sacan TAMBIEN del payload que recibe `get_price()`, no solo del
+     * attach: la cadena de precios mira las otras lineas (las cantidades del grupo de la extension
+     * de rangos), y un articulo que no esta en el carrito no puede mover el precio de los que si.
+     * Sin descartes el payload queda intacto y todo cobra byte a byte lo de antes.
+     *
+     * Las lineas `is_promocion_vinoteca` que vengan mezcladas aca se saltean como siempre: no son
+     * articulos y no las decide la lista.
+     *
+     * @param  \App\Cart  $cart
+     * @param  array  $articles  Lineas del payload.
+     * @param  array|null  $no_disponibles  Las ya calculadas con `articulos_no_disponibles()`, si el
+     *                                      llamador las necesito ANTES de tocar el carrito
+     *                                      (`CartController@update`). Null = calcularlas aca.
+     * @return array<int, array{id: int, name: string}>  Las lineas descartadas (vacio si ninguna).
+     */
+    static function attachArticles($cart, $articles, $no_disponibles = null) {
+
         if (count($articles) == 0) {
-            return;
+            return [];
+        }
+
+        if (is_null($no_disponibles)) {
+            $no_disponibles = Self::articulos_no_disponibles($cart, $articles);
+        }
+
+        $articles = Self::sin_lineas_no_disponibles($articles, $no_disponibles);
+
+        if (count($articles) == 0) {
+            return $no_disponibles;
         }
 
         $has_price_ranges = CommerceHelper::hasExtencion('lista_de_precios_por_rango_de_cantidad_vendida', null, $articles[0]['user_id']);
@@ -67,8 +104,74 @@ class CartHelper {
                                             // 'size_id'    => ArticleHelper::getSizeId($article),
                                         ]);
             }
-            
+
         }
+
+        return $no_disponibles;
+    }
+
+    /**
+     * De las lineas de articulo de un payload de carrito, las que el comprador de esta sesion no
+     * puede ver por su lista de precios (mision catalogo-por-lista-tienda). La decision es de
+     * `CatalogoPorListaHelper`; aca solo se sacan los ids del payload.
+     *
+     * El comercio sale del CARRITO (`$cart->user_id`, lo escribio el servidor), nunca del payload:
+     * mismo criterio que `get_price()` y `attach_combos()`.
+     *
+     * Sin lista restringida no hace ninguna query y devuelve vacio.
+     *
+     * @param  \App\Cart  $cart
+     * @param  array  $articles  Lineas del payload.
+     * @return array<int, array{id: int, name: string}>
+     */
+    static function articulos_no_disponibles($cart, $articles) {
+
+        $ids = [];
+
+        foreach ($articles as $article) {
+            if (!isset($article['is_promocion_vinoteca']) && isset($article['id'])) {
+                $ids[] = $article['id'];
+            }
+        }
+
+        return CatalogoPorListaHelper::no_visibles($ids, $cart->user_id);
+    }
+
+    /**
+     * El payload sin las lineas de articulo descartadas por `articulos_no_disponibles()`.
+     *
+     * 🔴 Sin descartes devuelve EL MISMO array que recibio, sin reindexar ni copiar: es lo que
+     * garantiza que el carrito de quien no tiene lista restringida (el 100% de hoy) se arme
+     * exactamente como antes. Con descartes se reindexa, porque `attachArticles()` lee
+     * `$articles[0]`.
+     *
+     * Todas las lineas de un articulo descartado se van, aunque venga repetido en el payload.
+     *
+     * @param  array  $articles
+     * @param  array  $no_disponibles
+     * @return array
+     */
+    static function sin_lineas_no_disponibles($articles, $no_disponibles) {
+
+        if (empty($no_disponibles)) {
+            return $articles;
+        }
+
+        $descartados = array_flip(array_column($no_disponibles, 'id'));
+
+        $quedan = [];
+
+        foreach ($articles as $article) {
+            $es_articulo = !isset($article['is_promocion_vinoteca']) && isset($article['id']);
+
+            if ($es_articulo && isset($descartados[(int) $article['id']])) {
+                continue;
+            }
+
+            $quedan[] = $article;
+        }
+
+        return $quedan;
     }
 
     static function attach_promociones_vinoteca($cart, $promociones_vinoteca) {

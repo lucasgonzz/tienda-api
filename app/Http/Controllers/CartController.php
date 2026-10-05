@@ -128,7 +128,9 @@ class CartController extends Controller
         $this->sync_checkout_fields($cart, $request->cart);
         $cart->save();
 
-        CartHelper::attachArticles($cart, $request->cart['articles']);
+        // Las lineas de articulos que el comprador no puede ver por su lista de precios no se
+        // guardan y vuelven aca (mision catalogo-por-lista-tienda). Ver attachArticles().
+        $no_disponibles = CartHelper::attachArticles($cart, $request->cart['articles']);
         CartHelper::attach_promociones_vinoteca($cart, $request->cart['promociones_vinoteca']);
 
         // `combos` es OPCIONAL en el body y su ausencia nunca es un error: un SPA viejo —o uno
@@ -145,7 +147,7 @@ class CartController extends Controller
 
     	$cart = CartHelper::getFullModel($cart->id);
 
-    	return response()->json(['cart' => $cart], 201);
+    	return response()->json($this->con_articulos_no_disponibles(['cart' => $cart], $no_disponibles), 201);
     }
 
     /**
@@ -171,6 +173,21 @@ class CartController extends Controller
 
         CartOwnershipHelper::adoptar($cart);
 
+        /* Catalogo por lista (mision catalogo-por-lista-tienda, 5/10/2026). Las lineas de articulos
+           que el comprador no puede ver por su lista se deciden ACA, antes de tocar el carrito, y no
+           adentro de attachArticles() despues del sync([]) de abajo: asi el resto del metodo trabaja
+           con el payload ya limpio y sus ramas de siempre deciden solas. Si no queda ninguna linea
+           (ni articulos, ni promociones, ni combos), el carrito se borra igual que el carrito vacio
+           de hoy, en vez de quedar vivo con total 0 y sin lineas.
+
+           Sin lista restringida `$no_disponibles` es vacio sin ninguna query, `$articulos` es el
+           MISMO array del request y todo lo de abajo corre exactamente como antes. */
+        $no_disponibles = count($request->articles) >= 1
+            ? CartHelper::articulos_no_disponibles($cart, $request->articles)
+            : [];
+
+        $articulos = CartHelper::sin_lineas_no_disponibles($request->articles, $no_disponibles);
+
         $this->sync_checkout_fields($cart, $request->all());
         $cart->save();
         CartHelper::checkPaymentStatus($cart);
@@ -187,13 +204,14 @@ class CartController extends Controller
         $cart_deleted = false;
 
         if (
-            count($request->articles) >= 1
+            count($articulos) >= 1
             || count($request->promociones_vinoteca) >= 1
             || count($combos) >= 1
         ) {
 
-            if (count($request->articles) >= 1) {
-                CartHelper::attachArticles($cart, $request->articles);
+            if (count($articulos) >= 1) {
+                // Ya vienen limpias: se le pasa el resultado de arriba para no volver a consultar.
+                CartHelper::attachArticles($cart, $articulos, []);
             }
 
             if (count($request->promociones_vinoteca) >= 1) {
@@ -210,7 +228,7 @@ class CartController extends Controller
                payload llega con los tres arrays vacios). Sin esto quedaba vivo, con total 0 y sin
                lineas, y el comprador no podia deshacerse de el. Solo se mira cuando el payload no
                traia articulos ni promociones: el camino de los articulos no cambia. */
-            $solo_combos_y_todos_descartados = count($request->articles) == 0
+            $solo_combos_y_todos_descartados = count($articulos) == 0
                 && count($request->promociones_vinoteca) == 0
                 && (!ComboEsquemaHelper::disponible() || !$cart->combos()->exists());
 
@@ -226,9 +244,31 @@ class CartController extends Controller
         }
         if (!$cart_deleted) {
             $cart = CartHelper::getFullModel($cart->id);
-            return response()->json(['cart' => $cart], 200);
+            return response()->json($this->con_articulos_no_disponibles(['cart' => $cart], $no_disponibles), 200);
         }
-        return response()->json(['cart' => null], 200);
+        return response()->json($this->con_articulos_no_disponibles(['cart' => null], $no_disponibles), 200);
+    }
+
+    /**
+     * Suma a la respuesta del carrito la clave `articulos_no_disponibles` —`[{id, name}]`, las
+     * lineas que no se guardaron porque el comprador no puede ver esos articulos por su lista de
+     * precios— SOLO si hubo alguna (mision catalogo-por-lista-tienda, contrato C3 con tienda-spa).
+     *
+     * 🔴 Sin descartes la respuesta es byte a byte la de antes: la clave NO aparece, ni siquiera
+     * vacia. Un SPA viejo la ignora de todas formas, pero cualquier clave nueva en el camino del
+     * 100% de los compradores es un cambio de contrato que nadie pidio.
+     *
+     * @param  array  $respuesta
+     * @param  array  $no_disponibles
+     * @return array
+     */
+    private function con_articulos_no_disponibles(array $respuesta, $no_disponibles)
+    {
+        if (!empty($no_disponibles)) {
+            $respuesta['articulos_no_disponibles'] = array_values($no_disponibles);
+        }
+
+        return $respuesta;
     }
 
     /**
