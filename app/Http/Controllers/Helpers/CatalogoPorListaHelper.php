@@ -231,6 +231,45 @@ class CatalogoPorListaHelper
     }
 
     /**
+     * Fija `request()->commerce_id` en el comercio que la RUTA dice, para los scopes que lo leen de ahi:
+     * `Article::checkOnline()`, `checkStock()` y `restringir()` cuando no recibe el comercio.
+     *
+     * ── Por que (hallazgo B2 de la revision independiente) ──────────────────────────────────────
+     *
+     * `Request::__get` le da prioridad al INPUT sobre el parametro de la ruta: con
+     * `/articles/search/x/500?commerce_id=501` el listado es de 500 (el controller filtra por el
+     * argumento de la ruta), pero `request()->commerce_id` vale 501 y la restriccion por lista se
+     * calculaba con las listas de OTRO comercio. Cuando la restriccion sale de la `position`
+     * (visitante, o logueado sin cliente del ERP) alcanzaba con elegir un comercio sin listas para ver
+     * el catalogo completo.
+     *
+     * Es el truco que ya usaban `HomeController@brands`, `articlesFromBrand`, `ClientOfferController` y
+     * `SeoController` (`request()->merge(['commerce_id' => ...])`): el controller que sabe cual es el
+     * comercio de la pagina lo deja en el request antes de que ningun scope lo lea. Esto es lo mismo
+     * en un solo lugar, para las rutas con `{commerce_id}` que pasan por `checkOnline()` y no lo
+     * fijaban: names, search, similars, from-category y las dos recomendaciones de la ficha.
+     *
+     * 🔴 NO se resuelve "preferir el parametro de ruta" adentro de los scopes: `ClientOfferController`
+     * fija A PROPOSITO un comercio (el del comprador de la sesion) distinto del de la URL, y un scope
+     * que mirara primero la ruta lo pisaria. `HomeController@featuredLastUploads` filtra por
+     * `$request->commerce_id`: ahi el filtro y la restriccion salen del mismo valor y no hay
+     * desacuerdo que explotar, asi que no se toca.
+     *
+     * Sin comercio (null o vacio) no hace nada.
+     *
+     * @param  int|string|null  $commerce_id  El `{commerce_id}` de la ruta.
+     * @return void
+     */
+    public static function fijar_el_comercio($commerce_id)
+    {
+        if (is_null($commerce_id) || $commerce_id === '') {
+            return;
+        }
+
+        request()->merge(['commerce_id' => $commerce_id]);
+    }
+
+    /**
      * El comercio del comprador de la SESION (`buyers.user_id`), para las rutas que no traen el
      * comercio en la URL y donde el unico comercio confiable es el de quien pregunta: los favoritos.
      *

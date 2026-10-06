@@ -71,7 +71,30 @@ class HomeController extends Controller
         return response()->json(['articles' => $last_uploads], 200);
     }
 
-    function articlesFromCategory($category_id, $sub_category_id, $bodega_id, $cepa_id, $order_by) {
+    /**
+     * Los articulos de una categoria, subcategoria, bodega o cepa (el filtro que no sea 0), paginados.
+     *
+     * Catalogo por lista (mision catalogo-por-lista-tienda, revision independiente B2): el comercio de
+     * la restriccion es el `{commerce_id}` de la ruta y no el de la query string (ver
+     * `CatalogoPorListaHelper::fijar_el_comercio()`).
+     *
+     * ⚠️ Lo que NO cubre, y queda dicho: esta consulta no filtra por comercio (filtra por categoria),
+     * asi que con un `{commerce_id}` de la ruta que NO es el de la categoria la restriccion se calcula
+     * con el comercio de la ruta. Cerrarlo pide saber de que comercio es la categoria —una consulta mas
+     * en cada listado de categoria de todas las tiendas— o sumar `where user_id`, que cambia el SQL de
+     * todos y lo que devuelve con los cuatro filtros en 0. No es trivialmente seguro: va al informe.
+     *
+     * @param  int|string  $category_id
+     * @param  int|string  $sub_category_id
+     * @param  int|string  $bodega_id
+     * @param  int|string  $cepa_id
+     * @param  string  $order_by
+     * @param  int|string|null  $commerce_id  El `{commerce_id}` de la ruta.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function articlesFromCategory($category_id, $sub_category_id, $bodega_id, $cepa_id, $order_by, $commerce_id = null) {
+        CatalogoPorListaHelper::fijar_el_comercio($commerce_id);
+
         $articles = Article::withAll()
                             ->checkOnline()
                             ->checkStock();

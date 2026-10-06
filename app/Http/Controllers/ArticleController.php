@@ -103,7 +103,24 @@ class ArticleController extends Controller {
     const SIMILARES_POR_PAGINA = 6;
     const SIMILARES_POR_PAGINA_MAX = 24;
 
-    function similars($article_id) {
+    /**
+     * Los articulos parecidos a uno (los de su categoria), paginados.
+     *
+     * Catalogo por lista (mision catalogo-por-lista-tienda, revision independiente B2): el comercio de
+     * la restriccion es el de la ruta, no el de la query string (ver
+     * `CatalogoPorListaHelper::fijar_el_comercio()`). Esta consulta no filtra por comercio (filtra por
+     * la categoria del articulo), asi que si el `{commerce_id}` de la ruta NO es el del articulo se suma
+     * ademas la restriccion de la lista del comercio del articulo: de lo contrario, elegir en la URL un
+     * comercio sin listas dejaba ver los similares no habilitados. Con la ruta bien armada (el unico
+     * caso del SPA) no se suma nada y la consulta es la de siempre.
+     *
+     * @param  int|string  $article_id
+     * @param  int|string|null  $commerce_id  El `{commerce_id}` de la ruta.
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function similars($article_id, $commerce_id = null) {
+        CatalogoPorListaHelper::fijar_el_comercio($commerce_id);
+
         $article = Article::find($article_id);
         if (!is_null($article->sub_category)) {
             $category_id = $article->sub_category->category_id;
@@ -113,8 +130,13 @@ class ArticleController extends Controller {
                                 })
                                 ->withAll()
                                 ->checkOnline()
-                                ->checkStock()
-                                ->paginate($this->similaresPorPagina());
+                                ->checkStock();
+
+            if ((int) $article->user_id !== (int) request()->commerce_id) {
+                $articles->visibleParaLaLista($article->user_id);
+            }
+
+            $articles = $articles->paginate($this->similaresPorPagina());
             $articles = ArticleHelper::checkPriceTypes($articles);
             return response()->json(['models' => $articles], 200);
         }
@@ -165,6 +187,8 @@ class ArticleController extends Controller {
      * @return \Illuminate\Http\JsonResponse
      */
     function tambienCompraronVistas($article_id, $commerce_id) {
+        CatalogoPorListaHelper::fijar_el_comercio($commerce_id);
+
         $articles = RecomendacionesHelper::vieronTambienCompraron($article_id, $commerce_id);
         return response()->json(['models' => $articles], 200);
     }
@@ -180,6 +204,8 @@ class ArticleController extends Controller {
      * @return \Illuminate\Http\JsonResponse
      */
     function tambienCompraronCompras($article_id, $commerce_id) {
+        CatalogoPorListaHelper::fijar_el_comercio($commerce_id);
+
         $articles = RecomendacionesHelper::compraronTambienCompraron($article_id, $commerce_id);
         return response()->json(['models' => $articles], 200);
     }
@@ -265,6 +291,8 @@ class ArticleController extends Controller {
     }
 
     function names($commerce_id) {
+        CatalogoPorListaHelper::fijar_el_comercio($commerce_id);
+
         $commerce = User::find($commerce_id);
         $names = Article::where('user_id', $commerce_id)
                             ->checkOnline()
@@ -276,6 +304,8 @@ class ArticleController extends Controller {
     }
 
     function search($query, $commerce_id, $save_last_search = true) {
+        CatalogoPorListaHelper::fijar_el_comercio($commerce_id);
+
         $query = str_replace('%20', ' ', $query);
         Log::info('Buscando '.$query);
         $articles = Article::where('user_id', $commerce_id);
