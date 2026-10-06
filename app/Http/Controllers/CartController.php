@@ -137,10 +137,23 @@ class CartController extends Controller
 
         $no_disponibles = CartHelper::articulos_no_disponibles($cart, $articulos_del_payload);
 
+        $articulos_que_quedan = CartHelper::sin_lineas_no_disponibles($articulos_del_payload, $no_disponibles);
+
+        /* Si la lista descarto TODO lo que se pedia y no hay promociones de vinoteca ni combos, no hay
+           ninguna linea que guardar y el carrito no se crea: `200 {cart: null, articulos_no_disponibles}`,
+           igual que el PUT que se queda sin lineas (que ya borra el carrito y responde `cart: null`). Antes
+           quedaba un carrito vivo, sin lineas y con total 0, que `lastCart` devolvia como "ultimo carrito"
+           y que el comprador nunca armo (hallazgo B6 de la revision independiente). Va antes de crear
+           nada: ni el carrito ni su registro en la sesion existen. Sin descartes este `if` no entra y el
+           camino es el de siempre, incluido el POST de un carrito vacio. */
+        if (!empty($no_disponibles) && CartHelper::se_quedaria_sin_lineas($request->cart, $articulos_que_quedan)) {
+            return response()->json($this->con_articulos_no_disponibles(['cart' => null], $no_disponibles), 200);
+        }
+
         // Persistir opciones de checkout elegidas antes de confirmar (envío/retiro, pago, etc.)
         $this->sync_checkout_fields($cart, CartHelper::payload_con_las_lineas_que_se_guardan(
             $request->cart,
-            CartHelper::sin_lineas_no_disponibles($articulos_del_payload, $no_disponibles)
+            $articulos_que_quedan
         ));
         $cart->save();
 

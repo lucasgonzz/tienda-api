@@ -108,21 +108,97 @@ class CarritoPorListaTest extends TestCase
     }
 
     /**
-     * Un POST con SOLO lineas no habilitadas se comporta como el POST de un carrito vacio de hoy (se
-     * crea, sin lineas, con total 0), mas el aviso.
+     * 🔴 Un POST con SOLO lineas no habilitadas (y sin promociones de vinoteca ni combos) NO crea el
+     * carrito: responde `200 {cart: null, articulos_no_disponibles: [...]}`, igual que el PUT que se
+     * queda sin lineas (que ya borraba el carrito y respondia `cart: null`).
+     *
+     * ── Por que cambio este caso (hallazgo B6 de la revision independiente) ─────────────────────────
+     *
+     * Este test fijaba lo contrario como "intencional": el POST creaba el carrito igual, sin lineas y con
+     * total 0, y la respuesta traia ese carrito vacio mas el aviso. Era el diseño original de la mision,
+     * y la revision lo marco como defecto: un carrito que el comprador nunca armo quedaba vivo —
+     * `lastCart` lo devolvia con `has_last_cart: true` y cero articulos— y el propio comentario de
+     * `update` llama defecto a ese mismo estado. Cambio la decision de diseño, no una aserción para que
+     * pase: sin ninguna linea que guardar no hay carrito que crear, y el comprador recibe el aviso de lo
+     * que no pudo agregar.
      */
-    public function test_un_post_con_solo_no_habilitados_es_el_carrito_vacio_de_hoy_mas_el_aviso()
+    public function test_un_post_con_solo_no_habilitados_no_crea_el_carrito_y_lo_avisa()
     {
         $this->comoComprador($this->compradorConLista($this->comercio, $this->mayorista->id));
 
+        $carritos_antes = DB::table('carts')->count();
+
         $respuesta = $this->crearCarrito([$this->linea($this->sin_marcar, 1, 2000)]);
 
+        $respuesta->assertStatus(200);
+        $this->assertSame([
+            'cart'                     => null,
+            'articulos_no_disponibles' => [['id' => $this->sin_marcar->id, 'name' => $this->sin_marcar->name]],
+        ], $respuesta->json());
+
+        $this->assertSame($carritos_antes, DB::table('carts')->count(), 'no se creo ningun carrito');
+
+        /* Y no queda un "ultimo carrito" fantasma que el SPA reconstruya al volver. */
+        $this->json('GET', '/api/carts/last-cart/'.$this->comercio->id)
+            ->assertStatus(200)
+            ->assertExactJson(['has_last_cart' => false]);
+    }
+
+    /**
+     * Con una promocion de vinoteca en el payload el carrito SI se crea (le queda la promo, que no la
+     * decide la lista) y el articulo se avisa: es el espejo del PUT.
+     */
+    public function test_un_post_con_una_promo_y_solo_no_habilitados_crea_el_carrito_con_la_promo()
+    {
+        $this->comoComprador($this->compradorConLista($this->comercio, $this->mayorista->id));
+
+        $promo = PromocionVinoteca::create([
+            'name'        => 'Promo Catalogo Test',
+            'slug'        => 'promo-catalogo-test-'.Str::random(10),
+            'user_id'     => $this->comercio->id,
+            'online'      => 1,
+            'stock'       => 10,
+            'final_price' => 700,
+            'cost'        => 0,
+        ]);
+
+        $respuesta = $this->postJson('/api/carts', [
+            'commerce_id' => $this->comercio->id,
+            'cart'        => [
+                'articles'             => [$this->linea($this->sin_marcar, 1, 2000)],
+                'promociones_vinoteca' => [[
+                    'id'          => $promo->id,
+                    'user_id'     => $this->comercio->id,
+                    'name'        => $promo->name,
+                    'final_price' => 700,
+                    'cost'        => 0,
+                    'pivot'       => ['amount' => 1, 'notes' => null],
+                ]],
+            ],
+        ]);
+
         $respuesta->assertStatus(201);
+        $this->assertNotNull($respuesta->json('cart'), 'el carrito se crea: tiene la promo');
         $this->assertSame([['id' => $this->sin_marcar->id, 'name' => $this->sin_marcar->name]], $respuesta->json('articulos_no_disponibles'));
 
         $cart_id = (int) $respuesta->json('cart.id');
         $this->assertSame([], $this->idsGuardados($cart_id));
-        $this->assertEquals(0, DB::table('carts')->where('id', $cart_id)->value('total'));
+        $this->assertEquals(700, DB::table('carts')->where('id', $cart_id)->value('total'));
+    }
+
+    /**
+     * Sin descartes, un POST de un carrito sin lineas sigue siendo el de siempre: se crea (vacio) con
+     * 201 y sin la clave nueva. Lo que cambia con la lista es solo lo que se descarta.
+     */
+    public function test_un_post_sin_lineas_y_sin_descartes_sigue_creando_el_carrito_vacio()
+    {
+        $this->comoComprador($this->compradorConLista($this->comercio, $this->mayorista->id));
+
+        $respuesta = $this->crearCarrito([]);
+
+        $respuesta->assertStatus(201);
+        $this->assertSame(['cart'], array_keys($respuesta->json()));
+        $this->assertSame([], $this->idsGuardados((int) $respuesta->json('cart.id')));
     }
 
     /**

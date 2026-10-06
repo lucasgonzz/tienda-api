@@ -208,6 +208,37 @@ class CartHelper {
     }
 
     /**
+     * ¿Al carrito que se esta por CREAR no le quedaria ninguna linea? Es la guarda de `POST /api/carts`
+     * cuando la lista del comprador descarto lo que pedia (hallazgo B6 de la revision independiente):
+     * sin ninguna linea que guardar no hay carrito que crear.
+     *
+     * Quedaria sin lineas si no sobrevive ningun articulo y el payload tampoco trae promociones de
+     * vinoteca ni combos. Se mira lo que el payload TRAE y no lo que se termina guardando: un combo sin
+     * precio vendible lo descarta `attach_combos()` y deja el carrito vacio, pero eso no es el descarte
+     * por lista y sigue el camino de siempre (el carrito se crea, como hoy).
+     *
+     * @param  array  $data  Payload del carrito (`$request->cart`).
+     * @param  array  $articulos  Las lineas de articulo que quedan (`sin_lineas_no_disponibles()`).
+     * @return bool
+     */
+    static function se_quedaria_sin_lineas($data, $articulos) {
+
+        if (count($articulos) >= 1) {
+            return false;
+        }
+
+        $promociones = isset($data['promociones_vinoteca']) && is_array($data['promociones_vinoteca'])
+            ? count($data['promociones_vinoteca'])
+            : 0;
+
+        $combos = isset($data['combos']) && is_array($data['combos'])
+            ? count($data['combos'])
+            : 0;
+
+        return $promociones == 0 && $combos == 0;
+    }
+
+    /**
      * El payload del carrito con las lineas de articulo que de verdad se guardan, para lo que lo lee
      * ANTES de que el carrito se arme: la sincronizacion del envio por correo
      * (`CartController::sync_checkout_fields()` -> `EnvioCartHelper::sincronizar()`).
