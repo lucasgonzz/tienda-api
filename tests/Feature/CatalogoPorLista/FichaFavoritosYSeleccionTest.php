@@ -6,6 +6,7 @@ use App\Article;
 use App\Http\Controllers\ArticleController;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
@@ -232,6 +233,43 @@ class FichaFavoritosYSeleccionTest extends TestCase
             DB::statement('DROP TEMPORARY TABLE IF EXISTS `likeable_likes`');
             DB::statement('DROP TEMPORARY TABLE IF EXISTS `likeable_like_counters`');
         }
+    }
+
+    /**
+     * 🔴 FIJA UN HALLAZGO, no un deseo: `GET /articles/favorite/{id}` hoy lo atiende `show()` y NO
+     * `favorite()`, porque `GET /articles/{slug}/{commerce_id}` esta registrada antes (routes/api.php) y
+     * Laravel resuelve por orden de registro (E-8 de la revision de cierre; hallazgo B1).
+     *
+     * Consecuencia: el corazon de la ficha (`NameHeart.vue`) no marca nada en el servidor, y por eso el caso
+     * de B1 invoca a `ArticleController@favorite` directo. Este test existe para que el dia que alguien
+     * mueva la ruta (lo que arregla los favoritos y le da vida a `favorite()`, que ya filtra por la lista)
+     * lo haga a proposito: cambia el comportamiento de todas las tiendas y es decision de Lucas. Como es de
+     * ruteo, es de CONTRACARA: pasa con el orden de hoy y se pone rojo si cambia (demostrado en una copia
+     * del arbol, registrando la ruta de favorite antes de la de `show`).
+     *
+     * NO se cambia el orden de las rutas aca.
+     */
+    public function test_la_ruta_de_favorite_hoy_la_atiende_show_porque_la_sombrea()
+    {
+        $rutas = $this->app['router']->getRoutes();
+
+        $atendida_por = $rutas->match(Request::create('/api/articles/favorite/12', 'GET'))->getActionName();
+
+        $this->assertSame(
+            ArticleController::class.'@show',
+            $atendida_por,
+            'CAMBIO EL ORDEN DE LAS RUTAS: GET /api/articles/favorite/{id} ya no lo atiende ArticleController@show '
+            .'(que lo sombreaba por estar registrada antes la ruta /articles/{slug}/{commerce_id}) y ahora lo atiende '
+            .$atendida_por.'. Si fue a proposito, el corazon de la ficha (NameHeart.vue) por fin llega a '
+            .'ArticleController@favorite, que ya filtra por la lista del comprador (B1), y cambia el comportamiento de '
+            .'todas las tiendas: actualiza este test, el docblock de favorite() y avisale a Lucas. Si no, restauralo.'
+        );
+
+        /* La ruta de favorite sigue registrada: solo esta sombreada. Si alguien la borra, tambien se entera. */
+        $propia = $rutas->getByAction(ArticleController::class.'@favorite');
+
+        $this->assertNotNull($propia, 'la ruta de ArticleController@favorite tiene que seguir registrada');
+        $this->assertSame('api/articles/favorite/{article_id}', $propia->uri());
     }
 
     /**
