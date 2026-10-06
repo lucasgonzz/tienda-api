@@ -212,6 +212,45 @@ class ListadosPorListaTest extends TestCase
         $this->assertSame([$this->habilitado->id], $this->idsDe($ofertas));
     }
 
+    /**
+     * 🔴 Que la lista del articulo sea restringida NO viaja en el payload (INFO de la revision
+     * independiente): `article.price_types[]` serializaba `catalogo_restringido_en_tienda` para todos, el
+     * visitante incluido, y revelaba cual de las listas es la restringida. El SPA no lo lee; el helper lo
+     * sigue leyendo como atributo (`$hidden` solo toca la serializacion), y la restriccion sigue andando:
+     * el mayorista ve solo lo habilitado y el visitante ve las listas sin la clave.
+     */
+    public function test_la_marca_de_lista_restringida_no_viaja_en_el_payload_de_los_articulos()
+    {
+        foreach (['visitante', 'mayorista'] as $quien) {
+
+            if ($quien == 'mayorista') {
+                $this->comoComprador($this->compradorConLista($this->comercio, $this->mayorista->id));
+            } else {
+                $this->comoVisitante();
+            }
+
+            $articulos = (array) $this->home()->json('articles.data');
+
+            $this->assertNotEmpty($articulos, $quien);
+
+            $listas = 0;
+
+            foreach ($articulos as $articulo) {
+                foreach ((array) $articulo['price_types'] as $lista) {
+                    $listas++;
+
+                    $this->assertArrayHasKey('position', $lista, $quien.': la lista sigue viajando');
+                    $this->assertArrayNotHasKey('catalogo_restringido_en_tienda', $lista, $quien.': pero sin la marca de restringida');
+                }
+            }
+
+            $this->assertGreaterThan(0, $listas, $quien.': el caso mira listas de verdad');
+        }
+
+        /* Y el helper la sigue leyendo: el mayorista de arriba solo ve el habilitado. */
+        $this->assertSame([$this->habilitado->id], $this->idsDeLaHome());
+    }
+
     /*
     |---------------------------------------------------------------------------------------------
     | Lectores
