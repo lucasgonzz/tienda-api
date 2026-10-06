@@ -83,14 +83,42 @@ use Illuminate\Support\Facades\Schema;
  * EL COSTO: EL 100% DE LOS CLIENTES DE HOY NO TIENE NINGUNA LISTA RESTRINGIDA
  * ──────────────────────────────────────────────────────────────────────────────────────────────
  *
- * Y son ellos los que pagarian cada query de mas, en todos los listados, todo el dia. Por eso:
+ * Y son ellos los que pagan cada query de mas, en todos los listados, todo el dia. Lo que se hace para
+ * que sea poco:
  *   - la eleccion de lista se memoiza por request y `checkPriceTypes()` la REUSA: la query de las
  *     listas del comercio, que antes corria una vez por cada llamada a `checkPriceTypes()` (hasta
  *     cinco en la home), ahora corre una sola vez por request;
  *   - la guarda de esquema (information_schema) se consulta SOLO si la lista ya dijo que es
  *     restringida, o sea nunca para quien no usa la funcionalidad;
  *   - sin lista restringida `restringir()` no toca la consulta: el SQL es byte a byte el de antes.
- * Lo fija `tests/Feature/CatalogoPorLista/CostoDelCatalogoPorListaTest`.
+ *
+ * 🔴 Eso NO es "cero queries de mas". Medido el 5/10/2026 contra `origin/master`, sobre la misma base,
+ * con un comercio de dos listas y NINGUNA restringida (consultas totales por request, master -> rama):
+ *
+ *   - Los listados que ya resolvian la lista para el precio no cambian (busqueda 26 -> 26, categoria
+ *     23 -> 23, ficha 19 -> 19, similares 26 -> 26, carrito POST 52 -> 52), y la home BAJA una por cada
+ *     coleccion con articulos mas alla de la primera (70 -> 69 con dos colecciones).
+ *   - Los endpoints que NUNCA resolvian una lista y ahora si —nombres del buscador, marcas, categorias,
+ *     subcategorias y seleccion especial: las requests de arranque del SPA— suman la eleccion de lista
+ *     del comprador: visitante +1 (la consulta de las listas del comercio); logueado SIN cliente del ERP
+ *     +2 (la sesion `buyers` y esa misma consulta); logueado CON cliente con lista +3 (la sesion
+ *     `buyers`, `clients` y `price_types` de su lista). `favorite/{id}` (hoy inalcanzable, ver su docblock)
+ *     hace la misma eleccion de lista; no se midio.
+ *   - Y hay dos situaciones donde TAMBIEN suman los listados, porque master no resolvia la lista ahi:
+ *     los comercios con la extension `lista_de_precios_por_rango_de_cantidad_vendida` (el caso 1 de
+ *     `checkPriceTypes()` no mira la lista del comprador: home 92 -> 93, 90 -> 91 y 104 -> 104 para el
+ *     visitante, el logueado sin cliente y el que tiene cliente; busqueda 38 -> 38, 36 -> 37 y 42 -> 44) y
+ *     el visitante de una tienda que exige registro para ver precios (`register_to_buy`: +1 en todo
+ *     listado, home 70 -> 71).
+ *
+ * No hay forma simple y segura de evitarlo. Hace falta la lista del comprador para decidir el SQL del
+ * listado antes de armarlo, y saber si el comercio tiene alguna lista restringida sin leer esas listas
+ * pide una consulta propia sobre una columna que puede no existir (la guarda de esquema que justamente se
+ * evita) o cambiar la consulta de las listas, que `checkPriceTypes()` comparte y cuyo desempate por
+ * `position` es parte del precio que ve cada comprador. Queda dicho lo que cuesta en vez de prometer lo
+ * que no es.
+ *
+ * Lo fija `tests/Feature/CatalogoPorLista/CostoDelCatalogoPorListaTest`, con los numeros de arriba.
  */
 class CatalogoPorListaHelper
 {

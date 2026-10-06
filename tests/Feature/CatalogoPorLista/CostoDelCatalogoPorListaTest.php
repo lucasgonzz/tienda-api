@@ -3,6 +3,8 @@
 namespace Tests\Feature\CatalogoPorLista;
 
 use App\Article;
+use App\Buyer;
+use App\OnlineConfiguration;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -35,11 +37,32 @@ use Tests\TestCase;
  * silencio el dia que el marcador deja de matchear. Con la lista restringida, los mismos marcadores
  * TIENEN que encenderse.
  *
- * Numeros medidos el 5/10/2026 sobre esta base (queries totales por request, visitante, comercio con
- * dos listas sin restringir y tres articulos): home pagina 1, master 87 -> rama 85; busqueda 26 -> 26;
- * categoria 23 -> 23; ficha 19 -> 19; carrito POST 53 -> 53. Los endpoints que no pasan por
- * `checkPriceTypes()` (nombres, categorias, subcategorias, marcas, una pagina vacia) suman la
- * consulta de la lista: +1. Estan en el informe de la mision.
+ * ── 🔴 Pero NO es "cero queries de mas": lo que cuesta de verdad (hallazgo B3 de la revision) ─────
+ *
+ * La version anterior de este docblock decia que solo los endpoints sin `checkPriceTypes()` suman "+1" y
+ * que el camino caliente no suma nada. Era corto. Medido el 5/10/2026 contra `origin/master`, sobre la
+ * misma base, con un comercio de dos listas y NINGUNA restringida (consultas totales por request,
+ * master -> rama):
+ *
+ *   - Listados que ya resolvian la lista para el precio: sin cambio (busqueda 26 -> 26, categoria 23 -> 23,
+ *     ficha 19 -> 19, similares 26 -> 26, carrito POST 52 -> 52). La home BAJA una por cada coleccion con
+ *     articulos mas alla de la primera (70 -> 69 con dos colecciones).
+ *   - Endpoints que NUNCA resolvian una lista (nombres, marcas, categorias, subcategorias y seleccion
+ *     especial: las requests de arranque del SPA): visitante +1 (nombres 8 -> 9, marcas 5 -> 6, categorias
+ *     2 -> 3, subcategorias 1 -> 2, seleccion 39 -> 40); logueado sin cliente +2 (la sesion `buyers` y la
+ *     consulta de las listas); logueado con cliente con lista +3 (`buyers`, `clients` y `price_types`).
+ *   - Con la extension de rangos por cantidad vendida (el caso 1 de `checkPriceTypes()` no mira la lista
+ *     del comprador): home 92 -> 93 (visitante), 90 -> 91 (sin cliente), 104 -> 104 (con cliente);
+ *     busqueda 38 -> 38, 36 -> 37 y 42 -> 44.
+ *   - El visitante de una tienda que exige registro para ver precios (`register_to_buy`): +1 en todo
+ *     listado (home 70 -> 71, busqueda 26 -> 27).
+ *
+ * No hay forma simple y segura de evitarlas: hace falta la lista del comprador para armar el SQL del
+ * listado, y saber si el comercio tiene alguna lista restringida sin leer las listas pide otra consulta
+ * sobre una columna que puede no existir (la guarda de esquema que justamente se evita) o cambiar la
+ * consulta de las listas, que `checkPriceTypes()` comparte y cuyo desempate por `position` es parte del
+ * precio que ve cada comprador. Esta clase fija los numeros de arriba: si alguien suma o saca una
+ * consulta, se entera aca.
  */
 class CostoDelCatalogoPorListaTest extends TestCase
 {
@@ -220,6 +243,230 @@ class CostoDelCatalogoPorListaTest extends TestCase
         $this->assertSame($this->habilitado->id, (int) $modelos[3]['id'], 'el repetido se conserva, como siempre');
     }
 
+    /**
+     * 🔴 EL COSTO MEDIDO de los endpoints que antes NO resolvian ninguna lista (B3): el visitante paga
+     * UNA consulta de las listas del comercio (master: ninguna), y nada mas. Las cifras son las del
+     * docblock de la clase: nombres 8 -> 9, marcas 5 -> 6, categorias 2 -> 3, subcategorias 1 -> 2,
+     * seleccion 39 -> 40.
+     */
+    public function test_el_visitante_paga_una_consulta_de_listas_en_los_endpoints_que_antes_no_la_hacian()
+    {
+        $this->comoVisitante();
+
+        $totales = $this->medirLosEndpointsDeArranque(1, 0, 0);
+
+        $this->assertSame(
+            ['nombres' => 9, 'marcas' => 6, 'categorias' => 3, 'subcategorias' => 2, 'seleccion' => 40],
+            $totales
+        );
+    }
+
+    /**
+     * El logueado SIN cliente del ERP paga +2: la sesion (`buyers`) y la consulta de las listas del
+     * comercio. Cada request arranca sin el comprador en memoria, como en produccion.
+     */
+    public function test_el_logueado_sin_cliente_paga_la_sesion_y_la_consulta_de_listas()
+    {
+        $this->abrirLaSesionDe($this->compradorSinCliente($this->comercio));
+
+        $totales = $this->medirLosEndpointsDeArranque(1, 1, 0);
+
+        $this->assertSame(
+            ['nombres' => 10, 'marcas' => 7, 'categorias' => 4, 'subcategorias' => 3, 'seleccion' => 41],
+            $totales
+        );
+    }
+
+    /**
+     * El logueado CON cliente con lista paga +3: la sesion (`buyers`), su cliente (`clients`) y su lista
+     * (`price_types`). La consulta de las listas del comercio no corre: la lista sale de su cliente.
+     */
+    public function test_el_logueado_con_cliente_con_lista_paga_la_sesion_el_cliente_y_su_lista()
+    {
+        $this->abrirLaSesionDe($this->compradorConLista($this->comercio, $this->mayorista->id));
+
+        $totales = $this->medirLosEndpointsDeArranque(0, 1, 1);
+
+        $this->assertSame(
+            ['nombres' => 11, 'marcas' => 8, 'categorias' => 5, 'subcategorias' => 4, 'seleccion' => 42],
+            $totales
+        );
+    }
+
+    /**
+     * Con la extension de rangos por cantidad vendida master NO resolvia la lista en los listados (el
+     * caso 1 de `checkPriceTypes()` no la mira): ahora la home y la busqueda del visitante pagan UNA
+     * consulta de las listas, y nada mas (ni el pivote ni la guarda de esquema).
+     */
+    public function test_con_la_extension_de_rangos_los_listados_pagan_una_consulta_de_listas()
+    {
+        $this->activarLaExtensionDeRangos();
+
+        $this->comoVisitante();
+
+        foreach (['home' => '/api/articles/featured-last-uploads/'.$this->comercio->id.'?page=1',
+                  'busqueda' => '/api/articles/search/Catalogo/'.$this->comercio->id] as $nombre => $uri) {
+
+            $queries = $this->queriesDurante(function () use ($uri) {
+                $this->pedirComoEnProduccion($uri);
+            });
+
+            $this->assertCount(1, $this->consultasDeLasListas($queries), $nombre.': una consulta de las listas');
+            $this->assertSame([], $this->queNombranElPivote($queries), $nombre);
+            $this->assertSame([], $this->alEsquemaDelCatalogo($queries), $nombre);
+        }
+
+        /* El logueado con cliente con lista: la lista sale de su cliente (+ `clients`, que el caso 1 no
+           cargaba), y la consulta de las listas del comercio no corre. */
+        $this->abrirLaSesionDe($this->compradorConLista($this->comercio, $this->mayorista->id));
+
+        $queries = $this->queriesDurante(function () {
+            $this->pedirComoEnProduccion('/api/articles/search/Catalogo/'.$this->comercio->id);
+        });
+
+        $this->assertSame([], $this->consultasDeLasListas($queries));
+        $this->assertCount(1, $this->consultasDeLosClientes($queries), 'carga su cliente para saber su lista');
+        $this->assertSame([], $this->queNombranElPivote($queries));
+    }
+
+    /**
+     * El visitante de una tienda que exige registro para ver precios (`register_to_buy` con
+     * `only_registered`) tampoco recibe precios, pero el catalogo sigue a la lista: ahora paga UNA
+     * consulta de las listas por listado (master: ninguna, porque le escondia los precios antes de
+     * resolver nada).
+     */
+    public function test_el_visitante_sin_precios_paga_una_consulta_de_listas()
+    {
+        $this->exigirRegistroParaVerPrecios();
+
+        $this->comoVisitante();
+
+        foreach (['home' => '/api/articles/featured-last-uploads/'.$this->comercio->id.'?page=1',
+                  'busqueda' => '/api/articles/search/Catalogo/'.$this->comercio->id] as $nombre => $uri) {
+
+            $queries = $this->queriesDurante(function () use ($uri) {
+                $respuesta = $this->pedirComoEnProduccion($uri);
+
+                /* El caso no es vacuo: de verdad no viajan precios. */
+                $articulos = $respuesta->json('articles.data');
+                $this->assertNotEmpty($articulos);
+                $this->assertNull($articulos[0]['final_price'], 'el visitante no recibe precios');
+            });
+
+            $this->assertCount(1, $this->consultasDeLasListas($queries), $nombre);
+            $this->assertSame([], $this->queNombranElPivote($queries), $nombre);
+        }
+    }
+
+    /**
+     * Pide los endpoints de arranque del SPA, uno por uno, y comprueba lo que cuesta la eleccion de
+     * lista en cada uno: cuantas consultas de las listas del comercio, de la sesion (`buyers`) y de
+     * `clients`, y que NINGUNA nombre el pivote ni vaya a information_schema.
+     *
+     * @param  int  $listas  Consultas de las listas del comercio esperadas por request.
+     * @param  int  $sesion  Consultas de la sesion (`buyers`) esperadas por request.
+     * @param  int  $clientes  Consultas de `clients` esperadas por request.
+     * @return array<string, int>  Las consultas totales de cada endpoint, para fijarlas.
+     */
+    private function medirLosEndpointsDeArranque($listas, $sesion, $clientes)
+    {
+        $c = $this->comercio->id;
+
+        $endpoints = [
+            'nombres'       => '/api/articles/names/'.$c,
+            'marcas'        => '/api/brands/'.$c,
+            'categorias'    => '/api/categories/'.$c,
+            'subcategorias' => '/api/sub-categories/'.$this->herramientas->id,
+            'seleccion'     => '/api/articles-seleccion-especial/'.$this->habilitado->id.'-'.$this->sin_marcar->id.'-'.$this->deshabilitado->id,
+        ];
+
+        $totales = [];
+
+        foreach ($endpoints as $nombre => $uri) {
+            $queries = $this->queriesDurante(function () use ($uri) {
+                $this->pedirComoEnProduccion($uri);
+            });
+
+            $this->assertCount($listas, $this->consultasDeLasListas($queries), $nombre.': consultas de las listas del comercio');
+            $this->assertCount($sesion, $this->consultasDeLaSesion($queries), $nombre.': consultas de la sesion');
+            $this->assertCount($clientes, $this->consultasDeLosClientes($queries), $nombre.': consultas de clients');
+            $this->assertSame([], $this->queNombranElPivote($queries), $nombre);
+            $this->assertSame([], $this->alEsquemaDelCatalogo($queries), $nombre);
+
+            $totales[$nombre] = count($queries);
+        }
+
+        return $totales;
+    }
+
+    /**
+     * Abre la sesion del comprador como en produccion: el guard guarda el id y lo lee de la base en cada
+     * request (`pedirComoEnProduccion()` le suelta el usuario antes de cada uno). `actingAs()` deja la
+     * MISMA instancia con sus relaciones cacheadas y escondia justo lo que se mide.
+     *
+     * @param  \App\Buyer  $buyer
+     * @return void
+     */
+    private function abrirLaSesionDe(Buyer $buyer)
+    {
+        $this->withSession([$this->app['auth']->guard('buyer')->getName() => $buyer->id]);
+    }
+
+    /**
+     * Un GET que arranca sin el comprador en memoria, como un request nuevo.
+     *
+     * @param  string  $uri
+     * @return \Illuminate\Testing\TestResponse
+     */
+    private function pedirComoEnProduccion($uri)
+    {
+        $this->app['auth']->guard('buyer')->forgetUser();
+
+        return $this->json('GET', $uri)->assertStatus(200);
+    }
+
+    /**
+     * Prende la extension `lista_de_precios_por_rango_de_cantidad_vendida` del comercio (las tablas son
+     * `extencion_empresas` y `extencion_empresa_user`). Todo dentro de la transaccion del caso.
+     *
+     * @return void
+     */
+    private function activarLaExtensionDeRangos()
+    {
+        $slug = 'lista_de_precios_por_rango_de_cantidad_vendida';
+
+        $extencion_id = DB::table('extencion_empresas')->where('slug', $slug)->value('id');
+
+        if (is_null($extencion_id)) {
+            $extencion_id = DB::table('extencion_empresas')->insertGetId([
+                'name' => 'Lista de precios por rango de cantidad vendida',
+                'slug' => $slug,
+            ]);
+        }
+
+        DB::table('extencion_empresa_user')->insert([
+            'extencion_empresa_id' => $extencion_id,
+            'user_id'              => $this->comercio->id,
+        ]);
+    }
+
+    /**
+     * La tienda exige registro para ver precios: el visitante no los recibe.
+     *
+     * @return void
+     */
+    private function exigirRegistroParaVerPrecios()
+    {
+        $tipo_id = DB::table('online_price_types')->where('slug', 'only_registered')->value('id');
+
+        $this->assertNotNull($tipo_id, 'La base del slot tiene que tener el catalogo online_price_types sembrado.');
+
+        OnlineConfiguration::where('user_id', $this->comercio->id)->update([
+            'register_to_buy'      => 1,
+            'online_price_type_id' => $tipo_id,
+        ]);
+    }
+
     /** @return \Illuminate\Testing\TestResponse */
     private function home()
     {
@@ -249,6 +496,32 @@ class CostoDelCatalogoPorListaTest extends TestCase
         return array_values(array_filter($queries, function ($sql) {
             return strpos($sql, 'information_schema.columns') !== false
                 && (strpos($sql, "'price_types'") !== false || strpos($sql, "'article_price_type'") !== false);
+        }));
+    }
+
+    /**
+     * La lectura del comprador de la sesion (`SessionGuard::retrieveById`).
+     *
+     * @param  array  $queries
+     * @return array
+     */
+    private function consultasDeLaSesion($queries)
+    {
+        return array_values(array_filter($queries, function ($sql) {
+            return preg_match('/^select \* from `buyers` where (`buyers`\.)?`id` = \?/', $sql) === 1;
+        }));
+    }
+
+    /**
+     * La lectura del cliente del ERP del comprador (`Buyer::comercio_city_client`).
+     *
+     * @param  array  $queries
+     * @return array
+     */
+    private function consultasDeLosClientes($queries)
+    {
+        return array_values(array_filter($queries, function ($sql) {
+            return preg_match('/^select \* from `clients` where (`clients`\.)?`id` = \?/', $sql) === 1;
         }));
     }
 
