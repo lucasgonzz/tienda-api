@@ -174,6 +174,36 @@ class CartHelper {
         return $quedan;
     }
 
+    /**
+     * El payload del carrito con las lineas de articulo que de verdad se guardan, para lo que lo lee
+     * ANTES de que el carrito se arme: la sincronizacion del envio por correo
+     * (`CartController::sync_checkout_fields()` -> `EnvioCartHelper::sincronizar()`).
+     *
+     * El envio saca de `$data['articles']` todo lo que firma y cobra: el `items_hash`, el peso y el
+     * subtotal que cotiza Zipnova y `envio_precio`. Si ahi entran las lineas que el carrito descarta
+     * por la lista del comprador (mision catalogo-por-lista-tienda), el envio se cotiza para un
+     * paquete que no es el del carrito: el subtotal puede cruzar el umbral de envio gratis sin
+     * merecerlo, y el hash firma lineas que no estan guardadas — despues `OrderController@store` corta
+     * con 422 `opcion_envio` por `motivo_para_recotizar()`. Es el mismo principio que
+     * `attachArticles()` aplica a `get_price()`: un articulo que no esta en el carrito no puede mover
+     * el precio de nada.
+     *
+     * Solo cambia la clave `articles`; el resto del payload (`envio`, `deliver`, las promociones...)
+     * queda como vino. Sin descartes `$articulos` es el mismo array que `$data['articles']` (ver
+     * `sin_lineas_no_disponibles()`), asi que el resultado es identico al payload recibido y el envio
+     * se sincroniza exactamente como antes.
+     *
+     * @param  array  $data  Payload del carrito tal como lo manda tienda-spa.
+     * @param  array  $articulos  Las lineas de articulo ya limpias (`sin_lineas_no_disponibles()`).
+     * @return array
+     */
+    static function payload_con_las_lineas_que_se_guardan($data, $articulos) {
+
+        $data['articles'] = $articulos;
+
+        return $data;
+    }
+
     static function attach_promociones_vinoteca($cart, $promociones_vinoteca) {
 
         /*

@@ -48,6 +48,10 @@ use Illuminate\Support\Facades\Log;
  * comercio del carrito y el precio lo resuelve el servidor. Y por eso un 422 de acá no deja nada
  * escrito: se lanza antes del `save()`.
  *
+ * 🔴 El controller le pasa el payload YA limpio de las líneas que el carrito descarta por la lista
+ * del comprador (`CartHelper::payload_con_las_lineas_que_se_guardan()`, misión
+ * catalogo-por-lista-tienda): lo que se cotiza y se firma acá tiene que ser lo que queda guardado.
+ *
  * ── Compatibilidad ────────────────────────────────────────────────────────────────────────────
  *
  * 🔴 Todo lo que escribe `envio_*` pasa por `ZipnovaEsquemaHelper::disponible()`. En una base sin

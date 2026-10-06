@@ -124,13 +124,28 @@ class CartController extends Controller
             'user_id'           => $request->commerce_id,
     	]);
 
+        /* Catalogo por lista (mision catalogo-por-lista-tienda, 5/10/2026): las lineas que el
+           comprador no puede ver por su lista de precios se deciden ANTES de sincronizar el envio, y
+           no adentro de attachArticles() despues del save(). El envio arma de las lineas del payload
+           todo lo que firma y cobra (el items_hash, el peso y el subtotal que cotiza Zipnova,
+           envio_precio): si ahi entran las que el carrito descarta, se cotiza un paquete que no es el
+           del carrito. Ver CartHelper::payload_con_las_lineas_que_se_guardan().
+
+           `$cart->user_id` ya esta puesto en el modelo (sin guardar) y es lo unico que necesita la
+           decision. Sin lista restringida `$no_disponibles` es vacio sin ninguna query. */
+        $articulos_del_payload = $request->cart['articles'];
+
+        $no_disponibles = CartHelper::articulos_no_disponibles($cart, $articulos_del_payload);
+
         // Persistir opciones de checkout elegidas antes de confirmar (envío/retiro, pago, etc.)
-        $this->sync_checkout_fields($cart, $request->cart);
+        $this->sync_checkout_fields($cart, CartHelper::payload_con_las_lineas_que_se_guardan(
+            $request->cart,
+            CartHelper::sin_lineas_no_disponibles($articulos_del_payload, $no_disponibles)
+        ));
         $cart->save();
 
-        // Las lineas de articulos que el comprador no puede ver por su lista de precios no se
-        // guardan y vuelven aca (mision catalogo-por-lista-tienda). Ver attachArticles().
-        $no_disponibles = CartHelper::attachArticles($cart, $request->cart['articles']);
+        // Las lineas descartadas ya estan calculadas arriba: attachArticles() no las vuelve a consultar.
+        CartHelper::attachArticles($cart, $articulos_del_payload, $no_disponibles);
         CartHelper::attach_promociones_vinoteca($cart, $request->cart['promociones_vinoteca']);
 
         // `combos` es OPCIONAL en el body y su ausencia nunca es un error: un SPA viejo —o uno
@@ -188,7 +203,10 @@ class CartController extends Controller
 
         $articulos = CartHelper::sin_lineas_no_disponibles($request->articles, $no_disponibles);
 
-        $this->sync_checkout_fields($cart, $request->all());
+        /* El envio se sincroniza con las lineas que de verdad se guardan, no con las del payload
+           crudo: si no, una linea descartada entra en la cotizacion de Zipnova y en el items_hash.
+           Sin descartes `$request->all()` pasa tal cual. */
+        $this->sync_checkout_fields($cart, CartHelper::payload_con_las_lineas_que_se_guardan($request->all(), $articulos));
         $cart->save();
         CartHelper::checkPaymentStatus($cart);
         $cart->articles()->sync([]);
