@@ -2,7 +2,9 @@
 
 namespace Tests\Feature\CatalogoPorLista;
 
+use App\Article;
 use App\Cart;
+use App\Http\Controllers\ArticleController;
 use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -20,7 +22,11 @@ use Tests\TestCase;
  * TODOS los listados, o sea la tienda entera en 500.
  *
  * Lo que se fija, con el esquema escondido: todo responde 200 y SIN FILTRAR (el mayorista ve lo que
- * ve hoy, el catalogo completo), en los listados, la ficha, las categorias, las marcas y el carrito.
+ * ve hoy, el catalogo completo), en los listados, la ficha, las categorias, las marcas y el carrito. Y en
+ * los caminos que tocaron las correcciones de la revision independiente (E-1 de la ronda de cierre):
+ * `PUT /carts`, `POST /orders` (con su red de seguridad), `similars` con un `{commerce_id}` de la ruta
+ * que no es el del articulo, `from-category` y `favorite` (invocado directo: la ruta esta sombreada por
+ * `show`). Cada uno tiene su contraprueba CON el esquema: ahi el mismo comprador SI queda filtrado.
  * Y los dos esquemas a medias: sin la columna de la lista, y sin la del pivote (la que de verdad
  * reventaria).
  *
@@ -45,11 +51,15 @@ class SinEsquemaDeCatalogoPorListaTest extends TestCase
     /** @var array Ids de los comercios creados FUERA de transaccion, para borrarlos a mano. */
     private $comercios_creados = [];
 
+    /** @var \App\User|null Otro comercio (con su configuracion online), para la ruta de `similars` que miente. */
+    private $ajeno = null;
+
     protected function setUp(): void
     {
         parent::setUp();
 
         $this->comercios_creados = [];
+        $this->ajeno = null;
 
         /* Por si una corrida anterior murio con el esquema escondido. */
         $this->restaurarElEsquema();
@@ -70,6 +80,11 @@ class SinEsquemaDeCatalogoPorListaTest extends TestCase
         $this->limpiarLoCreado();
         $this->olvidarLasMemorias();
 
+        /* Las tablas del paquete de favoritos que arma `favoritoDirecto()`. Son TEMPORARY: no le hacen
+           commit a nada y mueren con la conexion, pero se sueltan igual por si el caso murio antes. */
+        DB::statement('DROP TEMPORARY TABLE IF EXISTS `likeable_likes`');
+        DB::statement('DROP TEMPORARY TABLE IF EXISTS `likeable_like_counters`');
+
         parent::tearDown();
     }
 
@@ -86,6 +101,9 @@ class SinEsquemaDeCatalogoPorListaTest extends TestCase
 
         $this->assertSame([$this->habilitado->id], $this->idsDeLaHome(),
             'el escenario arranca filtrando: si no, el caso seria vacuo');
+
+        /* Y los caminos que tocaron las correcciones tambien arrancan filtrando. */
+        $this->assertLosCaminosNuevosFiltranConElEsquema();
 
         $this->esconderColumnaDeLaLista();
         $this->esconderColumnaDelPivote();
@@ -235,6 +253,220 @@ class SinEsquemaDeCatalogoPorListaTest extends TestCase
         $carrito->assertStatus(201);
         $this->assertSame(['cart'], array_keys($carrito->json()), 'carrito: sin descartes ni clave nueva');
         $this->assertSame([$this->sin_marcar->id], $this->idsDe($carrito->json('cart.articles')));
+
+        /* Los caminos que tocaron las correcciones de la revision independiente. Con el esquema, el mismo
+           comprador queda filtrado en cada uno (`assertLosCaminosNuevosFiltranConElEsquema()`); sin el,
+           responden 200 y sin filtrar. */
+
+        $this->assertSame($this->ordenados([$this->habilitado->id, $this->sin_marcar->id]), $this->idsDe(
+            $this->json('GET', '/api/articles/from-category/'.$this->herramientas->id.'/0/0/0/a-z/'.$c)->assertStatus(200)->json('articles.data')
+        ), 'from-category');
+
+        $this->assertSame([$this->sin_marcar->id], $this->idsDe(
+            $this->json('GET', '/api/articles/similars/'.$this->habilitado->id.'/'.$this->ajeno->id)->assertStatus(200)->json('models.data')
+        ), 'similars con un {commerce_id} de la ruta que no es el del articulo');
+
+        $favorito = $this->favoritoDirecto($this->sin_marcar);
+        $this->assertSame(200, $favorito->getStatusCode(), 'favorite');
+        $this->assertSame($this->sin_marcar->id, (int) $favorito->getData(true)['article']['id'], 'favorite: no lo filtra');
+
+        $this->assertLosCaminosDeEscrituraSinFiltrar();
+    }
+
+    /**
+     * Las contrapruebas de `assertTodoRespondeSinFiltrar()`: CON las dos columnas, el mayorista queda
+     * filtrado en los mismos caminos (si no, los de abajo darian verde contra un codigo que no filtrara
+     * nunca). Los de escritura corren adentro de una transaccion que se deshace.
+     *
+     * @return void
+     */
+    private function assertLosCaminosNuevosFiltranConElEsquema()
+    {
+        $c = $this->comercio->id;
+
+        $this->assertSame([$this->habilitado->id], $this->idsDe(
+            $this->json('GET', '/api/articles/from-category/'.$this->herramientas->id.'/0/0/0/a-z/'.$c)->assertStatus(200)->json('articles.data')
+        ), 'con esquema: from-category solo trae lo habilitado');
+
+        $this->assertSame([], $this->idsDe(
+            $this->json('GET', '/api/articles/similars/'.$this->habilitado->id.'/'.$this->ajeno->id)->assertStatus(200)->json('models.data')
+        ), 'con esquema: el unico similar no esta habilitado');
+
+        $this->assertSame(['article' => null], $this->favoritoDirecto($this->sin_marcar)->getData(true),
+            'con esquema: favorite responde null para lo no habilitado');
+
+        DB::beginTransaction();
+
+        try {
+            $this->asegurarElEstadoSinConfirmar();
+
+            $cart_id = (int) $this->postJson('/api/carts', $this->payloadDeCarrito([$this->habilitado]))
+                ->assertStatus(201)->json('cart.id');
+
+            $put = $this->putJson('/api/carts', [
+                'id'                   => $cart_id,
+                'articles'             => $this->lineasDeLosTres(),
+                'promociones_vinoteca' => [],
+            ])->assertStatus(200);
+
+            $this->assertSame(
+                $this->ordenados([$this->sin_marcar->id, $this->deshabilitado->id]),
+                $this->ordenados(array_column((array) $put->json('articulos_no_disponibles'), 'id')),
+                'con esquema: el PUT descarta lo no habilitado'
+            );
+
+            /* La red del pedido: un carrito con un no habilitado escrito a mano. */
+            DB::table('article_cart')->insert([
+                'cart_id' => $cart_id, 'article_id' => $this->sin_marcar->id, 'amount' => 1,
+                'price' => 2000, 'cost' => 0, 'created_at' => Carbon::now(), 'updated_at' => Carbon::now(),
+            ]);
+
+            $this->postJson('/api/orders', ['cart_id' => $cart_id, 'commerce_id' => $c, 'address' => 'San Martin 100'])
+                ->assertStatus(422)
+                ->assertJsonPath('codigo', 'articulos_no_disponibles');
+        } finally {
+            DB::rollBack();
+        }
+    }
+
+    /**
+     * `PUT /carts` y `POST /orders` con el esquema escondido: responden sin 500 y sin filtrar. Adentro de
+     * una transaccion que se deshace: la clase no usa `DatabaseTransactions` (los `RENAME COLUMN` le hacen
+     * commit implicito), pero estos requests escriben carritos y pedidos, y asi no hace falta limpiarlos.
+     * Los `RENAME` ya pasaron, y no hay DDL adentro del bloque.
+     *
+     * @return void
+     */
+    private function assertLosCaminosDeEscrituraSinFiltrar()
+    {
+        $c = $this->comercio->id;
+
+        DB::beginTransaction();
+
+        try {
+            $this->asegurarElEstadoSinConfirmar();
+
+            $cart_id = (int) $this->postJson('/api/carts', $this->payloadDeCarrito([$this->habilitado]))
+                ->assertStatus(201)->json('cart.id');
+
+            $put = $this->putJson('/api/carts', [
+                'id'                   => $cart_id,
+                'articles'             => $this->lineasDeLosTres(),
+                'promociones_vinoteca' => [],
+            ]);
+
+            $put->assertStatus(200);
+            $this->assertArrayNotHasKey('articulos_no_disponibles', $put->json(), 'PUT: sin descartes ni clave nueva');
+            $this->assertSame($this->losTres(), $this->idsDe($put->json('cart.articles')), 'PUT: las tres lineas');
+
+            $pedido = $this->postJson('/api/orders', ['cart_id' => $cart_id, 'commerce_id' => $c, 'address' => 'San Martin 100']);
+
+            $pedido->assertStatus(201);
+            $this->assertSame(
+                $this->losTres(),
+                $this->ordenados(DB::table('article_order')->where('order_id', (int) $pedido->json('order_id'))->pluck('article_id')->all()),
+                'POST /orders: el pedido lleva las tres lineas'
+            );
+        } finally {
+            DB::rollBack();
+        }
+    }
+
+    /**
+     * Invoca `ArticleController@favorite` directo: la ruta `GET /articles/favorite/{id}` esta sombreada por
+     * `show` (hallazgo B1) y por HTTP no llegaria. Arma las dos tablas del paquete de favoritos, que la base
+     * del slot no tiene, como TEMPORARY.
+     *
+     * @param  \App\Article  $articulo
+     * @return \Illuminate\Http\JsonResponse
+     */
+    private function favoritoDirecto(Article $articulo)
+    {
+        DB::statement('CREATE TEMPORARY TABLE IF NOT EXISTS `likeable_likes` (
+            `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            `likeable_id` varchar(36) NOT NULL,
+            `likeable_type` varchar(255) NOT NULL,
+            `user_id` varchar(36) NOT NULL,
+            `created_at` timestamp NULL,
+            `updated_at` timestamp NULL
+        )');
+
+        DB::statement('CREATE TEMPORARY TABLE IF NOT EXISTS `likeable_like_counters` (
+            `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            `likeable_id` varchar(36) NOT NULL,
+            `likeable_type` varchar(255) NOT NULL,
+            `count` bigint unsigned NOT NULL DEFAULT 0
+        )');
+
+        return $this->app->make(ArticleController::class)->favorite($articulo->id);
+    }
+
+    /**
+     * `orders.order_status_id` es NOT NULL y `OrderController@store` lo busca por nombre. Se crea (si falta)
+     * adentro de la transaccion del caso, asi que se va con el rollback.
+     *
+     * @return void
+     */
+    private function asegurarElEstadoSinConfirmar()
+    {
+        if (!DB::table('order_statuses')->where('name', 'Sin confirmar')->exists()) {
+            DB::table('order_statuses')->insert([
+                'name'       => 'Sin confirmar',
+                'created_at' => Carbon::now(),
+                'updated_at' => Carbon::now(),
+            ]);
+        }
+    }
+
+    /**
+     * El payload de `POST /api/carts` con las lineas indicadas.
+     *
+     * @param  array  $articulos
+     * @return array
+     */
+    private function payloadDeCarrito(array $articulos)
+    {
+        $lineas = [];
+
+        foreach ($articulos as $articulo) {
+            $lineas[] = $this->lineaDelPayload($articulo, 1, 1000);
+        }
+
+        return [
+            'commerce_id' => $this->comercio->id,
+            'cart'        => ['articles' => $lineas, 'promociones_vinoteca' => []],
+        ];
+    }
+
+    /** @return array Las tres lineas del escenario, tal cual las manda el SPA. */
+    private function lineasDeLosTres()
+    {
+        return [
+            $this->lineaDelPayload($this->habilitado, 1, 1000),
+            $this->lineaDelPayload($this->sin_marcar, 1, 2000),
+            $this->lineaDelPayload($this->deshabilitado, 1, 3000),
+        ];
+    }
+
+    /**
+     * Una linea tal cual la manda el SPA.
+     *
+     * @param  \App\Article  $articulo
+     * @param  int  $cantidad
+     * @param  float  $precio
+     * @return array
+     */
+    private function lineaDelPayload(Article $articulo, $cantidad, $precio)
+    {
+        return [
+            'id'          => $articulo->id,
+            'user_id'     => $articulo->user_id,
+            'name'        => $articulo->name,
+            'final_price' => $precio,
+            'cost'        => null,
+            'amount'      => $cantidad,
+            'pivot'       => ['amount' => $cantidad, 'notes' => null, 'variant_id' => null],
+        ];
     }
 
     /** @return array */
@@ -261,6 +493,12 @@ class SinEsquemaDeCatalogoPorListaTest extends TestCase
         $this->armarFerretotal();
 
         $this->comercios_creados[] = $this->comercio->id;
+
+        /* Otro comercio con su configuracion online: `similars` lo necesita para que la ruta mienta. Se
+           borra con los demas (users y online_configurations estan en `borrarLoDeLosComercios()`). */
+        $this->ajeno = $this->comercioConTienda();
+
+        $this->comercios_creados[] = $this->ajeno->id;
     }
 
     /**
