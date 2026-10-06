@@ -70,21 +70,20 @@ class ArticleController extends Controller {
      * Catalogo por lista (mision catalogo-por-lista-tienda): un articulo que el comprador no puede
      * ver por su lista de precios queda IGUAL que uno inexistente, `null` en su posicion. La ruta no
      * trae `commerce_id`, asi que el comercio sale de cada articulo (`user_id`), que lo escribio el
-     * ERP y no el navegador. Sin lista restringida `ids_no_visibles()` no hace ninguna query.
+     * ERP y no el navegador. Se decide una vez para toda la seleccion, despues de cargarla (hallazgo
+     * B7 de la revision independiente: antes era una consulta por articulo) y sin lista restringida no
+     * hace ninguna consulta de mas. Ver `CatalogoPorListaHelper::sin_los_no_visibles()`.
      */
     function seleccionEspecial($articles_id) {
         $articles = [];
         foreach (explode('-', $articles_id) as $article_id) {
-            $article = Article::where('id', $article_id)
+            $articles[] = Article::where('id', $article_id)
                                 ->withAll()
                                 ->first();
-
-            if (!is_null($article) && count(CatalogoPorListaHelper::ids_no_visibles([$article->id], $article->user_id)) > 0) {
-                $article = null;
-            }
-
-            $articles[] = $article;
         }
+
+        $articles = CatalogoPorListaHelper::sin_los_no_visibles($articles);
+
         return response()->json(['models' => $articles], 200);
     }
 

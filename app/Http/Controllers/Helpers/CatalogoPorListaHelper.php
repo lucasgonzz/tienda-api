@@ -509,6 +509,51 @@ class CatalogoPorListaHelper
     }
 
     /**
+     * De una lista de articulos ya cargados (o `null` donde el id no existia), deja en `null`, en su
+     * lugar, los que el comprador de esta sesion NO puede ver. Para la seleccion especial.
+     *
+     * Hace UN solo `ids_no_visibles()` para toda la lista y no uno por articulo (hallazgo B7 de la
+     * revision independiente). El comercio de cada articulo es el suyo (`user_id`, que lo escribio el
+     * ERP) y no uno de la URL, asi que se agrupa por comercio: la seleccion comun es de un solo comercio
+     * y paga UNA consulta; una que mezcle comercios paga una por comercio, porque las listas de cada uno
+     * son otras. Sin lista restringida no se consulta nada (cada comercio solo paga la lectura de sus
+     * listas, la misma que ya pagaba) y devuelve el MISMO array.
+     *
+     * @param  array<int, \App\Article|null>  $articulos
+     * @return array<int, \App\Article|null>  Las mismas posiciones.
+     */
+    public static function sin_los_no_visibles(array $articulos)
+    {
+        $ids_por_comercio = [];
+
+        foreach ($articulos as $articulo) {
+            if (!is_null($articulo)) {
+                $ids_por_comercio[$articulo->user_id][] = $articulo->id;
+            }
+        }
+
+        $no_visibles = [];
+
+        foreach ($ids_por_comercio as $commerce_id => $ids) {
+            foreach (self::ids_no_visibles($ids, $commerce_id) as $id) {
+                $no_visibles[$id] = true;
+            }
+        }
+
+        if (empty($no_visibles)) {
+            return $articulos;
+        }
+
+        foreach ($articulos as $posicion => $articulo) {
+            if (!is_null($articulo) && isset($no_visibles[$articulo->id])) {
+                $articulos[$posicion] = null;
+            }
+        }
+
+        return $articulos;
+    }
+
+    /**
      * Solo los ids de `no_visibles()`.
      *
      * @param  array  $ids

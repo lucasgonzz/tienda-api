@@ -177,6 +177,49 @@ class CostoDelCatalogoPorListaTest extends TestCase
         $this->assertNotEmpty($this->queNombranElPivote($queries));
     }
 
+    /**
+     * 🔴 La seleccion especial chequea la lista con UNA sola consulta para toda la seleccion, y no una por
+     * articulo (hallazgo B7 de la revision independiente). Antes el comprador restringido pagaba una
+     * consulta de `visible_en_tienda` por cada id de la URL, con el `withAll()` ya cargado; ahora se
+     * cargan los articulos y se decide una vez (por comercio: una seleccion rara que mezcle comercios
+     * paga una por comercio, y la comun es de uno solo).
+     *
+     * El resultado no cambia (lo no habilitado queda `null` en su lugar), y sin lista restringida no se
+     * nombra el pivote.
+     */
+    public function test_la_seleccion_especial_chequea_la_lista_con_una_sola_consulta()
+    {
+        $ids = $this->habilitado->id.'-'.$this->sin_marcar->id.'-'.$this->deshabilitado->id.'-'.$this->habilitado->id;
+
+        /* Sin lista restringida: no se nombra el pivote. */
+        $this->comoVisitante();
+
+        $queries = $this->queriesDurante(function () use ($ids) {
+            $this->json('GET', '/api/articles-seleccion-especial/'.$ids)->assertStatus(200);
+        });
+
+        $this->assertSame([], $this->queNombranElPivote($queries));
+
+        /* Con lista restringida: una sola, aunque la seleccion tenga cuatro ids. */
+        $this->restringirLista($this->mayorista);
+        $this->comoComprador($this->compradorConLista($this->comercio, $this->mayorista->id));
+
+        $modelos = [];
+
+        $queries = $this->queriesDurante(function () use ($ids, &$modelos) {
+            $modelos = $this->json('GET', '/api/articles-seleccion-especial/'.$ids)->assertStatus(200)->json('models');
+        });
+
+        $this->assertCount(1, $this->queNombranElPivote($queries),
+            'una sola consulta de la lista para los cuatro ids: '.implode(' | ', $this->queNombranElPivote($queries)));
+
+        $this->assertCount(4, $modelos);
+        $this->assertSame($this->habilitado->id, (int) $modelos[0]['id']);
+        $this->assertNull($modelos[1], 'sin_marcar');
+        $this->assertNull($modelos[2], 'deshabilitado');
+        $this->assertSame($this->habilitado->id, (int) $modelos[3]['id'], 'el repetido se conserva, como siempre');
+    }
+
     /** @return \Illuminate\Testing\TestResponse */
     private function home()
     {
