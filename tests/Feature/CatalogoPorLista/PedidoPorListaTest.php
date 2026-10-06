@@ -99,8 +99,12 @@ class PedidoPorListaTest extends TestCase
         $respuesta->assertStatus(422);
         $this->assertSame('articulos_no_disponibles', $respuesta->json('codigo'));
         $this->assertSame([['id' => $this->sin_marcar->id, 'name' => $this->sin_marcar->name]], $respuesta->json('articulos'));
-        $this->assertIsString($respuesta->json('message'));
-        $this->assertStringContainsString($this->sin_marcar->name, $respuesta->json('message'));
+        /* El texto va igual que el de la SPA ("ya no esta disponible", sin "para tu cuenta": el invitado no
+           tiene cuenta) y nombra el articulo. */
+        $this->assertSame(
+            'Algunos artículos de tu carrito ya no están disponibles: '.$this->sin_marcar->name.'. Sacalos del carrito para confirmar el pedido.',
+            $respuesta->json('message')
+        );
 
         $this->assertSame($pedidos_antes, DB::table('orders')->where('buyer_id', $mayorista->id)->count(), 'no se creo ningun pedido');
 

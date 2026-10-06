@@ -231,7 +231,7 @@ class OrderController extends Controller
 
                 return response()->json([
                     'codigo'    => 'articulos_no_disponibles',
-                    'message'   => 'Algunos artículos de tu carrito no están disponibles para tu cuenta: '
+                    'message'   => 'Algunos artículos de tu carrito ya no están disponibles: '
                         .implode(', ', array_column($no_disponibles, 'name'))
                         .'. Sacalos del carrito para confirmar el pedido.',
                     'articulos' => $no_disponibles,
