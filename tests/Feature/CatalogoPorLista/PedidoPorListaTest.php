@@ -5,6 +5,7 @@ namespace Tests\Feature\CatalogoPorLista;
 use App\Article;
 use App\Buyer;
 use App\Cart;
+use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
@@ -55,10 +56,19 @@ class PedidoPorListaTest extends TestCase
     /**
      * 🔴 Un carrito guardado con un articulo que el mayorista ya no puede ver: 422 con el codigo del
      * contrato, el pedido NO se crea y el carrito queda exactamente como estaba.
+     *
+     * ── El cliente del mayorista TIENE un descuento vinculado, y no es un detalle (T1 de la revision) ─
+     * `OrderController@store` corre `CartHelper::set_total()` antes de crear el pedido SOLO si el
+     * cliente del comprador tiene ajustes. Sin ninguno, `set_total()` no se ejecuta nunca y la
+     * asercion de abajo —"el 422 va antes de `set_total()`: el total no se toco"— no podia fallar: daba
+     * verde aunque el 422 se moviera despues del bloque de ajustes. Con el descuento, mover el 422 despues
+     * de ese bloque cambia `carts.total` (y los precios de las lineas) y este caso se pone rojo.
      */
     public function test_un_carrito_con_no_habilitados_da_422_y_no_crea_nada()
     {
         $mayorista = $this->compradorConLista($this->comercio, $this->mayorista->id);
+
+        $this->vincularUnDescuento($mayorista, 10);
 
         /* El total guardado NO coincide con las lineas a proposito: si el 422 llegara despues de
            `set_total()`, el total cambiaria y este caso lo veria. */
@@ -70,6 +80,13 @@ class PedidoPorListaTest extends TestCase
         $pedidos_antes = DB::table('orders')->where('buyer_id', $mayorista->id)->count();
 
         $this->comoComprador($mayorista);
+
+        /* Que el caso no sea vacuo: el comprador de la sesion tiene ajustes, o sea que `set_total()`
+           correria si el 422 no cortara antes. */
+        $this->assertTrue(
+            AjustesDeClienteHelper::tiene_ajustes(AjustesDeClienteHelper::del_comprador($this->comercio->id)),
+            'el cliente del comprador tiene un descuento vinculado'
+        );
 
         $respuesta = $this->postJson('/api/orders', [
             'cart_id'     => $cart->id,
@@ -89,6 +106,11 @@ class PedidoPorListaTest extends TestCase
         $this->assertNotNull($guardado, 'el carrito sigue existiendo');
         $this->assertNull($guardado->order_id, 'y no quedo atado a ningun pedido');
         $this->assertEquals(12345, $guardado->total, 'el 422 va antes de set_total(): el total no se toco');
+        $this->assertEquals(
+            [1000, 2000],
+            DB::table('article_cart')->where('cart_id', $cart->id)->orderBy('id')->pluck('price')->map(function ($precio) { return (float) $precio; })->all(),
+            'ni los precios de las lineas: el descuento del cliente no se les aplico'
+        );
         $this->assertSame(
             $this->ordenados([$this->habilitado->id, $this->sin_marcar->id]),
             $this->ordenados(DB::table('article_cart')->where('cart_id', $cart->id)->pluck('article_id')->all()),
@@ -145,6 +167,34 @@ class PedidoPorListaTest extends TestCase
 
         $respuesta->assertStatus(201);
         $this->assertSame(3, DB::table('article_order')->where('order_id', (int) $respuesta->json('order_id'))->count());
+    }
+
+    /**
+     * Vincula un descuento de venta al CLIENTE del comprador, como lo hace la ficha del ERP (tablas
+     * `discounts` y `client_discount`, que existen en la base del slot). Todo dentro de la transaccion
+     * del caso.
+     *
+     * @param  \App\Buyer  $buyer
+     * @param  float  $porcentaje
+     * @return void
+     */
+    private function vincularUnDescuento(Buyer $buyer, $porcentaje)
+    {
+        $descuento_id = DB::table('discounts')->insertGetId([
+            'num'        => 1,
+            'name'       => 'Descuento Catalogo Test',
+            'percentage' => $porcentaje,
+            'user_id'    => $this->comercio->id,
+            'created_at' => Carbon::now(),
+            'updated_at' => Carbon::now(),
+        ]);
+
+        DB::table(AjustesDeClienteHelper::TABLA_DESCUENTOS)->insert([
+            'client_id'   => $buyer->comercio_city_client_id,
+            'discount_id' => $descuento_id,
+            'created_at'  => Carbon::now(),
+            'updated_at'  => Carbon::now(),
+        ]);
     }
 
     /**
