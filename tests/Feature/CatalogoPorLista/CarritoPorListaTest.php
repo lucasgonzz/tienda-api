@@ -247,6 +247,77 @@ class CarritoPorListaTest extends TestCase
     }
 
     /**
+     * 🔴 Una linea con un id que NO es un entero no se guarda (hallazgo B5 de la revision independiente).
+     *
+     * El chequeo de la lista normalizaba los ids con `is_numeric` + `intval` y la escritura hacia
+     * `attach($article['id'])` crudo: dos reglas para el mismo dato. `"id": true` no se chequeaba (no es
+     * numerico) y se guardaba como `article_id = 1`; `"id": N.5` se chequeaba como N —el habilitado— y
+     * MySQL guardaba otro (N+1: el no habilitado de al lado). Ahora el id se normaliza una sola vez, para
+     * decidir y para escribir, y lo que no es un entero se descarta sin hacer ruido.
+     *
+     * Lo legitimo no cambia: la linea valida de adelante se guarda igual.
+     */
+    public function test_una_linea_con_un_id_que_no_es_un_entero_no_se_guarda()
+    {
+        $this->comoComprador($this->compradorConLista($this->comercio, $this->mayorista->id));
+
+        $valida = $this->linea($this->habilitado, 1, 1000);
+
+        $respuesta = $this->crearCarrito([
+            $valida,
+            array_merge($valida, ['id' => true]),
+            array_merge($valida, ['id' => $this->habilitado->id + 0.5]),
+            array_merge($valida, ['id' => (string) $this->habilitado->id.'abc']),
+            array_merge($valida, ['id' => null]),
+            array_diff_key($valida, ['id' => 1]),
+        ]);
+
+        $respuesta->assertStatus(201);
+        $this->assertArrayNotHasKey('articulos_no_disponibles', $respuesta->json(), 'no hay nada reportable: no son articulos');
+
+        $cart_id = (int) $respuesta->json('cart.id');
+
+        $this->assertSame([$this->habilitado->id], $this->idsGuardados($cart_id), 'solo la linea valida');
+        $this->assertEquals(1000, DB::table('carts')->where('id', $cart_id)->value('total'));
+
+        /* Lo mismo en el PUT. */
+        $actualizado = $this->putJson('/api/carts', [
+            'id'                   => $cart_id,
+            'articles'             => [
+                $valida,
+                array_merge($valida, ['id' => true]),
+                array_merge($valida, ['id' => $this->habilitado->id + 0.5]),
+            ],
+            'promociones_vinoteca' => [],
+        ]);
+
+        $actualizado->assertStatus(200);
+        $this->assertSame([$this->habilitado->id], $this->idsGuardados($cart_id), 'el PUT tambien');
+    }
+
+    /**
+     * Un id numerico escrito como texto es el mismo id: se chequea y se guarda como entero. El no
+     * habilitado que llega como `"2917"` se descarta igual que si llegara como `2917`, y vuelve en el
+     * aviso con su id entero; el habilitado se guarda con su id entero.
+     */
+    public function test_un_id_numerico_como_texto_es_el_mismo_id()
+    {
+        $this->comoComprador($this->compradorConLista($this->comercio, $this->mayorista->id));
+
+        $respuesta = $this->crearCarrito([
+            array_merge($this->linea($this->habilitado, 1, 1000), ['id' => (string) $this->habilitado->id]),
+            array_merge($this->linea($this->sin_marcar, 1, 2000), ['id' => (string) $this->sin_marcar->id]),
+        ]);
+
+        $respuesta->assertStatus(201);
+        $this->assertSame(
+            [['id' => $this->sin_marcar->id, 'name' => $this->sin_marcar->name]],
+            $respuesta->json('articulos_no_disponibles')
+        );
+        $this->assertSame([$this->habilitado->id], $this->idsGuardados((int) $respuesta->json('cart.id')));
+    }
+
+    /**
      * Una linea tal cual la manda el SPA.
      *
      * @param  \App\Article  $articulo

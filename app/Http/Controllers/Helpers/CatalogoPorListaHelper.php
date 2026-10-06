@@ -417,6 +417,41 @@ class CatalogoPorListaHelper
     }
 
     /**
+     * El id de articulo de un valor cualquiera del payload, o null si no es un entero. Es la UNICA
+     * normalizacion de ids del catalogo por lista: la usan el chequeo (`no_visibles()`) y la escritura
+     * del carrito (`CartHelper::attachArticles()`), para que lo que se decide y lo que se guarda sean
+     * siempre el mismo id (hallazgo B5 de la revision independiente).
+     *
+     * Antes el chequeo normalizaba con `is_numeric` + `intval` y la escritura hacia `attach()` con el
+     * valor crudo, y se separaban: `true` no se chequeaba (no es numerico) y se guardaba como
+     * `article_id = 1`; `N + 0.5` se chequeaba como N —el habilitado— y MySQL guardaba N + 1: el no
+     * habilitado de al lado, sin que nada lo avisara.
+     *
+     * Entero es: un `int`; un texto de solo digitos (con un `-` opcional adelante); o un `float` sin
+     * parte decimal (`12.0`, que `json_decode` devuelve para ese numero). Todo lo demas —bool, `12.5`,
+     * `"12abc"`, `"12.0"`, `null`, arrays— es null. Los payloads legitimos mandan enteros.
+     *
+     * @param  mixed  $valor
+     * @return int|null
+     */
+    public static function id_entero($valor)
+    {
+        if (is_int($valor)) {
+            return $valor;
+        }
+
+        if (is_string($valor) && preg_match('/^-?\d{1,18}$/', $valor) === 1) {
+            return (int) $valor;
+        }
+
+        if (is_float($valor) && is_finite($valor) && abs($valor) < 1e15 && floor($valor) == $valor) {
+            return (int) $valor;
+        }
+
+        return null;
+    }
+
+    /**
      * De estos articulos, los que el comprador de esta sesion NO puede ver, con su nombre. Para el
      * carrito y el pedido. Una sola query, y ninguna sin lista restringida.
      *
@@ -433,9 +468,10 @@ class CatalogoPorListaHelper
      */
     public static function no_visibles(array $ids, $commerce_id)
     {
-        $ids = array_values(array_unique(array_map('intval', array_filter($ids, function ($id) {
-            return is_numeric($id);
-        }))));
+        /* La misma normalizacion que usa la escritura del carrito: ver `id_entero()`. */
+        $ids = array_values(array_unique(array_filter(array_map([self::class, 'id_entero'], $ids), function ($id) {
+            return !is_null($id);
+        })));
 
         if (count($ids) == 0) {
             return [];

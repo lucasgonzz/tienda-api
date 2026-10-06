@@ -93,7 +93,9 @@ class CartHelper {
 
                 Log::info('price para guardar: '.$price);
 
-                $cart->articles()->attach($article['id'], [
+                /* El id se normaliza con la misma regla con la que se decidio si la linea se ve
+                   (`id_de_linea()`): las lineas sin un id entero ya se descartaron arriba. */
+                $cart->articles()->attach(Self::id_de_linea($article), [
                                             'price'         => $price,
                                             'cost'          => $article['cost'],
                                             'amount'        => $article['pivot']['amount'],
@@ -131,12 +133,33 @@ class CartHelper {
         $ids = [];
 
         foreach ($articles as $article) {
-            if (!isset($article['is_promocion_vinoteca']) && isset($article['id'])) {
-                $ids[] = $article['id'];
+            if (!isset($article['is_promocion_vinoteca'])) {
+                $id = Self::id_de_linea($article);
+
+                if (!is_null($id)) {
+                    $ids[] = $id;
+                }
             }
         }
 
         return CatalogoPorListaHelper::no_visibles($ids, $cart->user_id);
+    }
+
+    /**
+     * El id de articulo de una linea del payload, normalizado a entero, o null si no es un entero (la
+     * linea no tiene `id`, o trae `true`, `12.5`, `"abc"`...). Es la MISMA regla para decidir si la
+     * linea se ve y para escribirla en el carrito: ver `CatalogoPorListaHelper::id_entero()`.
+     *
+     * @param  mixed  $article  Una linea del payload.
+     * @return int|null
+     */
+    static function id_de_linea($article) {
+
+        if (!is_array($article) || !isset($article['id'])) {
+            return null;
+        }
+
+        return CatalogoPorListaHelper::id_entero($article['id']);
     }
 
     /**
@@ -149,31 +172,39 @@ class CartHelper {
      *
      * Todas las lineas de un articulo descartado se van, aunque venga repetido en el payload.
      *
+     * Y se van tambien las lineas cuyo id NO es un entero (sin `id`, `true`, `12.5`, `"abc"`: ver
+     * `id_de_linea()`): no son un articulo que se pueda ver ni guardar, y dejarlas pasar era lo que
+     * permitia que el chequeo mirara un id y la escritura guardara otro (hallazgo B5 de la revision
+     * independiente). Esas no vuelven en `articulos_no_disponibles`: no hay un articulo con nombre que
+     * avisar. Las promociones de vinoteca mezcladas aca no son articulos y se dejan como vienen.
+     *
      * @param  array  $articles
      * @param  array  $no_disponibles
      * @return array
      */
     static function sin_lineas_no_disponibles($articles, $no_disponibles) {
 
-        if (empty($no_disponibles)) {
-            return $articles;
-        }
-
         $descartados = array_flip(array_column($no_disponibles, 'id'));
 
         $quedan = [];
 
-        foreach ($articles as $article) {
-            $es_articulo = !isset($article['is_promocion_vinoteca']) && isset($article['id']);
+        $se_descarto = false;
 
-            if ($es_articulo && isset($descartados[(int) $article['id']])) {
-                continue;
+        foreach ($articles as $article) {
+
+            if (!isset($article['is_promocion_vinoteca'])) {
+                $id = Self::id_de_linea($article);
+
+                if (is_null($id) || isset($descartados[$id])) {
+                    $se_descarto = true;
+                    continue;
+                }
             }
 
             $quedan[] = $article;
         }
 
-        return $quedan;
+        return $se_descarto ? $quedan : $articles;
     }
 
     /**
