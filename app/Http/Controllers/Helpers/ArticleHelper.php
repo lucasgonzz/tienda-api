@@ -69,16 +69,18 @@ class ArticleHelper
                 $article->final_price = $articlePrice->price;
             }
 
-        } else if (!is_null($buyer) && !is_null($buyer->comercio_city_client) && !is_null($buyer->comercio_city_client->price_type)) {
+        } else if (!is_null($buyer) && !is_null($lista_del_cliente = CatalogoPorListaHelper::lista_del_cliente($commerce_id))) {
             // Caso 3: buyer logueado con lista de precios asignada — usar final_price del pivot
             /* La ELECCION de la lista sale de CatalogoPorListaHelper (mision
                catalogo-por-lista-tienda, 5/10/2026): es la misma funcion que decide que articulos
                ve este comprador, asi que el precio y el catalogo no pueden salir de listas
-               distintas. Para este caso devuelve exactamente la lista de la condicion de arriba
-               (el `price_type` del cliente del comprador de la sesion), memoizada por request. No
-               se vuelve a leer la relacion aca "para simplificar": eso es justamente copiar la
-               eleccion en dos lugares. */
-            $price_type_id = CatalogoPorListaHelper::lista_del_comprador($commerce_id)->id;
+               distintas. Y el caso entero se decide con ELLA: la condicion de arriba es "la eleccion
+               tiene origen 'cliente'" y la lista es esa misma eleccion (el `price_type` del cliente del
+               comprador de la sesion, memoizado por request). No se vuelve a leer la relacion aca "para
+               simplificar" ni se deja una condicion propia al lado: eso es copiar la eleccion en dos
+               lugares, y el dia que el helper conteste otra cosa saldria `->id` sobre null (B4 de la
+               revision independiente). */
+            $price_type_id = $lista_del_cliente->id;
             foreach ($articles as $article) {
                 if (!is_null($article)) {
                     // Buscar la lista del buyer entre las price_types cargadas del artículo

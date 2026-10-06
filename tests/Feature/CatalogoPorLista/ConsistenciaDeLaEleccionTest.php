@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\ComboPrecioHelper;
 use App\PriceType;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
+use Symfony\Component\HttpFoundation\ParameterBag;
 use Tests\TestCase;
 
 /**
@@ -113,6 +114,43 @@ class ConsistenciaDeLaEleccionTest extends TestCase
         $this->comoComprador($this->compradorConLista($this->comercio, $this->baja->id));
 
         $this->assertLaMismaListaEnTodo($this->baja, 100);
+    }
+
+    /**
+     * 🔴 El caso 3 de `checkPriceTypes()` se decide con LA ELECCION DEL HELPER y no con una copia propia
+     * de la condicion (hallazgo B4 de la revision independiente).
+     *
+     * Antes el caso 3 evaluaba su condicion ("el comprador tiene un cliente del ERP con lista") y
+     * despues le pedia la lista al helper con `->id`: dos preguntas por lo mismo. Si el helper algun dia
+     * contesta otra cosa (por ejemplo, que la lista del cliente no es de este comercio), la condicion
+     * propia seguia diciendo "si" y salia `->id` sobre null (un 500), o se aplicaba la lista de
+     * `position` adentro del "caso 3".
+     *
+     * Se simula ese dia dejandole al helper una eleccion "sin lista" para un comprador que SI tiene
+     * cliente con lista: `checkPriceTypes()` tiene que obedecer al helper, no reventar ni aplicar la
+     * lista del cliente. Sin lista efectiva y sin listas en el comercio vale la columna `final_price`,
+     * como siempre (el centinela).
+     */
+    public function test_el_caso_3_obedece_la_eleccion_del_helper_y_no_su_propia_condicion()
+    {
+        $comprador = $this->compradorConLista($this->comercio, $this->baja->id);
+        $this->comoComprador($comprador);
+
+        CatalogoPorListaHelper::olvidar();
+
+        /* La memoria del helper es una clave de los atributos del request: comercio + comprador. */
+        request()->attributes->set(CatalogoPorListaHelper::CLAVE_MEMO, new ParameterBag([
+            'eleccion|'.$this->comercio->id.'|comprador:'.$comprador->id => [
+                'lista'                    => null,
+                'origen'                   => 'ninguna',
+                'el_comercio_tiene_listas' => false,
+            ],
+        ]));
+
+        $resuelto = ArticleHelper::checkPriceTypes(Article::where('id', $this->articulo->id)->withAll()->get())->first();
+
+        $this->assertEquals(self::PRECIO_DE_LA_COLUMNA, $resuelto->final_price,
+            'sin lista efectiva vale la columna: el caso 3 no aplico el pivote de la lista del cliente');
     }
 
     /**

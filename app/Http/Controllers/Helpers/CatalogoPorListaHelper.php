@@ -299,6 +299,26 @@ class CatalogoPorListaHelper
     }
 
     /**
+     * La lista que el comprador de esta sesion tiene asignada por su CLIENTE del ERP —la eleccion con
+     * origen 'cliente'—, o null si su lista sale de otro lado (la de `position`) o no hay ninguna.
+     *
+     * Es lo que usa el caso 3 de `ArticleHelper::checkPriceTypes()` para decidir SI aplica y CON QUE
+     * lista, en una sola pregunta (hallazgo B4 de la revision independiente): la condicion y la lista
+     * salen de la misma eleccion, asi que si el helper algun dia contesta otra cosa (por ejemplo, que
+     * la lista del cliente no es de este comercio) el caso 3 deja de tomarse en vez de pedirle `->id` a
+     * un null o de aplicar la lista de `position` creyendo que es la del cliente.
+     *
+     * @param  int|string|null  $commerce_id
+     * @return \App\PriceType|null
+     */
+    public static function lista_del_cliente($commerce_id)
+    {
+        $eleccion = self::eleccion_de_lista($commerce_id);
+
+        return $eleccion['origen'] === 'cliente' ? $eleccion['lista'] : null;
+    }
+
+    /**
      * La lista efectiva del comprador SOLO si restringe el catalogo; si no, null.
      *
      * 🔴 El ORDEN de las preguntas es la mitad del diseño y no se invierte "para que la guarda vaya
