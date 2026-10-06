@@ -111,6 +111,16 @@ use Illuminate\Support\Facades\Schema;
  *     el visitante de una tienda que exige registro para ver precios (`register_to_buy`: +1 en todo
  *     listado, home 70 -> 71).
  *
+ * Y dos costos que las mediciones de arriba NO cubren, y que salen de leer el codigo, NO de medirlos:
+ *   - el SEO (`SeoPaginas::filtroOnline()` pasa por `checkOnline()`) paga una consulta de las listas del
+ *     comercio por cada render que no sale de la cache (`seo.php` cachea la pagina 6 horas; el sitemap, una
+ *     hora; las categorias, diez minutos);
+ *   - el carrito POST de un comercio con la extension de rangos suma esa misma consulta (el chequeo de lo
+ *     que el comprador no puede ver la necesita y el caso 1 de `checkPriceTypes()` no la resolvia): +1 para
+ *     el visitante y, para el logueado con cliente, ademas `clients` y `price_types`, como la busqueda.
+ *     NO esta medido: con el payload de prueba la medicion de master dio 500 (le faltaban los `ranges` que
+ *     manda el SPA) y no se repitio con uno completo, asi que no hay numero.
+ *
  * No hay forma simple y segura de evitarlo. Hace falta la lista del comprador para decidir el SQL del
  * listado antes de armarlo, y saber si el comercio tiene alguna lista restringida sin leer esas listas
  * pide una consulta propia sobre una columna que puede no existir (la guarda de esquema que justamente se
@@ -118,7 +128,22 @@ use Illuminate\Support\Facades\Schema;
  * `position` es parte del precio que ve cada comprador. Queda dicho lo que cuesta en vez de prometer lo
  * que no es.
  *
- * Lo fija `tests/Feature/CatalogoPorLista/CostoDelCatalogoPorListaTest`, con los numeros de arriba.
+ * ── Que defiende `CostoDelCatalogoPorListaTest`, y que NO ─────────────────────────────────────────
+ *
+ * Lo que fija (con un comercio de dos listas y ninguna restringida): los totales de consultas de los cinco
+ * endpoints de arranque —nombres, marcas, categorias, subcategorias y seleccion especial— para los tres
+ * perfiles (visitante, logueado sin cliente, logueado con cliente con lista); que haya UNA consulta de las
+ * listas del comercio en la home del visitante (a lo sumo una por request en la busqueda y el carrito) y
+ * exactamente una en la home y la busqueda con la extension de rangos y con `register_to_buy` (y que la
+ * busqueda con cliente y rangos cargue `clients`); que la seleccion especial de un comprador restringido
+ * haga una sola consulta del pivote; y que, sin lista restringida, ninguna consulta nombre el pivote ni vaya
+ * a information_schema.
+ *
+ * Lo que NO fija, y es solo medicion documentada de arriba: los totales de los listados que no cambian (26,
+ * 23, 19, 26 y 52), la baja de la home (70 -> 69; el test solo exige que la consulta de las listas corra una
+ * vez), los totales con la extension de rangos (home 92 -> 93, 90 -> 91 y 104 -> 104; busqueda 38 -> 38,
+ * 36 -> 37 y 42 -> 44) ni los de `register_to_buy` (home 70 -> 71, busqueda 26 -> 27). Tampoco el SEO ni el
+ * carrito con rangos, que no estan medidos.
  */
 class CatalogoPorListaHelper
 {

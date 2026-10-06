@@ -60,8 +60,24 @@ use Tests\TestCase;
  * listado, y saber si el comercio tiene alguna lista restringida sin leer las listas pide otra consulta
  * sobre una columna que puede no existir (la guarda de esquema que justamente se evita) o cambiar la
  * consulta de las listas, que `checkPriceTypes()` comparte y cuyo desempate por `position` es parte del
- * precio que ve cada comprador. Esta clase fija los numeros de arriba: si alguien suma o saca una
- * consulta, se entera aca.
+ * precio que ve cada comprador.
+ *
+ * ── Que fija esta clase, y que NO (N5 de la revision de cierre) ────────────────────────────────────
+ *
+ * FIJA los totales de consultas de los cinco endpoints de arranque (nombres, marcas, categorias,
+ * subcategorias y seleccion especial) para los tres perfiles: visitante 9, 6, 3, 2 y 40; logueado sin
+ * cliente 10, 7, 4, 3 y 41; logueado con cliente con lista 11, 8, 5, 4 y 42. Fija tambien que haya UNA
+ * consulta de las listas del comercio en la home del visitante (a lo sumo una por request en la busqueda y
+ * el carrito) y exactamente una en la home y la busqueda con la extension de rangos y con `register_to_buy`,
+ * que la busqueda del logueado con cliente y rangos cargue `clients`, que la seleccion especial de un
+ * comprador restringido haga una sola consulta del pivote, y que sin lista restringida ninguna consulta
+ * nombre el pivote ni vaya a information_schema.
+ *
+ * NO FIJA los totales de los listados que no cambian (busqueda 26, categoria 23, ficha 19, similares 26,
+ * carrito 52), ni la baja de la home (70 -> 69: solo exige que la consulta de las listas corra una vez), ni
+ * los totales con la extension de rangos (home 92 -> 93, 90 -> 91, 104 -> 104; busqueda 38 -> 38, 36 -> 37,
+ * 42 -> 44) ni con `register_to_buy` (home 70 -> 71, busqueda 26 -> 27): eso es medicion documentada arriba,
+ * no un numero que un test defienda. El SEO y el carrito con rangos tampoco estan medidos.
  */
 class CostoDelCatalogoPorListaTest extends TestCase
 {
