@@ -86,9 +86,12 @@ class ComercioDelPedidoTest extends TestCase
         $comprador = $this->compradorSinCliente($this->comercio);
         $this->comoComprador($comprador);
 
-        /* Premisa: con el comercio REAL el carrito si descarta lo no habilitado. */
+        /* Premisa: con el comercio REAL el carrito si descarta lo no habilitado. Como era lo unico que
+           pedia, no se crea ningun carrito: `200 {cart: null, articulos_no_disponibles}` (el POST que se
+           queda sin lineas, hallazgo B6). */
         $real = $this->postJson('/api/carts', $this->payloadDeCarrito($this->comercio->id, [$this->sin_marcar]));
-        $real->assertStatus(201);
+        $real->assertStatus(200);
+        $this->assertNull($real->json('cart'), 'no se crea un carrito sin lineas');
         $this->assertSame([$this->sin_marcar->id], array_column($real->json('articulos_no_disponibles'), 'id'),
             'el comercio real restringe: el carrito no deja pasar el articulo no habilitado');
 
