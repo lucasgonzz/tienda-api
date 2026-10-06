@@ -18,6 +18,12 @@ use Tests\TestCase;
  *   - Sin descartes la respuesta es byte a byte la de hoy: la clave no aparece, ni vacia.
  *   - `PUT` decide el descarte antes de tocar el carrito, y si no queda ninguna linea se comporta
  *     como el carrito vacio de hoy (se borra y responde `cart: null`).
+ *   - `POST` tambien: si la lista descarta TODO lo que se pedia y el payload no trae promociones de
+ *     vinoteca ni combos, no crea el carrito y responde `200 {cart: null, articulos_no_disponibles}`
+ *     (cambio de la revision independiente, B6: antes quedaba un carrito vivo, vacio y con total 0).
+ *     Sin descartes, el POST de siempre (201, incluido el de un carrito sin lineas).
+ *   - Los ids de las lineas se normalizan una sola vez, para decidir y para escribir: lo que no es un
+ *     entero se descarta sin aviso (B5).
  *
  * El caso real que lo motiva: un visitante arma el carrito con la lista publica, se loguea como
  * mayorista, y el SPA vuelve a guardar el carrito con la sesion nueva.

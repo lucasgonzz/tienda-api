@@ -51,11 +51,15 @@ class CartHelper {
      * Las lineas `is_promocion_vinoteca` que vengan mezcladas aca se saltean como siempre: no son
      * articulos y no las decide la lista.
      *
+     * Y se descartan sin aviso las lineas cuyo id no es un entero (ver `id_de_linea()`): el id que se
+     * chequea es, por construccion, el mismo que se escribe en `article_cart`.
+     *
      * @param  \App\Cart  $cart
      * @param  array  $articles  Lineas del payload.
      * @param  array|null  $no_disponibles  Las ya calculadas con `articulos_no_disponibles()`, si el
      *                                      llamador las necesito ANTES de tocar el carrito
-     *                                      (`CartController@update`). Null = calcularlas aca.
+     *                                      (`CartController@store` y `@update`: el envio por correo se
+     *                                      sincroniza con las lineas que quedan). Null = calcularlas aca.
      * @return array<int, array{id: int, name: string}>  Las lineas descartadas (vacio si ninguna).
      */
     static function attachArticles($cart, $articles, $no_disponibles = null) {
