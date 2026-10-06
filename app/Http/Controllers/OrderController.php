@@ -188,8 +188,12 @@ class OrderController extends Controller
              *
              * En el flujo del SPA el carrito y el payload son del mismo comercio, asi que esto no cambia
              * nada. Si no coinciden es un POST armado a mano y queda en el log.
+             *
+             * Y si el carrito no tuviera `user_id` (la columna `carts.user_id` es NOT NULL y ningun
+             * camino real lo deja vacio, asi que es teorico) se cae al del payload, que es lo que hacia
+             * este metodo antes: mejor eso que un pedido con `user_id` NULL, que revienta al insertar.
              */
-            $commerce_id = $cart->user_id;
+            $commerce_id = $cart->user_id ?? $request->commerce_id;
 
             if (!is_null($request->commerce_id) && (int) $request->commerce_id !== (int) $commerce_id) {
                 Log::warning('OrderController@store: el commerce_id del payload no es el del carrito, el pedido se crea en el del carrito', [
