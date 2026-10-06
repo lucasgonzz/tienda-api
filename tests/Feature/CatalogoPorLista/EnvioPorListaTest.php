@@ -6,8 +6,11 @@ use App\Article;
 use App\Cart;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Http\Controllers\Helpers\ZipnovaEsquemaHelper;
+use App\PromocionVinoteca;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use Tests\Feature\Envios\ArmaComercioConZipnova;
 use Tests\TestCase;
 
@@ -189,6 +192,106 @@ class EnvioPorListaTest extends TestCase
         Http::assertSentCount(1);
 
         $this->assertElEnvioEsDeLasLineasGuardadas($cart->fresh());
+    }
+
+    /**
+     * 🔴 `PUT` con TODO descartado y un envio por correo elegido: no se cotiza nada, el carrito se borra y
+     * responde `cart: null` (E-6 de la revision de cierre).
+     *
+     * Con la lista del mayorista, el unico articulo que pide no se puede guardar. El payload que llega al
+     * envio ya no tiene lineas: "un carrito que se esta vaciando no tiene nada que cotizar". Antes de M1 el
+     * envio miraba el payload CRUDO, o sea la linea descartada, y volvia a llamar a Zipnova para cotizar un
+     * paquete que el carrito no iba a tener. Contra el codigo anterior a M1 falla con la segunda llamada a
+     * Zipnova (`assertSentCount(1)`).
+     */
+    public function test_un_put_con_todo_descartado_y_un_envio_elegido_borra_el_carrito_sin_cotizar()
+    {
+        $cart = Cart::find($this->postJson('/api/carts', [
+            'commerce_id' => $this->comercio->id,
+            'cart'        => [
+                'articles'             => [$this->linea($this->habilitado, 1, 1000)],
+                'promociones_vinoteca' => [],
+                'deliver'              => 1,
+                'envio'                => $this->envio(),
+            ],
+        ])->assertStatus(201)->json('cart.id'));
+
+        Http::assertSentCount(1);
+
+        $respuesta = $this->withSession(['carritos_propios' => [$cart->id]])->putJson('/api/carts', [
+            'id'                   => $cart->id,
+            'articles'             => [$this->linea($this->deshabilitado, 1, 3000)],
+            'promociones_vinoteca' => [],
+            'deliver'              => 1,
+            'envio'                => $this->envio(),
+        ]);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame([
+            'cart'                     => null,
+            'articulos_no_disponibles' => [['id' => $this->deshabilitado->id, 'name' => $this->deshabilitado->name]],
+        ], $respuesta->json());
+
+        $this->assertFalse(DB::table('carts')->where('id', $cart->id)->exists(), 'el carrito se borro');
+
+        Http::assertSentCount(1);
+    }
+
+    /**
+     * Lo mismo, pero con una promocion de vinoteca en el payload: el carrito sobrevive (le queda la promo) y
+     * lo que se VE es que el envio quedo limpio —sin cotizacion, opcion ni precio— y que no se volvio a
+     * llamar a Zipnova. Es la forma observable de "limpia el envio" del caso de arriba, donde el carrito se
+     * borra.
+     */
+    public function test_un_put_con_todo_descartado_y_una_promo_deja_el_envio_limpio_sin_cotizar()
+    {
+        $promo = PromocionVinoteca::create([
+            'name'        => 'Promo Envio Catalogo Test',
+            'slug'        => 'promo-envio-catalogo-'.Str::random(10),
+            'user_id'     => $this->comercio->id,
+            'online'      => 1,
+            'stock'       => 10,
+            'final_price' => 700,
+            'cost'        => 0,
+        ]);
+
+        $cart = Cart::find($this->postJson('/api/carts', [
+            'commerce_id' => $this->comercio->id,
+            'cart'        => [
+                'articles'             => [$this->linea($this->habilitado, 1, 1000)],
+                'promociones_vinoteca' => [],
+                'deliver'              => 1,
+                'envio'                => $this->envio(),
+            ],
+        ])->assertStatus(201)->json('cart.id'));
+
+        $this->assertNotNull($cart->envio_opcion, 'el carrito de partida tiene el envio cotizado');
+
+        Http::assertSentCount(1);
+
+        $this->withSession(['carritos_propios' => [$cart->id]])->putJson('/api/carts', [
+            'id'                   => $cart->id,
+            'articles'             => [$this->linea($this->deshabilitado, 1, 3000)],
+            'promociones_vinoteca' => [[
+                'id'          => $promo->id,
+                'user_id'     => $this->comercio->id,
+                'name'        => $promo->name,
+                'final_price' => 700,
+                'cost'        => 0,
+                'pivot'       => ['amount' => 1, 'notes' => null],
+            ]],
+            'deliver'              => 1,
+            'envio'                => $this->envio(),
+        ])->assertStatus(200);
+
+        $cart = $cart->fresh();
+
+        $this->assertNotNull($cart, 'el carrito sigue vivo: tiene la promo');
+        $this->assertNull($cart->envio_opcion, 'sin lineas de articulo no hay envio por correo que cotizar');
+        $this->assertNull($cart->envio_cotizacion);
+        $this->assertNull($cart->envio_precio);
+
+        Http::assertSentCount(1);
     }
 
     /**
