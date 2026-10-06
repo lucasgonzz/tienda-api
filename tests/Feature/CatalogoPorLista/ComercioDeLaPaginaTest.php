@@ -154,19 +154,47 @@ class ComercioDeLaPaginaTest extends TestCase
     }
 
     /**
-     * La home: filtra por el comercio que manda el input y restringe por el mismo, asi que no hay
-     * desacuerdo que explotar. Lo que se fija es el invariante: aunque la query string diga otro
-     * comercio, nunca aparece lo no habilitado de este.
+     * La home restringe con las listas del comercio CUYOS articulos lista (N4 de la revision de cierre).
+     *
+     * `featuredLastUploads` filtra por `$request->commerce_id` (el input gana sobre la ruta) y la
+     * restriccion sale del mismo valor: no hay desacuerdo que explotar, y por eso no fija el comercio de
+     * la ruta (ver `CatalogoPorListaHelper::fijar_el_comercio()`). Es un test de INVARIANTE: el codigo
+     * anterior a B2 tambien lo cumplia, asi que NO falla contra el. Protege contra la regresion que B2
+     * evito a proposito: si alguien arregla el comercio de la restriccion preguntando por la RUTA adentro
+     * de `Article::checkOnline()`, sin tocar la home, la home pasaria a listar los articulos de un comercio
+     * restringidos con las listas de OTRO.
+     *
+     * El caso esta armado para que pueda fallar de verdad (la version anterior miraba una home que no
+     * tenia articulos y no podia): el comercio de la RUTA no restringe nada, y el de la query string SI,
+     * con un articulo habilitado y otro no. Por la home del segundo no puede salir su no habilitado.
+     * Demostrado con una mutacion temporal en una copia del arbol: con la restriccion preguntando por la
+     * ruta, el no habilitado ajeno aparece y el caso se pone rojo.
      */
-    public function test_la_home_no_muestra_lo_no_habilitado_aunque_la_query_string_diga_otro_comercio()
+    public function test_la_home_restringe_con_las_listas_del_comercio_que_lista()
     {
-        $con_otro = (array) $this->pedir($this->conOtroComercio('/api/articles/featured-last-uploads/'.$this->comercio->id.'?page=1'))
-                        ->json('articles.data');
+        /* El comercio de la ruta deja de restringir. */
+        DB::table('price_types')->where('id', $this->minorista->id)->update(['catalogo_restringido_en_tienda' => null]);
 
-        $this->assertSame([], array_values(array_intersect(
-            $this->idsDe($con_otro),
-            $this->ordenados([$this->sin_marcar->id, $this->deshabilitado->id])
-        )), 'ni sin_marcar ni deshabilitado');
+        /* El ajeno SI: su lista mas alta es restringida, con un articulo habilitado y otro que no. */
+        $lista_ajena = $this->lista($this->ajeno, 'Minorista Ajena', 2);
+        $this->restringirLista($lista_ajena);
+
+        $habilitado_ajeno = $this->articulo($this->ajeno, ['name' => 'Catalogo Ajeno Habilitado']);
+        $this->precioEnLista($habilitado_ajeno, $lista_ajena, 100, 1);
+
+        $no_habilitado_ajeno = $this->articulo($this->ajeno, ['name' => 'Catalogo Ajeno No Habilitado']);
+        $this->precioEnLista($no_habilitado_ajeno, $lista_ajena, 200, null);
+
+        $ruta = '/api/articles/featured-last-uploads/'.$this->comercio->id.'?page=1';
+
+        $this->assertSame($this->losTres(), $this->idsDe($this->pedir($ruta)->json('articles.data')),
+            'control: sin query string es la home del comercio de la ruta, que no restringe nada');
+
+        $ids = $this->idsDe($this->pedir($this->conOtroComercio($ruta))->json('articles.data'));
+
+        $this->assertNotEmpty($ids, 'el caso no es vacuo: la home devuelve articulos');
+        $this->assertNotContains($no_habilitado_ajeno->id, $ids,
+            'el no habilitado del comercio que se lista no sale, restrinja o no el comercio de la ruta');
     }
 
     /**

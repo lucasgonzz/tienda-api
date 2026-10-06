@@ -118,14 +118,15 @@ class ComercioDelPedidoTest extends TestCase
         $this->assertSame($pedidos_del_real, Order::where('user_id', $this->comercio->id)->count(),
             'no se creo ningun pedido en el comercio real con un articulo que su lista no habilita');
 
-        $this->assertContains($respuesta->getStatusCode(), [201, 422], 'o se crea en el comercio del carrito o se corta');
+        /* EXACTO: el pedido se crea (201) en el comercio del carrito. Con un `[201, 422]` laxo, un 422 por
+           cualquier otro motivo habria dejado sin ejecutar la mitad del caso (el comercio y la numeracion
+           del pedido) y el test seguiria verde. */
+        $this->assertSame(201, $respuesta->getStatusCode(), 'el pedido se crea en el comercio del carrito');
 
-        if ($respuesta->getStatusCode() == 201) {
-            $pedido = Order::find($respuesta->json('order_id'));
+        $pedido = Order::find($respuesta->json('order_id'));
 
-            $this->assertSame((int) $ajeno->id, (int) $pedido->user_id, 'el pedido nace en el comercio del carrito');
-            $this->assertSame(1, (int) $pedido->num, 'y con la numeracion de ese comercio, no la del payload (41 + 1)');
-        }
+        $this->assertSame((int) $ajeno->id, (int) $pedido->user_id, 'el pedido nace en el comercio del carrito');
+        $this->assertSame(1, (int) $pedido->num, 'y con la numeracion de ese comercio, no la del payload (41 + 1)');
     }
 
     /**
