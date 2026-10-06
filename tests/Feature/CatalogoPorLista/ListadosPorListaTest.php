@@ -213,6 +213,84 @@ class ListadosPorListaTest extends TestCase
     }
 
     /**
+     * 🔴 CASO 1 DEL PRECIO —la extension de rangos por cantidad vendida—: el catalogo SIGUE a la lista del
+     * comprador aunque el precio no salga de ella (T2 de la revision independiente).
+     *
+     * Con la extension, `checkPriceTypes()` resuelve el precio por los rangos de la categoria y no mira la
+     * lista del comprador. El plan lo dejo dicho —"el catalogo depende de la lista del comprador y es
+     * independiente de como se calcule el precio"— y no habia un solo caso que lo fijara: si alguien
+     * condicionara la restriccion a "no usa rangos", el mayorista de un comercio con rangos veria todo el
+     * catalogo sin que ningun test se pusiera rojo.
+     */
+    public function test_con_la_extension_de_rangos_el_catalogo_sigue_a_la_lista_del_comprador()
+    {
+        $this->activarExtensionDeRangos();
+
+        $this->comoComprador($this->compradorConLista($this->comercio, $this->mayorista->id));
+
+        $solo_el_habilitado = [$this->habilitado->id];
+
+        $this->assertSame($solo_el_habilitado, $this->idsDeLaHome(), 'mayorista: home');
+        $this->assertSame($solo_el_habilitado, $this->idsDeLaBusqueda('Catalogo'), 'mayorista: busqueda');
+        $this->assertSame($solo_el_habilitado, $this->idsDeLaCategoria($this->herramientas->id), 'mayorista: categoria');
+        $this->assertSame($solo_el_habilitado, $this->idsDeLosNombres(), 'mayorista: nombres');
+
+        /* Y el visitante y el minorista, con la misma extension, ven todo: su lista no es restringida. */
+        $this->comoVisitante();
+
+        $this->assertSame($this->losTres(), $this->idsDeLaHome(), 'visitante: home');
+        $this->assertSame($this->losTres(), $this->idsDeLaBusqueda('Catalogo'), 'visitante: busqueda');
+        $this->assertSame($this->losTres(), $this->idsDeLosNombres(), 'visitante: nombres');
+
+        /* Contraprueba: la extension esta de verdad prendida (si no, este caso probaria el camino comun). */
+        $this->assertTrue(
+            \App\Http\Controllers\Helpers\CommerceHelper::hasExtencion('lista_de_precios_por_rango_de_cantidad_vendida', null, $this->comercio->id)
+        );
+    }
+
+    /**
+     * 🔴 El VISITANTE de una tienda que exige registro para ver precios (`register_to_buy` con
+     * `only_registered`) no recibe precios, pero el catalogo sigue a la lista (T2 de la revision).
+     *
+     * Son dos reglas independientes que conviven: el ocultamiento de precios (`esconder_precios_al_anonimo`)
+     * y la restriccion por lista. Con la lista mas alta restringida el anonimo ve solo lo habilitado, SIN
+     * precios; con la lista mas alta sin restringir, ve todo, SIN precios. Ninguna de las dos le abre la
+     * puerta a la otra: ni la restriccion devuelve precios, ni el ocultamiento devuelve el catalogo
+     * completo.
+     */
+    public function test_el_visitante_sin_precios_ve_el_catalogo_de_su_lista_y_ningun_precio()
+    {
+        $this->exigirRegistroParaVerPrecios();
+
+        $this->comoVisitante();
+
+        /* La lista mas alta (la Minorista, la del visitante) sin restringir: ve todo, sin precios. */
+        $articulos = (array) $this->home()->json('articles.data');
+
+        $this->assertSame($this->losTres(), $this->idsDe($articulos), 'sin restriccion: ve los tres');
+        $this->assertSame([], $this->conPrecio($articulos), 'y ninguno trae precio');
+
+        /* Restringida y con un solo habilitado: ve solo ese, y tampoco trae precio. */
+        $this->restringirLista($this->minorista);
+
+        DB::table('article_price_type')
+            ->where('article_id', $this->habilitado->id)
+            ->where('price_type_id', $this->minorista->id)
+            ->update(['visible_en_tienda' => 1]);
+
+        $articulos = (array) $this->home()->json('articles.data');
+
+        $this->assertSame([$this->habilitado->id], $this->idsDe($articulos), 'con restriccion: solo el habilitado');
+        $this->assertSame([], $this->conPrecio($articulos), 'y sigue sin precio');
+        $this->assertSame([$this->habilitado->id], $this->idsDeLosNombres(), 'nombres del buscador');
+
+        /* El mayorista logueado de esa misma tienda si recibe precio (de SU lista) y ve lo suyo. */
+        $this->comoComprador($this->compradorConLista($this->comercio, $this->mayorista->id));
+
+        $this->assertEquals(1000, $this->precioEnLaHome($this->habilitado->id), 'el mayorista ve el precio de su lista');
+    }
+
+    /**
      * 🔴 Que la lista del articulo sea restringida NO viaja en el payload (INFO de la revision
      * independiente): `article.price_types[]` serializaba `catalogo_restringido_en_tienda` para todos, el
      * visitante incluido, y revelaba cual de las listas es la restringida. El SPA no lo lee; el helper lo
@@ -266,6 +344,25 @@ class ListadosPorListaTest extends TestCase
     private function idsDeLaHome()
     {
         return $this->idsDe($this->home()->json('articles.data'));
+    }
+
+    /**
+     * De estos articulos serializados, los que traen algun precio (`final_price` o `price`).
+     *
+     * @param  array  $articulos
+     * @return array  Los ids que traen precio.
+     */
+    private function conPrecio(array $articulos)
+    {
+        $ids = [];
+
+        foreach ($articulos as $articulo) {
+            if (!is_null($articulo['final_price']) || !is_null($articulo['price'])) {
+                $ids[] = (int) $articulo['id'];
+            }
+        }
+
+        return $this->ordenados($ids);
     }
 
     private function precioEnLaHome($article_id)

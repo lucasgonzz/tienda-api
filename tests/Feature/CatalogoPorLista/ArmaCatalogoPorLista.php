@@ -231,6 +231,51 @@ trait ArmaCatalogoPorLista
     }
 
     /**
+     * Prende la extension `lista_de_precios_por_rango_de_cantidad_vendida` del comercio (el caso 1 de
+     * `checkPriceTypes()`: el precio sale de los rangos por categoria y no de la lista del comprador).
+     * Las tablas son `extencion_empresas` y `extencion_empresa_user`. Todo dentro de la transaccion del
+     * caso.
+     *
+     * @return void
+     */
+    protected function activarExtensionDeRangos()
+    {
+        $slug = 'lista_de_precios_por_rango_de_cantidad_vendida';
+
+        $extencion_id = DB::table('extencion_empresas')->where('slug', $slug)->value('id');
+
+        if (is_null($extencion_id)) {
+            $extencion_id = DB::table('extencion_empresas')->insertGetId([
+                'name' => 'Lista de precios por rango de cantidad vendida',
+                'slug' => $slug,
+            ]);
+        }
+
+        DB::table('extencion_empresa_user')->insert([
+            'extencion_empresa_id' => $extencion_id,
+            'user_id'              => $this->comercio->id,
+        ]);
+    }
+
+    /**
+     * La tienda exige registro para ver precios (`register_to_buy` con el tipo `only_registered`): el
+     * visitante sin login no recibe ningun precio.
+     *
+     * @return void
+     */
+    protected function exigirRegistroParaVerPrecios()
+    {
+        $tipo_id = DB::table('online_price_types')->where('slug', 'only_registered')->value('id');
+
+        $this->assertNotNull($tipo_id, 'La base del slot tiene que tener el catalogo online_price_types sembrado.');
+
+        OnlineConfiguration::where('user_id', $this->comercio->id)->update([
+            'register_to_buy'      => 1,
+            'online_price_type_id' => $tipo_id,
+        ]);
+    }
+
+    /**
      * Un articulo publicado del comercio, con el centinela en la columna `final_price`.
      *
      * @param  \App\User  $comercio

@@ -6,9 +6,11 @@ use App\Article;
 use App\Buyer;
 use App\Cart;
 use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
+use App\Order;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -167,6 +169,77 @@ class PedidoPorListaTest extends TestCase
 
         $respuesta->assertStatus(201);
         $this->assertSame(3, DB::table('article_order')->where('order_id', (int) $respuesta->json('order_id'))->count());
+    }
+
+    /**
+     * 🔴 FIJA EL COMPORTAMIENTO ACTUAL de un pedido cargado por un VENDEDOR, que NO es necesariamente el
+     * que se quiere: es una DECISION PENDIENTE DE LUCAS y este caso no la toma (T2 de la revision
+     * independiente).
+     *
+     * Un vendedor (`buyers.seller_id` no nulo) carga el pedido de un cliente de SU comercio:
+     * `OrderController@resolverBuyerIdDelPedido` le atribuye el pedido al `buyer_id` que manda el payload.
+     * Pero el catalogo y la red de seguridad se evaluan con la lista de la SESION —la del vendedor—, no con
+     * la del comprador al que se le carga el pedido; es coherente con el precio, que tambien sale de la
+     * sesion. Consecuencia: el vendedor arma un carrito con un articulo que la lista del cliente
+     * mayorista NO habilita, el carrito no lo descarta, la red no lo frena y el pedido se crea a nombre del
+     * mayorista con ese articulo.
+     *
+     * Si Lucas decide que el pedido de un vendedor tiene que respetar la lista del cliente al que se le
+     * carga, este caso es el que hay que cambiar a proposito.
+     */
+    public function test_un_pedido_cargado_por_un_vendedor_usa_la_lista_de_la_sesion_del_vendedor()
+    {
+        $mayorista = $this->compradorConLista($this->comercio, $this->mayorista->id);
+
+        $vendedor = Buyer::create([
+            'name'      => 'Vendedor Catalogo Test',
+            'email'     => 'catalogo-vendedor-'.Str::random(10).'@test.local',
+            'password'  => bcrypt('secreto-catalogo'),
+            'user_id'   => $this->comercio->id,
+            'seller_id' => 7,
+        ]);
+
+        $this->comoComprador($vendedor);
+
+        /* El vendedor arma el carrito con un articulo que la lista del CLIENTE no habilita. */
+        $carrito = $this->postJson('/api/carts', [
+            'commerce_id' => $this->comercio->id,
+            'cart'        => [
+                'articles'             => [[
+                    'id'          => $this->sin_marcar->id,
+                    'user_id'     => $this->comercio->id,
+                    'name'        => $this->sin_marcar->name,
+                    'final_price' => 2500,
+                    'cost'        => null,
+                    'amount'      => 1,
+                    'pivot'       => ['amount' => 1, 'notes' => null, 'variant_id' => null],
+                ]],
+                'promociones_vinoteca' => [],
+            ],
+        ]);
+
+        $carrito->assertStatus(201);
+        $this->assertArrayNotHasKey('articulos_no_disponibles', $carrito->json(),
+            'el carrito evalua la lista de la sesion del vendedor (position: la Minorista, sin restriccion)');
+
+        /* Y lo confirma a nombre del cliente mayorista. */
+        $respuesta = $this->postJson('/api/orders', [
+            'cart_id'     => (int) $carrito->json('cart.id'),
+            'commerce_id' => $this->comercio->id,
+            'buyer_id'    => $mayorista->id,
+            'address'     => 'San Martin 100',
+        ]);
+
+        $respuesta->assertStatus(201);
+
+        $pedido = Order::find($respuesta->json('order_id'));
+
+        $this->assertSame((int) $mayorista->id, (int) $pedido->buyer_id, 'el pedido es del cliente al que se le carga');
+        $this->assertSame(
+            [$this->sin_marcar->id],
+            DB::table('article_order')->where('order_id', $pedido->id)->pluck('article_id')->map(function ($id) { return (int) $id; })->all(),
+            'con un articulo que la lista de ese cliente no habilita: decision pendiente de Lucas'
+        );
     }
 
     /**

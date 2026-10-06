@@ -4,7 +4,6 @@ namespace Tests\Feature\CatalogoPorLista;
 
 use App\Article;
 use App\Buyer;
-use App\OnlineConfiguration;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -300,7 +299,7 @@ class CostoDelCatalogoPorListaTest extends TestCase
      */
     public function test_con_la_extension_de_rangos_los_listados_pagan_una_consulta_de_listas()
     {
-        $this->activarLaExtensionDeRangos();
+        $this->activarExtensionDeRangos();
 
         $this->comoVisitante();
 
@@ -423,48 +422,6 @@ class CostoDelCatalogoPorListaTest extends TestCase
         $this->app['auth']->guard('buyer')->forgetUser();
 
         return $this->json('GET', $uri)->assertStatus(200);
-    }
-
-    /**
-     * Prende la extension `lista_de_precios_por_rango_de_cantidad_vendida` del comercio (las tablas son
-     * `extencion_empresas` y `extencion_empresa_user`). Todo dentro de la transaccion del caso.
-     *
-     * @return void
-     */
-    private function activarLaExtensionDeRangos()
-    {
-        $slug = 'lista_de_precios_por_rango_de_cantidad_vendida';
-
-        $extencion_id = DB::table('extencion_empresas')->where('slug', $slug)->value('id');
-
-        if (is_null($extencion_id)) {
-            $extencion_id = DB::table('extencion_empresas')->insertGetId([
-                'name' => 'Lista de precios por rango de cantidad vendida',
-                'slug' => $slug,
-            ]);
-        }
-
-        DB::table('extencion_empresa_user')->insert([
-            'extencion_empresa_id' => $extencion_id,
-            'user_id'              => $this->comercio->id,
-        ]);
-    }
-
-    /**
-     * La tienda exige registro para ver precios: el visitante no los recibe.
-     *
-     * @return void
-     */
-    private function exigirRegistroParaVerPrecios()
-    {
-        $tipo_id = DB::table('online_price_types')->where('slug', 'only_registered')->value('id');
-
-        $this->assertNotNull($tipo_id, 'La base del slot tiene que tener el catalogo online_price_types sembrado.');
-
-        OnlineConfiguration::where('user_id', $this->comercio->id)->update([
-            'register_to_buy'      => 1,
-            'online_price_type_id' => $tipo_id,
-        ]);
     }
 
     /** @return \Illuminate\Testing\TestResponse */
