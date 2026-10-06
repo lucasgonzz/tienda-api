@@ -203,19 +203,13 @@ class ArticleController extends Controller {
      *
      * Catalogo por lista (mision catalogo-por-lista-tienda): un favorito que el comprador ya no
      * puede ver por su lista de precios no se lista. La ruta no trae `commerce_id`: el comercio es
-     * el del comprador de la SESION (`buyers.user_id`), nunca uno de la URL. Esta ruta no pasa por
-     * `checkOnline()` y no se le suma: se agrega SOLO la restriccion de la lista.
+     * el del comprador de la SESION (`buyers.user_id`), nunca uno de la URL (ver
+     * `CatalogoPorListaHelper::comercio_del_comprador()`). Esta ruta no pasa por `checkOnline()` y no
+     * se le suma: se agrega SOLO la restriccion de la lista.
      */
     function favorites() {
-        $buyer = Auth::guard('buyer')->user();
-
-        /* 0 y no null: con null el scope caeria al `commerce_id` del request, o sea a uno que
-           podria venir en la query string. Un comprador viejo sin `user_id` queda con el comercio 0,
-           que no tiene listas: vale solo la lista de su cliente del ERP, si la tiene. */
-        $commerce_id = (!is_null($buyer) && !is_null($buyer->user_id)) ? $buyer->user_id : 0;
-
         $articles = Article::whereLikedBy($this->buyerId())
-                            ->visibleParaLaLista($commerce_id)
+                            ->visibleParaLaLista(CatalogoPorListaHelper::comercio_del_comprador())
                             ->withAll()
                             ->with(['questions' => function($query) {
                                 $query->whereHas('answer')->with('answer');
@@ -226,13 +220,38 @@ class ArticleController extends Controller {
         return response()->json(['articles' => $articles], 200);
     }
 
+    /**
+     * Marca o desmarca un favorito del comprador logueado (la ruta va en `auth:buyer`).
+     *
+     * Catalogo por lista (mision catalogo-por-lista-tienda, revision independiente B1): devolvia
+     * CUALQUIER articulo por id, asi que un mayorista restringido, enumerando ids, recibia nombre,
+     * slug, precios, imagenes y preguntas de articulos que su lista no habilita —y podia marcarlos—.
+     * Ahora, como `show()` y `favorites()`, un articulo que su lista no le deja ver responde IGUAL que
+     * uno que no existe: `{"article": null}` con 200 y sin tocar nada. El comercio es el del comprador
+     * de la SESION, no uno de la URL (ver `CatalogoPorListaHelper::comercio_del_comprador()`).
+     *
+     * ⚠️ Un id que no existe tambien responde `{"article": null}`: antes era un 500 sobre null.
+     *
+     * 🔴 HALLAZGO APARTE, y no se toca aca: hoy este metodo NO lo alcanza ningun request. La ruta
+     * `GET /articles/favorite/{article_id}` esta registrada DESPUES de `GET /articles/{slug}/{commerce_id}`
+     * (routes/api.php), y Laravel atiende por orden de registro: `/articles/favorite/12` lo contesta
+     * `show('favorite', 12)` con `{"article": null}`, y el corazon de la ficha (NameHeart.vue) no marca
+     * nada en el servidor. Mover la ruta arregla los favoritos y cambia el comportamiento de todas las
+     * tiendas, asi que es decision de Lucas; el filtro de arriba ya esta puesto para el dia que se haga.
+     */
     function favorite($id) {
         $article = Article::where('id', $id)
+                            ->visibleParaLaLista(CatalogoPorListaHelper::comercio_del_comprador())
                             ->with('images')
                             ->with(['questions' => function($query) {
                                 $query->whereHas('answer')->with('answer');
                             }])
                             ->first();
+
+        if (is_null($article)) {
+            return response()->json(['article' => null], 200);
+        }
+
         $buyer_id = $this->buyerId();
         if (!$article->liked($buyer_id)) {
             $article->like($buyer_id);

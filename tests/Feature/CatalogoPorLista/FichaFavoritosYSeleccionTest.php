@@ -3,6 +3,7 @@
 namespace Tests\Feature\CatalogoPorLista;
 
 use App\Article;
+use App\Http\Controllers\ArticleController;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
@@ -32,6 +33,7 @@ class FichaFavoritosYSeleccionTest extends TestCase
         /* Por si un caso de favoritos murio antes de su `finally`. Es TEMPORARY: no le hace commit a
            la transaccion del trait ni deja nada en la base compartida del slot. */
         DB::statement('DROP TEMPORARY TABLE IF EXISTS `likeable_likes`');
+        DB::statement('DROP TEMPORARY TABLE IF EXISTS `likeable_like_counters`');
 
         $this->olvidarLasMemorias();
 
@@ -153,6 +155,82 @@ class FichaFavoritosYSeleccionTest extends TestCase
             );
         } finally {
             DB::statement('DROP TEMPORARY TABLE IF EXISTS `likeable_likes`');
+        }
+    }
+
+    /**
+     * 🔴 `ArticleController@favorite` —marcar o desmarcar un favorito— devolvia CUALQUIER articulo por
+     * id (hallazgo B1 de la revision independiente): un mayorista restringido, enumerando ids, recibia
+     * el nombre, el slug, las columnas de precio, las imagenes y las preguntas de articulos que su
+     * lista no habilita, y podia marcarlos como favoritos. Ahora responde como la ficha: `{"article":
+     * null}` con 200 y sin tocar nada, igual que un id que no existe.
+     *
+     * ⚠️ Se invoca al controlador DIRECTO y no por HTTP a proposito: la ruta `GET /articles/favorite/{id}`
+     * esta registrada despues de `GET /articles/{slug}/{commerce_id}`, que la sombrea, y hoy
+     * `/articles/favorite/12` lo contesta `show('favorite', 12)` (hallazgo aparte, va al informe). Por
+     * HTTP este caso daria verde sin pasar nunca por `favorite()`. El dia que se arregle el orden de las
+     * rutas, el filtro ya esta.
+     *
+     * Con contracara: el habilitado se marca y se desmarca como siempre, y el minorista (lista sin
+     * restriccion) marca cualquiera. `likeable_likes` TEMPORARY, por lo que explica el caso de arriba.
+     */
+    public function test_marcar_como_favorito_un_no_habilitado_responde_null_y_no_lo_marca()
+    {
+        DB::statement('CREATE TEMPORARY TABLE `likeable_likes` (
+            `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            `likeable_id` varchar(36) NOT NULL,
+            `likeable_type` varchar(255) NOT NULL,
+            `user_id` varchar(36) NOT NULL,
+            `created_at` timestamp NULL,
+            `updated_at` timestamp NULL
+        )');
+
+        /* `like()` tambien incrementa un contador en `likeable_like_counters` (la otra tabla del paquete,
+           que tampoco existe en la base del slot). */
+        DB::statement('CREATE TEMPORARY TABLE `likeable_like_counters` (
+            `id` bigint unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            `likeable_id` varchar(36) NOT NULL,
+            `likeable_type` varchar(255) NOT NULL,
+            `count` bigint unsigned NOT NULL DEFAULT 0
+        )');
+
+        try {
+            $controlador = $this->app->make(ArticleController::class);
+
+            $this->comoComprador($this->compradorConLista($this->comercio, $this->mayorista->id));
+
+            foreach ([$this->sin_marcar, $this->deshabilitado] as $no_habilitado) {
+                $respuesta = $controlador->favorite($no_habilitado->id);
+
+                $this->assertSame(200, $respuesta->getStatusCode());
+                $this->assertSame(['article' => null], $respuesta->getData(true), $no_habilitado->name);
+            }
+
+            $this->assertSame(0, DB::table('likeable_likes')->count(), 'no se marco ningun favorito');
+
+            /* Un id que no existe responde lo mismo: desde afuera no se distingue de un no habilitado. */
+            $this->assertSame(['article' => null], $controlador->favorite(2147483000)->getData(true));
+
+            /* El habilitado se marca y se desmarca, y vuelve con sus imagenes y preguntas como siempre. */
+            $marcado = $controlador->favorite($this->habilitado->id)->getData(true);
+            $this->assertSame($this->habilitado->id, (int) $marcado['article']['id']);
+            $this->assertTrue($marcado['article']['is_favorite']);
+            $this->assertIsArray($marcado['article']['images'], 'sigue trayendo las imagenes');
+            $this->assertSame(1, DB::table('likeable_likes')->count());
+
+            $desmarcado = $controlador->favorite($this->habilitado->id)->getData(true);
+            $this->assertFalse($desmarcado['article']['is_favorite']);
+            $this->assertSame(0, DB::table('likeable_likes')->count());
+
+            /* El minorista no tiene restriccion: marca cualquiera. */
+            $this->comoComprador($this->compradorConLista($this->comercio, $this->minorista->id));
+
+            $cualquiera = $controlador->favorite($this->deshabilitado->id)->getData(true);
+            $this->assertSame($this->deshabilitado->id, (int) $cualquiera['article']['id']);
+            $this->assertTrue($cualquiera['article']['is_favorite']);
+        } finally {
+            DB::statement('DROP TEMPORARY TABLE IF EXISTS `likeable_likes`');
+            DB::statement('DROP TEMPORARY TABLE IF EXISTS `likeable_like_counters`');
         }
     }
 

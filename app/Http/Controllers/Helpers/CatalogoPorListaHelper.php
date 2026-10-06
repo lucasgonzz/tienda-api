@@ -231,6 +231,24 @@ class CatalogoPorListaHelper
     }
 
     /**
+     * El comercio del comprador de la SESION (`buyers.user_id`), para las rutas que no traen el
+     * comercio en la URL y donde el unico comercio confiable es el de quien pregunta: los favoritos.
+     *
+     * 0 y no null cuando el comprador no tiene `user_id` (un comprador viejo, o sin sesion): con null
+     * `restringir()` caeria al `commerce_id` del request, o sea a uno que podria venir en la query
+     * string. El comercio 0 no tiene listas, asi que ese comprador queda con la lista de su cliente
+     * del ERP, si la tiene.
+     *
+     * @return int|string
+     */
+    public static function comercio_del_comprador()
+    {
+        $buyer = auth('buyer')->user();
+
+        return (!is_null($buyer) && !is_null($buyer->user_id)) ? $buyer->user_id : 0;
+    }
+
+    /**
      * La lista efectiva del comprador de esta sesion en este comercio, o null.
      *
      * @param  int|string|null  $commerce_id
