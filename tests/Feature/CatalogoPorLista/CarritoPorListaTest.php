@@ -432,6 +432,70 @@ class CarritoPorListaTest extends TestCase
     }
 
     /**
+     * 🔴 La normalizacion de ids de B5 vale para TODOS, tambien para quien no usa la funcion (E-2 de la
+     * revision de cierre): sin lista restringida (el visitante y el minorista, o sea el 100% de los
+     * clientes de hoy) los ids que no son enteros se descartan en silencio, y `12`, `12.0` y `"12"` se
+     * guardan como el mismo entero. Es un CAMBIO DE COMPORTAMIENTO para todas las tiendas y tiene que
+     * quedar fijado, no solo para el caso del mayorista.
+     *
+     * Antes de B5, con una lista sin restriccion, `true` se guardaba como el articulo 1, `N + 0.5` como
+     * `N + 1`, `[N]` colgaba el articulo N (Eloquent acepta un array de ids en `attach()`) y `"Nabc"`
+     * reventaba la request con un 500.
+     *
+     * Los tres articulos validos van uno por cada forma de escribir su id (entero, `12.0` y `"12"`): se
+     * guardan los tres, una vez cada uno. Los otros cuatro ids no son enteros y no se guardan.
+     */
+    public function test_los_ids_que_no_son_enteros_se_descartan_en_silencio_tambien_sin_lista_restringida()
+    {
+        foreach (['visitante', 'minorista'] as $quien) {
+
+            if ($quien == 'minorista') {
+                $this->comoComprador($this->compradorConLista($this->comercio, $this->minorista->id));
+            } else {
+                $this->comoVisitante();
+            }
+
+            $valida = $this->linea($this->habilitado, 1, 1500);
+
+            $respuesta = $this->crearCarrito([
+                $valida,
+                array_merge($this->linea($this->sin_marcar, 1, 2500), ['id' => (float) $this->sin_marcar->id]),
+                array_merge($this->linea($this->deshabilitado, 1, 3500), ['id' => (string) $this->deshabilitado->id]),
+                array_merge($valida, ['id' => true]),
+                array_merge($valida, ['id' => $this->habilitado->id + 0.5]),
+                array_merge($valida, ['id' => $this->habilitado->id.'abc']),
+                array_merge($valida, ['id' => [$this->habilitado->id]]),
+            ]);
+
+            $respuesta->assertStatus(201);
+            $this->assertArrayNotHasKey('articulos_no_disponibles', $respuesta->json(), $quien.': no hay nada que avisar: sin restriccion nada se descarta por la lista');
+
+            $this->assertSame($this->losTres(), $this->idsGuardados((int) $respuesta->json('cart.id')),
+                $quien.': se guardan los tres articulos validos, una vez cada uno, y nada mas');
+        }
+    }
+
+    /**
+     * Un id que es un ARRAY no esquiva la lista del mayorista (E-2). Eloquent acepta un array de ids en
+     * `attach()`: `"id": [N]` se guardaba como el articulo N y, como no es numerico, el chequeo de la
+     * lista no lo miraba. Era una forma mas de colgar del carrito un articulo no habilitado, sin aviso.
+     */
+    public function test_un_id_que_es_un_array_no_esquiva_la_lista_del_mayorista()
+    {
+        $this->comoComprador($this->compradorConLista($this->comercio, $this->mayorista->id));
+
+        $respuesta = $this->crearCarrito([
+            $this->linea($this->habilitado, 1, 1000),
+            array_merge($this->linea($this->sin_marcar, 1, 2000), ['id' => [$this->sin_marcar->id]]),
+        ]);
+
+        $respuesta->assertStatus(201);
+        $this->assertArrayNotHasKey('articulos_no_disponibles', $respuesta->json(), 'no es un articulo: se descarta sin aviso');
+        $this->assertSame([$this->habilitado->id], $this->idsGuardados((int) $respuesta->json('cart.id')),
+            'el no habilitado no entra por la puerta del array');
+    }
+
+    /**
      * Un id numerico escrito como texto es el mismo id: se chequea y se guarda como entero. El no
      * habilitado que llega como `"2917"` se descarta igual que si llegara como `2917`, y vuelve en el
      * aviso con su id entero; el habilitado se guarda con su id entero.
