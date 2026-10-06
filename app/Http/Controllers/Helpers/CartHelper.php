@@ -115,8 +115,10 @@ class CartHelper {
      * puede ver por su lista de precios (mision catalogo-por-lista-tienda). La decision es de
      * `CatalogoPorListaHelper`; aca solo se sacan los ids del payload.
      *
-     * El comercio sale del CARRITO (`$cart->user_id`, lo escribio el servidor), nunca del payload:
-     * mismo criterio que `get_price()` y `attach_combos()`.
+     * El comercio es el del CARRITO (`$cart->user_id`): el que se fijo al crearlo —en `store` viene
+     * del `commerce_id` de ese POST, una sola vez— y desde ahi no se vuelve a leer del payload, ni en
+     * el PUT ni en el pedido (que nace en ese mismo comercio, ver `OrderController@store`). Mismo
+     * criterio que `get_price()` y `attach_combos()`.
      *
      * Sin lista restringida no hace ninguna query y devuelve vacio.
      *

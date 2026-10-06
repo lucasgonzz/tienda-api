@@ -175,6 +175,31 @@ class OrderController extends Controller
             }
 
             /*
+             * 🔴 El comercio del pedido es el del CARRITO guardado (`carts.user_id`, el con el que se
+             * creo), NUNCA el `commerce_id` del payload de este POST. Sirve para el `user_id` y para el
+             * `num` del pedido, y es el mismo que usa la red de seguridad de abajo.
+             *
+             * Si el pedido naciera en el comercio del payload mientras la red evalua el del carrito, la
+             * red se esquivaba en dos pasos (mision catalogo-por-lista-tienda, revision independiente
+             * M2): guardar el carrito con el `commerce_id` de otro comercio sin listas —ahi nada se
+             * descarta— y pedir el pedido con el comercio real. Cuando la restriccion sale de la
+             * `position` (visitante, o logueado sin cliente del ERP), el pedido se creaba en el ERP real
+             * con articulos que la lista no habilita.
+             *
+             * En el flujo del SPA el carrito y el payload son del mismo comercio, asi que esto no cambia
+             * nada. Si no coinciden es un POST armado a mano y queda en el log.
+             */
+            $commerce_id = $cart->user_id;
+
+            if (!is_null($request->commerce_id) && (int) $request->commerce_id !== (int) $commerce_id) {
+                Log::warning('OrderController@store: el commerce_id del payload no es el del carrito, el pedido se crea en el del carrito', [
+                    'cart_id'              => $cart->id,
+                    'comercio_del_carrito' => $commerce_id,
+                    'comercio_del_payload' => $request->commerce_id,
+                ]);
+            }
+
+            /*
              * Catalogo por lista (mision catalogo-por-lista-tienda, 5/10/2026): un pedido no puede
              * llevar articulos que el comprador de la SESION no puede ver por su lista de precios.
              *
@@ -277,11 +302,11 @@ class OrderController extends Controller
 
             Log::info('Fecha entrega carrito: '.$cart->fecha_entrega);
         	$order = Order::create(array_merge([
-                'num'                       => $this->num('orders', $request->commerce_id),
+                'num'                       => $this->num('orders', $commerce_id),
                 'buyer_id'                  => $buyer_id,
                 'seller_id'                 => $request->seller_id ? $request->seller_id : null,
         		// 'buyer_id'                  => $buyer_id,
-        		'user_id'                   => $request->commerce_id,
+        		'user_id'                   => $commerce_id,
                 // 'status'                    => 'unconfirmed',
                 'payment_id'                => $cart->payment_id,
                 'payment_card_info_id'      => $cart->payment_card_info_id,

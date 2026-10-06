@@ -348,8 +348,10 @@ class CatalogoPorListaHelper
      * el SPA le muestra al comprador en el aviso.
      *
      * @param  array  $ids
-     * @param  int|string|null  $commerce_id  Comercio del CARRITO (lo escribio el servidor), nunca
-     *                                        el del payload.
+     * @param  int|string|null  $commerce_id  El comercio con el que se creo el CARRITO
+     *                                        (`carts.user_id`): queda fijo desde ahi y el pedido nace
+     *                                        en ese mismo comercio. Nunca el `commerce_id` que venga
+     *                                        en el payload de un pedido o de un PUT.
      * @return array<int, array{id: int, name: string}>  En el orden de los ids, sin repetidos.
      */
     public static function no_visibles(array $ids, $commerce_id)
@@ -411,6 +413,12 @@ class CatalogoPorListaHelper
      * lista, el de un visitante que despues se logueo como mayorista, o un POST armado a mano.
      *
      * Sin lista restringida devuelve vacio SIN leer las lineas: la pregunta por la lista va primero.
+     *
+     * 🔴 Evalua contra `$cart->user_id` —el comercio con el que se creo el carrito— y no contra ningun
+     * comercio que venga en el payload del pedido. Por eso `OrderController@store` crea el pedido en ESE
+     * mismo comercio (`user_id` y `num`): si el pedido naciera en el del payload mientras la red mira el
+     * del carrito, la red se esquivaba guardando el carrito bajo otro comercio sin listas (hallazgo M2
+     * de la revision independiente, fijado por `ComercioDelPedidoTest`).
      *
      * @param  \App\Cart  $cart
      * @return array<int, array{id: int, name: string}>
