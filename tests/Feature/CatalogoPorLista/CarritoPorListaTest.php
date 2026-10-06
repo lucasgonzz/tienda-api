@@ -3,6 +3,7 @@
 namespace Tests\Feature\CatalogoPorLista;
 
 use App\Article;
+use App\Combo;
 use App\PromocionVinoteca;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
@@ -190,6 +191,59 @@ class CarritoPorListaTest extends TestCase
         $cart_id = (int) $respuesta->json('cart.id');
         $this->assertSame([], $this->idsGuardados($cart_id));
         $this->assertEquals(700, DB::table('carts')->where('id', $cart_id)->value('total'));
+    }
+
+    /**
+     * 🔴 Con un COMBO en el payload y todo lo demas descartado, el carrito SI se crea (E-4 de la revision de
+     * cierre; hasta ahora solo estaba el caso de la promocion de vinoteca).
+     *
+     * B6 no crea el carrito cuando la lista descarta todo lo que se pedia, pero solo si el payload no trae
+     * promociones de vinoteca ni combos: un combo no es un `Article` y no lo decide la lista, asi que el
+     * comprador tiene algo que guardar. La guarda mira lo que el payload TRAE (`se_quedaria_sin_lineas()`).
+     * Es de contracara del cambio de B6: si alguien lo "simplificara" a "sin articulos no hay carrito", este
+     * caso se pone rojo (demostrado con una mutacion en una copia del arbol que ignora los combos).
+     */
+    public function test_un_post_con_un_combo_y_solo_no_habilitados_crea_el_carrito_con_el_combo()
+    {
+        $this->comoComprador($this->compradorConLista($this->comercio, $this->mayorista->id));
+
+        $combo = Combo::create([
+            'num'     => random_int(100000, 999999),
+            'name'    => 'Combo Catalogo Test',
+            'user_id' => $this->comercio->id,
+            'price'   => 900,
+            'cost'    => 0,
+            'online'  => 1,
+        ]);
+
+        $respuesta = $this->postJson('/api/carts', [
+            'commerce_id' => $this->comercio->id,
+            'cart'        => [
+                'articles'             => [$this->linea($this->sin_marcar, 1, 2000)],
+                'promociones_vinoteca' => [],
+                'combos'               => [[
+                    'id'          => $combo->id,
+                    'user_id'     => $this->comercio->id,
+                    'name'        => $combo->name,
+                    'is_combo'    => true,
+                    'final_price' => 900,
+                    'price'       => 900,
+                    'cost'        => 0,
+                    'pivot'       => ['amount' => 1, 'notes' => null],
+                ]],
+            ],
+        ]);
+
+        $respuesta->assertStatus(201);
+        $this->assertNotNull($respuesta->json('cart'), 'el carrito se crea: tiene el combo');
+        $this->assertSame([['id' => $this->sin_marcar->id, 'name' => $this->sin_marcar->name]], $respuesta->json('articulos_no_disponibles'));
+
+        $cart_id = (int) $respuesta->json('cart.id');
+
+        $this->assertSame([], $this->idsGuardados($cart_id), 'ninguna linea de articulo');
+        $this->assertSame([(int) $combo->id], DB::table('cart_combo')->where('cart_id', $cart_id)->pluck('combo_id')->map(function ($id) { return (int) $id; })->all(),
+            'el combo quedo colgado del carrito');
+        $this->assertEquals(900, DB::table('carts')->where('id', $cart_id)->value('total'));
     }
 
     /**
