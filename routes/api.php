@@ -423,6 +423,21 @@ Route::get('/credit-accounts', 'CurrentAcountController@getCreditAccounts');
 Route::get('/current-acount/sale-pdf-token/{sale_id}', 'CurrentAcountController@salePdfToken');
 Route::get('/current-acount/{credit_account_id}/{cantidad_movimientos}', 'CurrentAcountController@getMovements');
 
+// Token del link de los PDF de cuenta corriente que abre el comprador (mision pdf-de-venta-publico,
+// 10/10/2026): el estado de cuenta y el comprobante de un pago o una nota de credito. empresa-api
+// deja de servirlos sin sesion ni token, y el comprador no tiene sesion de empresa. Insertan o
+// reusan la fila de `pdf_links` (base compartida; la tabla la crea empresa-api) y devuelven
+// {token}, o {token: null} si la base todavia no la tiene. Mismo guard en el controller que las dos
+// de arriba, y afuera del grupo auth:buyer como ellas: 403 sin comprador (no el 401 del grupo), y
+// 404 si el recurso no es suyo.
+//
+// Tres segmentos despues de `current-acount` A PROPOSITO: con dos, getMovements (justo arriba, sin
+// `where`) se las comeria, porque se registra antes.
+Route::get('/current-acount/pdf-token/credit-account/{credit_account_id}', 'CurrentAcountController@creditAccountPdfToken')
+	->where('credit_account_id', '[0-9]+');
+Route::get('/current-acount/pdf-token/movement/{current_acount_id}', 'CurrentAcountController@currentAcountPdfToken')
+	->where('current_acount_id', '[0-9]+');
+
 // Tendencias de busqueda: por diseño muestra terminos de otros visitantes, pero solo devuelve
 // articulos, nunca los terminos. Es una vitrina, no un dato de cuenta.
 Route::get('/last-searchs/for-search-page/{commerce_id}',
