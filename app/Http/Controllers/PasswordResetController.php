@@ -73,20 +73,40 @@ class PasswordResetController extends Controller
         return response()->json(['email_send' => true], 200);
     }
 
+    /**
+     * Segundo paso: ¿el código que escribió el comprador es el que se le mandó?
+     *
+     * @param  Request  $request  email, commerce_id, verification_code
+     * @return \Illuminate\Http\JsonResponse
+     */
     function checkVerificationCode(Request $request) {
         $buyer = Buyer::where('email', $request->email)
                         ->where('user_id', $request->commerce_id)
                         ->first();
-        if ($buyer->verification_code == $request->verification_code) {
+        if ($this->codigo_vigente($buyer, $request->verification_code)) {
             return response()->json(['verified' => true], 200);
         }
         return response()->json(['verified' => false], 200);
     }
 
+    /**
+     * Último paso: la contraseña nueva. Se guarda solo con el código vigente de ese comprador, el mismo
+     * que pasó el segundo paso (la pantalla lo vuelve a mandar junto con la contraseña: siempre lo hizo,
+     * también la versión 1.1.0). Sin código, o con uno que no es, responde 422 y no cambia nada.
+     *
+     * @param  Request  $request  email, commerce_id, verification_code, password
+     * @return \Illuminate\Http\JsonResponse
+     */
     function updatePassword(Request $request) {
         $buyer = Buyer::where('email', $request->email)
                         ->where('user_id', $request->commerce_id)
                         ->first();
+        if (!$this->codigo_vigente($buyer, $request->verification_code) || empty($request->password)) {
+            return response()->json([
+                'password_updated' => false,
+                'message'          => 'El código venció o no es correcto. Pedí uno nuevo.',
+            ], 422);
+        }
         $buyer->password = bcrypt($request->password);
         $buyer->verification_code = null;
         $buyer->save();
@@ -94,6 +114,22 @@ class PasswordResetController extends Controller
         if (Auth::guard('buyer')->attempt(['email' => $request->email, 'user_id' => $request->commerce_id, 'password' => $request->password], false)) {
             return response()->json(['password_updated' => true], 200);
         }
+        return response()->json(['password_updated' => true], 200);
+    }
+
+    /**
+     * ¿Ese comprador tiene un código puesto y es el que llega? Sin comprador o sin código, no.
+     *
+     * @param  \App\Buyer|null  $buyer
+     * @param  mixed  $codigo
+     * @return bool
+     */
+    private function codigo_vigente($buyer, $codigo)
+    {
+        if (is_null($buyer) || is_null($buyer->verification_code) || $codigo === null || $codigo === '') {
+            return false;
+        }
+        return hash_equals((string) $buyer->verification_code, trim((string) $codigo));
     }
 
 }
