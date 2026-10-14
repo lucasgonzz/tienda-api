@@ -181,7 +181,7 @@ class RutasDeLaTiendaTest extends TestCase
     /** Las privadas existen (200) pero van con noindex y su propia ruta como canonica. */
     public function test_las_rutas_privadas_van_con_noindex()
     {
-        foreach (['/carrito', '/login', '/registro/cliente', '/pago-exitoso', '/buscar', '/auth/google/callback', '/seleccion-especial/1-2'] as $ruta) {
+        foreach (['/carrito', '/login', '/registro/cliente', '/pago-exitoso', '/buscar', '/seleccion-especial/1-2'] as $ruta) {
             $pagina = $this->pagina($ruta);
 
             $this->assertSame(200, $pagina['estado'], $ruta);
@@ -210,7 +210,7 @@ class RutasDeLaTiendaTest extends TestCase
      */
     public function test_las_pantallas_que_se_sacaron_de_la_tienda_son_404()
     {
-        foreach (['/ayuda', '/ayuda/llamada', '/cupones'] as $ruta) {
+        foreach (['/ayuda', '/ayuda/llamada', '/cupones', '/social-login', '/auth/google/callback'] as $ruta) {
             $pagina = $this->pagina($ruta);
 
             $this->assertSame(404, $pagina['estado'], $ruta);

@@ -7,8 +7,6 @@ use App\Cupon;
 use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\BuyerHelper;
 use App\Http\Controllers\Helpers\CuponHelper;
-use App\Http\Controllers\Helpers\GoogleLoginHelper;
-use App\Http\Controllers\Helpers\StringHelper;
 use App\Http\Controllers\Helpers\TwilioHelper;
 use App\Mail\PasswordReset;
 use App\Notifications\VerificationCode;
@@ -17,7 +15,6 @@ use Carbon\Carbon;
 use Illuminate\Auth\Events\Registered;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Laravel\Socialite\Facades\Socialite;
 use Twilio\Rest\Client;
 
 class AuthController extends Controller
@@ -49,7 +46,8 @@ class AuthController extends Controller
      * La identidad de checkout y la lista de pedidos SI se borran siempre: son de la compra
      * anterior y no tienen nada que hacer en la sesion de quien acaba de entrar.
      *
-     * 🔴 Se llama SOLO desde el login de una cuenta (login y social), nunca desde el
+     * 🔴 Se llama SOLO desde el login de una cuenta (`login`; hasta el 14/10/2026 tambien desde el
+     * login con Google, que se saco), nunca desde el
      * BuyerController@store del checkout de invitado: ahi no hay nada que ordenar y tocar la
      * sesion en el ultimo paso de la compra es todo riesgo y ningun beneficio.
      *
@@ -64,37 +62,12 @@ class AuthController extends Controller
         ]);
     }
 
-    function social($provider, $commerce_id) {
-        // Login con Google (prompt 590, grupo 164): las credenciales ya no son globales del
-        // .env, se resuelven por comercio desde online_configurations. Si el comercio no tiene
-        // el login con Google habilitado o le faltan credenciales, se corta aca mismo con un
-        // error controlado, sin caer a las credenciales viejas del .env.
-        if ($provider == 'google' && !GoogleLoginHelper::apply($commerce_id)) {
-            return response()->json(['error' => 'El login con Google no esta disponible para este comercio'], 422);
-        }
-        $social_user = Socialite::driver($provider)->stateless()->user();
-        $buyer = Buyer::where('provider_id', $social_user->id)
-                        ->where('user_id', $commerce_id)
-                        ->first();
-        $new_buyer = false;
-        if (is_null($buyer)) {
-            $name = explode(' ', $social_user->getName());
-            $buyer = Buyer::create([
-                'email' => $social_user->getEmail(),
-                'avatar' => $social_user->getAvatar(),
-                'name' => StringHelper::modelName($name[0], true),
-                'surname' => StringHelper::modelName($name[count($name)-1], true),
-                'provider_id' => $social_user->id,
-                // 'phone' => $social_user->getPhone(),
-                'user_id' => $commerce_id,
-            ]);
-            $new_buyer = true;
-        }
-        Auth::guard('buyer')->login($buyer);
-        $this->limpiarRastrosDeOtroComprador();
-        $buyer = Self::getFullBuyer();
-        return response()->json(['new_buyer' => $new_buyer, 'buyer' => $buyer], 200);
-    }
+    /*
+     * `social($provider, $commerce_id)` (login con Google por Laravel Socialite, con las
+     * credenciales de cada comercio de online_configurations) se saco el 14/10/2026 junto con su
+     * ruta y con GoogleLoginHelper (mision tiendas-demo-y-limpieza-tienda): la tienda ya no tiene
+     * login social. Las columnas `google_*` de online_configurations y `buyers.provider_id` quedan.
+     */
 
     function getFullBuyer($id = null) {
         if (is_null($id)) {

@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use App\Http\Controllers\Helpers\GoogleLoginHelper;
 use App\Services\Zipnova\ZipnovaCotizadorService;
 use App\User;
 use App\Workday;
@@ -85,16 +84,17 @@ class CommerceController extends Controller
                         ->with('online_configuration.online_template')
                         ->first();
 
-        // El SPA muestra el boton de "Continuar con Google" segun
-        // commerce.configuration.show_google_login (prompt 590, grupo 164). Antes esa columna
-        // era un master switch generico en user_configurations (default true para todos los
-        // comercios, sin relacion con si el comercio tenia o no credenciales cargadas). Ahora se
-        // sobreescribe en runtime con la disponibilidad REAL: solo true si el comercio tiene el
-        // login con Google habilitado Y credenciales cargadas en su online_configuration. Esto
-        // evita mostrar un boton roto para los comercios que ya tenian el switch viejo en true
-        // pero nunca cargaron client_id/client_secret.
+        // `commerce.configuration.show_google_login` sale SIEMPRE en false desde el 14/10/2026: el
+        // login con Google se saco de la tienda y de esta API (mision tiendas-demo-y-limpieza-tienda).
+        //
+        // 🔴 La clave se sigue mandando, y en false, a proposito. Hasta la tienda-spa 1.1.0 existe
+        // `login/components/SocialLogin.vue`, que la lee para decidir si dibuja "Continuar con
+        // Google" (en la 1.1.0 ya no lo monta ninguna pantalla, pero una SPA anterior que lo monte
+        // pegaria contra una ruta que ya no existe). Sin el override caeria a la columna vieja de
+        // user_configurations, que es un switch generico en true para todos los comercios (el motivo
+        // por el que esto se sobreescribia en runtime desde el prompt 590). La SPA nueva no la lee.
         if (!is_null($commerce) && !is_null($commerce->configuration)) {
-            $commerce->configuration->show_google_login = GoogleLoginHelper::isAvailable($commerce_id);
+            $commerce->configuration->show_google_login = false;
         }
 
         $publico = $this->proyectar($commerce);

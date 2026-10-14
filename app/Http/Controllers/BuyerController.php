@@ -234,8 +234,9 @@ class BuyerController extends Controller
 	 *     entrar a la cuenta hay que loguearse, como corresponde.
 	 *
 	 * 🔴 "Con credencial" es contraseña **O** provider_id, y la segunda mitad es facil de olvidar:
-	 * AuthController@social crea el comprador de login con Google SIN contraseña (no la necesita).
-	 * Si la condicion mirara solo el password, toda cuenta creada con Google seguiria siendo
+	 * AuthController@social creaba el comprador de login con Google SIN contraseña (no la
+	 * necesitaba). El login con Google se saco el 14/10/2026, pero esas cuentas siguen en la base:
+	 * si la condicion mirara solo el password, toda cuenta creada con Google seguiria siendo
 	 * tomable sabiendo el mail — el mismo agujero, por otra puerta.
 	 *
 	 * El SPA no se entera de la diferencia: sigue recibiendo el mismo modelo en la misma forma y

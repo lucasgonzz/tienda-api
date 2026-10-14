@@ -22,8 +22,7 @@ return [
         'logout',
         'register',
         'register/*',
-        'sociallogin/*',
-        'auth/*/callback',
+        // `sociallogin/*` y `auth/*/callback` se sacaron el 14/10/2026 con el login con Google.
         'password-reset/*',
         'payment-notification',
     ],

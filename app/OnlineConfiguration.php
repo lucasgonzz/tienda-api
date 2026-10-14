@@ -26,9 +26,9 @@ class OnlineConfiguration extends Model
         'mail_from_name',
         'mail_notificacion_pedidos',
         // Mismo motivo que las columnas de mail de arriba (prompt 590, grupo 164): este modelo
-        // viaja entero en la respuesta PUBLICA de CommerceController@commerce. El SPA solo
-        // necesita saber si el boton de Google se muestra (ver
-        // configuration.show_google_login, calculado en el controller), no las credenciales.
+        // viaja entero en la respuesta PUBLICA de CommerceController@commerce. 🔴 El login con
+        // Google se saco el 14/10/2026, pero las columnas siguen en la base (las escribe el ERP) y
+        // por eso siguen ocultas: sacar el login no vuelve publicas las credenciales.
         'google_client_id',
         'google_client_secret',
         /*

@@ -25,11 +25,11 @@ use Illuminate\Broadcasting\BroadcastManager;
  * hace cualquiera que quiera auditar la superficie publica, y probablemente parte de la razon por
  * la que estos agujeros vivieron tanto.
  *
- * El login con Google si funciona y no pasa por ahi: entra por /sociallogin/{provider}/{commerce_id}
- * (AuthController@social, mas abajo).
+ * El login con Google entraba por POST /sociallogin/{provider}/{commerce_id} (AuthController@social)
+ * y se saco el 14/10/2026 junto con el boton de la tienda (mision tiendas-demo-y-limpieza-tienda):
+ * la tienda ya no tiene login social. Las cuentas que se crearon por ahi siguen en `buyers` (con
+ * `provider_id` y sin contraseña) y pueden entrar poniendose una con "Olvide mi contraseña".
  */
-
-Route::post('/sociallogin/{provider}/{commerce_id}', 'AuthController@social');
 
 Route::post('/register', 'AuthController@register');
 Route::post('/register/resend-code', 'AuthController@resendVerificationCode');

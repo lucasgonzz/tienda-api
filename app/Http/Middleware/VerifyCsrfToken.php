@@ -13,11 +13,8 @@ class VerifyCsrfToken extends Middleware
      */
     protected $except = [
         'https://api.kioscoverde.com/public/payment-notification*',
-        '/sociallogin/google',
-        '/sociallogin/facebook',
-        '/sociallogin/github',
-        '/sociallogin/twitter',
-        '/sociallogin/vkontakte',
+        // Las cinco de `/sociallogin/*` se sacaron el 14/10/2026 con el login con Google: la ruta
+        // ya no existe.
 
         /*
          * -----------------------------------------------------------------------------------

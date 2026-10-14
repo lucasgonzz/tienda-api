@@ -159,8 +159,9 @@ class SuperficiePublicaTest extends TestCase
     }
 
     /**
-     * La otra puerta a la misma casa: AuthController@social crea el comprador de Google SIN
-     * contraseña. Si la regla mirara solo el password, esa cuenta seguiria siendo tomable.
+     * La otra puerta a la misma casa: AuthController@social creaba el comprador de Google SIN
+     * contraseña. El login con Google se saco el 14/10/2026 pero esas cuentas siguen en la base:
+     * si la regla mirara solo el password, seguirian siendo tomables.
      */
     public function test_tampoco_se_puede_entrar_a_una_cuenta_de_google_mandando_solo_el_email()
     {

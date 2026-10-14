@@ -91,21 +91,21 @@ class SeoPaginas
         'tarjetas'              => 'Tarjetas',
         'ubicacion'             => 'Ubicación',
         'mapas'                 => 'Mapas',
-        'social-login'          => 'Ingresar',
+        // `social-login` se saco el 14/10/2026 con el login con Google: responde 404.
         'gracias-por-tu-compra' => 'Gracias por tu compra',
         'preguntas'             => 'Preguntas',
     ];
 
     /**
-     * Privadas que la SPA define con subrutas (`/registro/:view`, `/auth/:provider/callback`,
+     * Privadas que la SPA define con subrutas (`/registro/:view`,
      * `/seleccion-especial/:articles_id`): matchean por el primer segmento, con lo que venga
-     * detras.
+     * detras. `auth` (`/auth/:provider/callback`, del login social) se saco el 14/10/2026 con el
+     * login con Google.
      *
      * @var array<string, string>
      */
     const PRIVADAS_CON_SUBRUTA = [
         'registro'           => 'Registro',
-        'auth'               => 'Ingresar',
         'seleccion-especial' => 'Selección especial',
     ];
 
