@@ -26,7 +26,8 @@ class User extends Authenticatable
      * Columnas del comercio que nunca pueden viajar en una respuesta.
      *
      * 🔴 Este modelo se serializa en rutas PUBLICAS: CommerceController@commerce
-     * (GET /api/commerce/{id}, sin auth) y CuponController@index via ->with('user'). Hasta el
+     * (GET /api/commerce/{id}, sin auth) y, hasta el 14/10/2026, CuponController@index via
+     * ->with('user') (la ruta se saco con los cupones de la tienda). Hasta el
      * 15/8/2026 el $hidden tenia solo password y remember_token, y la respuesta publica incluia
      * las 122 columnas restantes de la tabla `users` del ERP. Medido con la API levantada.
      *
@@ -63,7 +64,8 @@ class User extends Authenticatable
         'google_custom_search_api_key',
         // Clave de Serper del comercio (misión serper-en-user-setup, 28/9/2026): la guarda el ERP en
         // users al crear el sistema desde el admin. Es una clave paga de ComercioCity: nunca a la vidriera
-        // (CuponController@index devuelve el dueño entero con ->with('user')).
+        // (CommerceController@commerce es publica; antes tambien CuponController@index, que devolvia el
+        // dueño entero con ->with('user')).
         'serper_api_key',
         'articles_export_key',
         'clave_eliminar_article',

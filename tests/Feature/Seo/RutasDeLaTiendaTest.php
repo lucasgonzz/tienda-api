@@ -210,7 +210,7 @@ class RutasDeLaTiendaTest extends TestCase
      */
     public function test_las_pantallas_que_se_sacaron_de_la_tienda_son_404()
     {
-        foreach (['/ayuda', '/ayuda/llamada'] as $ruta) {
+        foreach (['/ayuda', '/ayuda/llamada', '/cupones'] as $ruta) {
             $pagina = $this->pagina($ruta);
 
             $this->assertSame(404, $pagina['estado'], $ruta);

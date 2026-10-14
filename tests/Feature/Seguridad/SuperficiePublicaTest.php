@@ -89,8 +89,6 @@ class SuperficiePublicaTest extends TestCase
             ['GET',  '/api/notifications'],
             ['GET',  '/api/notifications/unread'],
             ['POST', '/api/notifications/mark-as-read'],
-            ['GET',  '/api/cupons'],
-            ['GET',  '/api/cupons/set-read'],
             ['GET',  '/api/favorites'],
             ['GET',  '/api/questions'],
             ['POST', '/api/questions'],
@@ -113,6 +111,31 @@ class SuperficiePublicaTest extends TestCase
             list($metodo, $url) = $ruta;
 
             $this->json($metodo, $url)->assertStatus(401, $metodo.' '.$url.' tiene que pedir sesion');
+        }
+    }
+
+    /**
+     * Las rutas de cupones ya no existen (mision tiendas-demo-y-limpieza-tienda, 14/10/2026): la
+     * tienda saco la pantalla /cupones y el bloque del cupon del checkout. `GET /api/cupons` y
+     * `/api/cupons/set-read` estaban en la lista de arriba (pedian sesion); ahora son 404, igual
+     * que la busqueda publica de un codigo. Ni con sesion: un cupon es plata y no queda puerta.
+     */
+    public function test_las_rutas_de_cupones_ya_no_existen()
+    {
+        $rutas = [
+            '/api/cupons',
+            '/api/cupons/set-read',
+            '/api/cupons/search/'.$this->comercio->id.'/CUALQUIERA',
+        ];
+
+        foreach ($rutas as $url) {
+            $this->json('GET', $url)->assertStatus(404, 'GET '.$url.' sin sesion');
+        }
+
+        $this->actingAs($this->victima, 'buyer');
+
+        foreach ($rutas as $url) {
+            $this->json('GET', $url)->assertStatus(404, 'GET '.$url.' con sesion');
         }
     }
 

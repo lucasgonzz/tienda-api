@@ -303,13 +303,8 @@ Route::middleware('auth:buyer')->group(function() {
 		'MessageController@store'
 	);
 
-	// Cupons
-	Route::get('cupons',
-		'CuponController@index',
-	);
-	Route::get('cupons/set-read',
-		'CuponController@setRead',
-	);
+	// Cupons: `GET cupons` y `GET cupons/set-read` se sacaron el 14/10/2026 con la pantalla
+	// /cupones de tienda-spa (mision tiendas-demo-y-limpieza-tienda). La tabla queda.
 
 	// Ofertas personalizadas del comprador (mision promocion-personalizada-tienda).
 	// Va en auth:buyer y no puede salir de aca: la oferta es de UN cliente del ERP y se
@@ -444,11 +439,9 @@ Route::get('/last-searchs/for-search-page/{commerce_id}',
 	'LastSearchController@forSearchPage'
 );
 
-// Validacion de un codigo de cupon en el checkout. Publica porque el invitado tambien canjea, con
-// throttle porque el codigo es enumerable.
-Route::get('cupons/search/{commerce_id}/{code}',
-	'CuponController@search',
-)->middleware('throttle:20,1');
+// `GET cupons/search/{commerce_id}/{code}` (validar un codigo de cupon en el checkout) se saco el
+// 14/10/2026 junto con el bloque del cupon de tienda-spa. `carts.cupon_id` y `orders.cupon_id`
+// quedan: un pedido viejo con cupon se sigue sumando bien (OrderTotalsHelper::resolveCupon).
 
 // Formulario de contacto. Publico por definicion; throttled por el mismo motivo que /advises
 // (api.php mas arriba): manda un mail y sin limite es un vector de spam.

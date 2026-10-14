@@ -86,7 +86,7 @@ class SeoPaginas
         'configuracion'         => 'Configuración',
         'mensajes'              => 'Mensajes',
         'notificaciones'        => 'Notificaciones',
-        'cupones'               => 'Cupones',
+        // `cupones` se saco el 14/10/2026 con la pantalla de la SPA: /cupones responde 404.
         'cuenta-corriente'      => 'Cuenta corriente',
         'tarjetas'              => 'Tarjetas',
         'ubicacion'             => 'Ubicación',
