@@ -194,12 +194,28 @@ class RutasDeLaTiendaTest extends TestCase
     /** Las institucionales se indexan. */
     public function test_las_institucionales_se_indexan()
     {
-        foreach (['/contacto', '/quienes-somos', '/terminos-y-condiciones', '/politica-de-privacidad', '/promociones', '/catalogo', '/ayuda'] as $ruta) {
+        foreach (['/contacto', '/quienes-somos', '/terminos-y-condiciones', '/politica-de-privacidad', '/promociones', '/catalogo'] as $ruta) {
             $pagina = $this->pagina($ruta);
 
             $this->assertSame(200, $pagina['estado'], $ruta);
             $this->assertSame('index,follow', $pagina['robots'], $ruta);
             $this->assertSame('https://mitienda.test'.$ruta, $pagina['canonica'], $ruta);
+        }
+    }
+
+    /**
+     * Las pantallas que la SPA ya no tiene (mision tiendas-demo-y-limpieza-tienda, 14/10/2026) son
+     * 404, igual que cualquier ruta desconocida: la SPA las muestra con NotFound y el servidor no
+     * puede seguir diciendo que existen (y menos indexarlas, como pasaba con /ayuda).
+     */
+    public function test_las_pantallas_que_se_sacaron_de_la_tienda_son_404()
+    {
+        foreach (['/ayuda', '/ayuda/llamada'] as $ruta) {
+            $pagina = $this->pagina($ruta);
+
+            $this->assertSame(404, $pagina['estado'], $ruta);
+            $this->assertSame('noindex,follow', $pagina['robots'], $ruta);
+            $this->assertNull($pagina['canonica'], $ruta);
         }
     }
 

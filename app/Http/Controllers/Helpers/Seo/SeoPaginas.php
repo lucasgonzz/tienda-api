@@ -54,12 +54,14 @@ class SeoPaginas
     /**
      * Institucionales: se indexan con su propia ruta como canonica.
      *
+     * `ayuda` se saco el 14/10/2026 junto con la seccion de la SPA (mision
+     * tiendas-demo-y-limpieza-tienda): /ayuda ya no existe y responde 404.
+     *
      * @var array<string, string>  primer segmento => titulo
      */
     const INSTITUCIONALES = [
         'contacto'               => 'Contacto',
         'quienes-somos'          => 'Quiénes somos',
-        'ayuda'                  => 'Ayuda',
         'terminos-y-condiciones' => 'Términos y condiciones',
         'politica-de-privacidad' => 'Política de privacidad',
         'promociones'            => 'Promociones',
@@ -149,7 +151,7 @@ class SeoPaginas
             return $this->noEncontrada();
         }
 
-        if (array_key_exists($primero, self::INSTITUCIONALES) && ($cantidad === 1 || ($primero === 'ayuda' && $cantidad === 2))) {
+        if (array_key_exists($primero, self::INSTITUCIONALES) && $cantidad === 1) {
             return $this->institucional($primero, $segmentos);
         }
 
