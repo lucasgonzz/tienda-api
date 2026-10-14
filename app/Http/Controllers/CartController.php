@@ -418,7 +418,9 @@ class CartController extends Controller
         $cart->payment_status       = isset($data['payment_status']) ? $data['payment_status'] : null;
         $cart->deliver              = isset($data['deliver']) ? $data['deliver'] : 0;
         $cart->address_id           = isset($data['address_id']) ? $data['address_id'] : null;
-        $cart->cupon_id             = isset($data['cupon_id']) ? $data['cupon_id'] : null;
+        // La tienda ya no tiene cupones (14/10/2026, misión tiendas-demo-y-limpieza-tienda): el carrito se
+        // guarda siempre sin cupón, venga lo que venga en el pedido.
+        $cart->cupon_id             = null;
         $cart->description          = isset($data['description']) ? $data['description'] : null;
         $cart->fecha_entrega        = !empty($data['fecha_entrega']) ? $data['fecha_entrega'] : null;
 
