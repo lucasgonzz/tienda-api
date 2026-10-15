@@ -365,4 +365,61 @@ class CarritoYPedidoConCuotasTest extends TestCase
         $this->assertNull($order->cuotas);
         $this->assertNull($order->cuotas_recargo);
     }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | 🔴 Una falla al leer las cuotas NO rompe el carrito ni el pedido
+    |---------------------------------------------------------------------------------------------
+    */
+
+    public function test_si_falla_la_lectura_de_cuotas_el_carrito_se_guarda_igual_sin_cuotas()
+    {
+        $this->cuotasDelMetodo([[3, 10]]);
+
+        $this->fallarLasLecturasDeCuotas();
+        Log::spy();
+
+        $cart = $this->carritoPorElEndpoint(2, ['cuotas' => 3]);
+
+        $this->assertGreaterThanOrEqual(1, $this->lecturas_de_cuotas, 'La falla simulada tiene que haberse disparado.');
+        $this->assertNull($this->cuotasGuardadasDelCarrito($cart));
+        $this->assertSame(2000.0, (float) $cart->total, 'El carrito se guardo entero.');
+
+        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje, $contexto = []) {
+            return strpos($mensaje, 'no se pudieron leer las cuotas') !== false
+                && (int) $contexto['commerce_id'] === (int) $this->comercio->id;
+        })->once();
+    }
+
+    public function test_si_falla_la_lectura_de_cuotas_el_pedido_se_crea_igual_sin_cuotas()
+    {
+        $this->cuotasDelMetodo([[3, 10]]);
+
+        $this->fallarLasLecturasDeCuotas();
+        Log::spy();
+
+        list($order) = $this->crearPedidoDesdeUnCarrito(['cuotas' => 3]);
+
+        $this->assertGreaterThanOrEqual(1, $this->lecturas_de_cuotas, 'La falla simulada tiene que haberse disparado.');
+        $this->assertNull($order->cuotas);
+        $this->assertNull($order->cuotas_recargo);
+        $this->assertSame($this->payment_method->id, (int) $order->payment_method_id, 'El pedido es el de siempre.');
+
+        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje, $contexto = []) {
+            return strpos($mensaje, 'no se pudieron leer las cuotas') !== false
+                && (int) $contexto['commerce_id'] === (int) $this->comercio->id;
+        })->once();
+    }
+
+    public function test_un_carrito_sin_cuotas_no_lee_la_tabla_ni_para_guardarse_ni_para_crear_el_pedido()
+    {
+        $this->cuotasDelMetodo([[3, 10]]);
+
+        $this->contarLasLecturasDeCuotas();
+
+        $cart = $this->carritoPorElEndpoint(2);
+        $this->crearPedidoDesdeUnCarrito();
+
+        $this->assertSame(0, $this->lecturas_de_cuotas, 'Sin cuotas elegidas, el camino de siempre no consulta nada nuevo.');
+    }
 }

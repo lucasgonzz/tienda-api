@@ -45,6 +45,9 @@ trait ArmaCuotasMercadoPago
     /** @var \App\PaymentMethod El metodo de pago de la tienda, de tipo MercadoPago, YA vinculado. */
     protected $payment_method;
 
+    /** @var int Cuantas lecturas de la tabla `cuotas` se hicieron desde `contarLasLecturasDeCuotas()` o `fallarLasLecturasDeCuotas()`. */
+    protected $lecturas_de_cuotas = 0;
+
     /**
      * Preparacion comun: memorias limpias, esquema presente, un comercio con su articulo y su
      * metodo de Mercado Pago vinculado.
@@ -80,6 +83,47 @@ trait ArmaCuotasMercadoPago
     {
         CuotasMercadoPagoHelper::olvidar();
         $this->olvidarLasMemorias();
+    }
+
+    /**
+     * Cuenta cada SELECT sobre la tabla `cuotas` que se haga de aca en adelante en este test
+     * (`$this->lecturas_de_cuotas`).
+     *
+     * @return void
+     */
+    protected function contarLasLecturasDeCuotas()
+    {
+        $this->lecturas_de_cuotas = 0;
+
+        DB::listen(function ($consulta) {
+            if (strpos($consulta->sql, 'from `cuotas`') !== false) {
+                $this->lecturas_de_cuotas++;
+            }
+        });
+    }
+
+    /**
+     * Hace FALLAR toda lectura de la tabla `cuotas` de aca en adelante en este test, sin DDL: un
+     * `DB::listen` que tira una excepcion cuando el SQL consulta `cuotas` (el listener corre despues
+     * de ejecutar la consulta y su excepcion sube hasta quien la hizo, como una falla de la base).
+     * Cuenta los intentos en `$this->lecturas_de_cuotas`, para que el caso pueda comprobar que la
+     * falla de verdad se disparo.
+     *
+     * Las escrituras de las fixtures (INSERT) y las demas tablas no se ven afectadas.
+     *
+     * @return void
+     */
+    protected function fallarLasLecturasDeCuotas()
+    {
+        $this->lecturas_de_cuotas = 0;
+
+        DB::listen(function ($consulta) {
+            if (strpos($consulta->sql, 'from `cuotas`') !== false) {
+                $this->lecturas_de_cuotas++;
+
+                throw new \RuntimeException('falla simulada de la base al leer cuotas');
+            }
+        });
     }
 
     /**

@@ -261,18 +261,29 @@ class CuotasMercadoPagoHelper
      * son las del comercio (`user_id`) cargadas PARA ESE metodo de cuenta corriente: las genericas
      * (`payment_method_id` NULL) y las de otro metodo no se ofrecen.
      *
+     * 🔴 NUNCA TIRA. Es lo que lee la lista PUBLICA de metodos de pago, o sea el checkout de TODA la
+     * tienda: una falla de la base en esta consulta no puede tumbar los metodos de pago por una
+     * feature opcional. Ante cualquier excepcion devuelve `[]` (el metodo no ofrece cuotas, como
+     * antes de esta mision) y deja un `Log::warning` con el comercio y el mensaje, sin credenciales.
+     *
      * @param \App\PaymentMethod|null $payment_method
      * @return array<int, array{cantidad_cuotas: int, recargo: string}> Ordenadas por cantidad de
      *         cuotas; `recargo` es el neto en porcentaje, con dos decimales ("10.00").
      */
     public static function cuotas_disponibles($payment_method)
     {
-        return array_map(function ($oferta) {
-            return [
-                'cantidad_cuotas' => $oferta['cantidad_cuotas'],
-                'recargo'         => number_format($oferta['neto'], 2, '.', ''),
-            ];
-        }, self::ofertas($payment_method));
+        try {
+            return array_map(function ($oferta) {
+                return [
+                    'cantidad_cuotas' => $oferta['cantidad_cuotas'],
+                    'recargo'         => number_format($oferta['neto'], 2, '.', ''),
+                ];
+            }, self::ofertas($payment_method));
+        } catch (\Throwable $e) {
+            self::avisar_falla_de_lectura('cuotas_disponibles', $payment_method, $e);
+
+            return [];
+        }
     }
 
     /**
@@ -280,19 +291,55 @@ class CuotasMercadoPagoHelper
      * la base. Null si esa cantidad no se ofrece: nada de lo que el comprador mande vale por si
      * solo.
      *
+     * ⚠️ A diferencia de `cuotas_disponibles()`, TIRA si la base falla: quien la llama decide que
+     * hacer (la preferencia corta con un 422 para no cobrar de menos; el carrito y el pedido se
+     * quedan sin cuotas).
+     *
      * @param \App\PaymentMethod|null $payment_method
      * @param int $cantidad_cuotas
      * @return float|null
      */
     public static function recargo_neto($payment_method, $cantidad_cuotas)
     {
-        foreach (self::ofertas($payment_method) as $oferta) {
+        return self::neto_de(self::ofertas($payment_method), $cantidad_cuotas);
+    }
+
+    /**
+     * El neto de una cantidad dentro de una lista de ofertas ya leida (`ofertas()`). Pura: sirve
+     * para no volver a consultar la base cuando la lista ya esta en mano.
+     *
+     * @param array<int, array{cantidad_cuotas: int, neto: float}> $ofertas
+     * @param int $cantidad_cuotas
+     * @return float|null Null si esa cantidad no esta en la lista.
+     */
+    public static function neto_de(array $ofertas, $cantidad_cuotas)
+    {
+        foreach ($ofertas as $oferta) {
             if ($oferta['cantidad_cuotas'] === (int) $cantidad_cuotas) {
                 return $oferta['neto'];
             }
         }
 
         return null;
+    }
+
+    /**
+     * Deja constancia de una falla al leer las cuotas, sin credenciales: solo el comercio, el
+     * metodo, la clase de la excepcion y su mensaje.
+     *
+     * @param string $donde
+     * @param \App\PaymentMethod|null $payment_method
+     * @param \Throwable $e
+     * @return void
+     */
+    public static function avisar_falla_de_lectura($donde, $payment_method, \Throwable $e)
+    {
+        Log::warning('CuotasMercadoPagoHelper: no se pudieron leer las cuotas ('.$donde.'), se sigue como si el metodo no ofreciera cuotas', [
+            'commerce_id'       => $payment_method instanceof PaymentMethod ? $payment_method->user_id : null,
+            'payment_method_id' => $payment_method instanceof PaymentMethod ? $payment_method->id : null,
+            'excepcion'         => get_class($e),
+            'mensaje'           => $e->getMessage(),
+        ]);
     }
 
     /**
@@ -317,14 +364,19 @@ class CuotasMercadoPagoHelper
     /**
      * Las filas de `cuotas` que se ofrecen para un metodo, ya filtradas y con el neto calculado.
      *
-     * Reglas (plan §2): cantidad >= 1, neto = (recargo ?? 0) - (descuento ?? 0) >= 0, una sola fila
-     * por cantidad (si el comerciante cargo dos iguales vale la mas vieja: es un descuido de
-     * carga, y la tienda no tiene como adivinar cual quiso), ordenadas por cantidad.
+     * Reglas (plan §2): cantidad >= 1, neto = (recargo ?? 0) - (descuento ?? 0) >= 0, ordenadas por
+     * cantidad y UNA sola por cantidad. Con la misma cantidad cargada mas de una vez vale la fila
+     * mas vieja (menor id) DE LAS QUE TIENEN NETO >= 0: el filtro de neto va antes del dedupe, asi
+     * que una fila de neto negativo no tapa a una valida de la misma cantidad. Es un descuido de
+     * carga del comerciante y la tienda no tiene como adivinar cual quiso.
+     *
+     * ⚠️ TIRA si la base falla (es la lectura cruda): `cuotas_disponibles()` la envuelve para el
+     * listado publico; la preferencia, el carrito y el pedido la envuelven cada uno a su manera.
      *
      * @param \App\PaymentMethod|null $payment_method
      * @return array<int, array{cantidad_cuotas: int, neto: float}>
      */
-    private static function ofertas($payment_method)
+    public static function ofertas($payment_method)
     {
         $vinculo = self::vinculo_de($payment_method);
 
@@ -429,15 +481,19 @@ class CuotasMercadoPagoHelper
         }
 
         return [
-            'name'        => 'Recargo por pago en '.(int) $cantidad_cuotas.' cuotas',
+            'name'        => 'Recargo por pago en '.(int) $cantidad_cuotas.((int) $cantidad_cuotas === 1 ? ' cuota' : ' cuotas'),
             'amount'      => 1,
             'final_price' => $recargo_en_plata,
         ];
     }
 
     /**
-     * El valor de cada cuota que ve el comprador: `round(total_cobrado / N, 2)`. El SPA lo calcula
-     * por su lado para mostrarlo; esta es la misma cuenta, para que los tests la fijen.
+     * REFERENCIA DE LA FORMULA del valor de cada cuota que ve el comprador: `round(total_cobrado / N, 2)`.
+     *
+     * 🔴 Hoy NO la usa ningun camino de la API: la cuenta que ve el comprador la hace `tienda-spa`
+     * por su lado (informativa: lo que se cobra lo resuelve la preferencia en el servidor) y esta
+     * funcion existe para dejar la formula escrita y para que los tests la fijen. Si el SPA cambia
+     * la suya, esta es la que hay que mirar para que las dos sigan dando lo mismo.
      *
      * @param float $total_cobrado Base mas recargo.
      * @param int $cantidad_cuotas
@@ -498,6 +554,9 @@ class CuotasMercadoPagoHelper
      * metodo de pago elegido la ofrece, null en cualquier otro caso (sin pedir, metodo que no
      * ofrece cuotas, cantidad que no esta cargada, metodo de otro comercio).
      *
+     * ⚠️ TIRA si la base falla: el unico llamador que escribe el carrito es `sincronizar_carrito()`, que
+     * lo atrapa para que una falla de esta feature opcional no rompa el guardado del carrito.
+     *
      * @param int|null $payment_method_id `carts.payment_method_id`.
      * @param int|string|null $cuotas Lo que mando el SPA.
      * @param int|null $commerce_id Comercio del carrito: el metodo tiene que ser suyo.
@@ -526,6 +585,9 @@ class CuotasMercadoPagoHelper
      * carrito sin `cuotas` —un SPA viejo, o el comprador que cambio de metodo de pago— deja la
      * columna en NULL.
      *
+     * 🔴 NUNCA ROMPE EL GUARDADO DEL CARRITO: si leer las cuotas falla, el carrito se guarda sin
+     * cuotas (`cuotas = NULL`) y queda un `Log::warning`. El comprador sigue pagando como antes.
+     *
      * @param \App\Cart $cart Con `payment_method_id` y `user_id` ya puestos.
      * @param array $data El payload del carrito.
      * @return void
@@ -536,11 +598,33 @@ class CuotasMercadoPagoHelper
             return;
         }
 
-        $cart->cuotas = self::cuotas_para_el_carrito(
-            $cart->payment_method_id,
-            isset($data['cuotas']) ? $data['cuotas'] : null,
-            $cart->user_id
-        );
+        try {
+            $cart->cuotas = self::cuotas_para_el_carrito(
+                $cart->payment_method_id,
+                isset($data['cuotas']) ? $data['cuotas'] : null,
+                $cart->user_id
+            );
+        } catch (\Throwable $e) {
+            self::avisar_falla_de_lectura('carrito', self::metodo_para_el_aviso($cart), $e);
+
+            $cart->cuotas = null;
+        }
+    }
+
+    /**
+     * Un metodo "de mentira" con solo el comercio y el id del carrito, para que
+     * `avisar_falla_de_lectura()` tenga que loguear aunque no se haya podido leer el metodo.
+     *
+     * @param \App\Cart $cart
+     * @return \App\PaymentMethod
+     */
+    private static function metodo_para_el_aviso(Cart $cart)
+    {
+        $metodo = new PaymentMethod();
+        $metodo->id = $cart->payment_method_id;
+        $metodo->user_id = $cart->user_id;
+
+        return $metodo;
     }
 
     /**
@@ -553,6 +637,9 @@ class CuotasMercadoPagoHelper
      * comerciante saco esa cantidad de cuotas entre la preferencia y el pedido no hay recargo que
      * resolver: se deja constancia en el log y el pedido nace sin cuotas (el webhook igual anota
      * lo que Mercado Pago cobro).
+     *
+     * 🔴 NUNCA ROMPE LA CREACION DEL PEDIDO: si leer las cuotas falla, devuelve `[]` (el pedido
+     * nace sin cuotas, como antes de esta mision) y deja un `Log::warning`.
      *
      * @param \App\Cart $cart
      * @return array<string, mixed>
@@ -569,13 +656,19 @@ class CuotasMercadoPagoHelper
             return [];
         }
 
-        $payment_method = $cart->payment_method_id
-            ? PaymentMethod::with('type')->find($cart->payment_method_id)
-            : null;
+        try {
+            $payment_method = $cart->payment_method_id
+                ? PaymentMethod::with('type')->find($cart->payment_method_id)
+                : null;
 
-        $neto = $payment_method && (int) $payment_method->user_id === (int) $cart->user_id
-            ? self::recargo_neto($payment_method, $cantidad)
-            : null;
+            $neto = $payment_method && (int) $payment_method->user_id === (int) $cart->user_id
+                ? self::recargo_neto($payment_method, $cantidad)
+                : null;
+        } catch (\Throwable $e) {
+            self::avisar_falla_de_lectura('pedido', self::metodo_para_el_aviso($cart), $e);
+
+            return [];
+        }
 
         if (is_null($neto)) {
             Log::warning('CuotasMercadoPagoHelper: el carrito eligio cuotas que el metodo ya no ofrece, el pedido se crea sin cuotas', [
@@ -598,6 +691,47 @@ class CuotasMercadoPagoHelper
     | Webhook
     |---------------------------------------------------------------------------------------------
     */
+
+    /**
+     * True si la feature de cuotas aplica a ESTE carrito: el comprador ya habia elegido cuotas
+     * (`carts.cuotas`), o el metodo de pago del carrito ofrece cuotas (`cuotas_disponibles` no
+     * vacio, o sea contado entre las opciones). Es lo que decide si el webhook anota lo que se
+     * cobro: sin vinculo ni cuotas cargadas todo queda exactamente como antes de esta mision y el
+     * pedido NO gana ni el medio ni las cuotas cobradas.
+     *
+     * `carts.cuotas` cuenta aunque el comerciante haya sacado las cuotas despues: si el comprador
+     * las eligio es porque en ese momento el metodo las ofrecia.
+     *
+     * 🔴 NUNCA TIRA: si leer las cuotas falla, es false (no se anota) y queda un `Log::warning`; el
+     * webhook sigue y responde 200 como siempre.
+     *
+     * @param \App\Cart $cart
+     * @return bool
+     */
+    public static function aplica_al_carrito(Cart $cart)
+    {
+        try {
+            if (!is_null(self::entero_de_cuotas($cart->cuotas))) {
+                return true;
+            }
+
+            if (empty($cart->payment_method_id)) {
+                return false;
+            }
+
+            $payment_method = PaymentMethod::with('type')->find($cart->payment_method_id);
+
+            if (!$payment_method || (int) $payment_method->user_id !== (int) $cart->user_id) {
+                return false;
+            }
+
+            return count(self::ofertas($payment_method)) > 0;
+        } catch (\Throwable $e) {
+            self::avisar_falla_de_lectura('webhook', self::metodo_para_el_aviso($cart), $e);
+
+            return false;
+        }
+    }
 
     /**
      * Lo que el webhook anota en el pedido de lo que Mercado Pago cobro de verdad. Vacio sin la

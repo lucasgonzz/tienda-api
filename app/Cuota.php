@@ -9,10 +9,14 @@ use LogicException;
  * Las cuotas que el comerciante carga en el ABM «Cuotas» del ERP (tabla `cuotas`, mision
  * `tienda-cuotas-mercado-pago`, 15/10/2026).
  *
- * 🔴 SOLO LECTURA. La tabla la gobierna `empresa-api` (la base es compartida): la tienda lee las
- * cuotas que el comerciante ofrece para su metodo vinculado y nunca escribe una. Por eso el modelo
- * no acepta asignacion masiva y `save()`/`delete()` cortan con una excepcion, en vez de dejar que
- * un descuido de una mision futura le cambie el recargo a un comercio desde la tienda.
+ * 🔴 La tienda solo LEE esta tabla (la gobierna el ERP; la base es compartida). Lo que este modelo
+ * bloquea, exactamente:
+ *  - `save()` y `delete()` del modelo tiran `LogicException` (con eso quedan fuera `create()`,
+ *    `forceCreate()`, `update()` y `delete()` sobre una instancia);
+ *  - la asignacion masiva esta cerrada (`$guarded = ['*']`).
+ * Lo que NO bloquea: las escrituras que no pasan por una instancia del modelo
+ * (`Cuota::query()->update()/delete()/insert()`, `DB::table('cuotas')`). El resguardo contra esas es
+ * convencion de esta mision, no codigo: nada de la tienda escribe en `cuotas`.
  *
  * Columnas que importan:
  *  - `cantidad_cuotas`: 3, 6, 12...

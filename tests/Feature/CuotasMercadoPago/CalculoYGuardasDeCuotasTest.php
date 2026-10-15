@@ -284,4 +284,24 @@ class CalculoYGuardasDeCuotasTest extends TestCase
 
         $this->assertSame('cuotas', $cuota->getTable());
     }
+
+    public function test_el_item_de_una_sola_cuota_dice_cuota_en_singular()
+    {
+        $this->assertSame('Recargo por pago en 1 cuota', CuotasMercadoPagoHelper::item_de_recargo(1, 100)['name']);
+        $this->assertSame('Recargo por pago en 2 cuotas', CuotasMercadoPagoHelper::item_de_recargo(2, 100)['name']);
+        $this->assertSame('Recargo por pago en 12 cuotas', CuotasMercadoPagoHelper::item_de_recargo(12, 100)['name']);
+    }
+
+    public function test_el_neto_de_una_cantidad_se_busca_en_la_lista_ya_leida_sin_consultar()
+    {
+        $ofertas = [
+            ['cantidad_cuotas' => 3, 'neto' => 10.0],
+            ['cantidad_cuotas' => 6, 'neto' => 0.0],
+        ];
+
+        $this->assertSame(10.0, CuotasMercadoPagoHelper::neto_de($ofertas, 3));
+        $this->assertSame(0.0, CuotasMercadoPagoHelper::neto_de($ofertas, '6'), 'Cero es un neto valido, no "no ofrecida".');
+        $this->assertNull(CuotasMercadoPagoHelper::neto_de($ofertas, 12));
+        $this->assertNull(CuotasMercadoPagoHelper::neto_de([], 3));
+    }
 }

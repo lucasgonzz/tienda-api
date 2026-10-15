@@ -4,6 +4,7 @@ namespace Tests\Feature\CuotasMercadoPago;
 
 use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 /**
@@ -256,5 +257,54 @@ class CuotasDisponiblesTest extends TestCase
         $this->assertSame(10.0, CuotasMercadoPagoHelper::recargo_neto($this->payment_method, 3));
         $this->assertSame(20.0, CuotasMercadoPagoHelper::recargo_neto($this->payment_method, 6));
         $this->assertNull(CuotasMercadoPagoHelper::recargo_neto($this->payment_method, 4));
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | 🔴 Una falla al leer las cuotas NO puede tumbar la lista de formas de pago del checkout
+    |---------------------------------------------------------------------------------------------
+    */
+
+    public function test_si_falla_la_lectura_de_cuotas_la_lista_de_metodos_sigue_respondiendo()
+    {
+        $this->cuotasDelMetodo([[3, 10]]);
+
+        $efectivo = $this->payment_method->replicate();
+        $efectivo->name = 'Efectivo';
+        $efectivo->payment_method_type_id = $this->tipoDePago('Efectivo de prueba cuotas')->id;
+        $efectivo->save();
+
+        $this->fallarLasLecturasDeCuotas();
+        Log::spy();
+
+        $respuesta = $this->getJson('/api/payment-methods/'.$this->comercio->id);
+
+        $respuesta->assertStatus(200);
+        $this->assertGreaterThanOrEqual(1, $this->lecturas_de_cuotas, 'La falla simulada tiene que haberse disparado: si no, el caso no prueba nada.');
+
+        $metodos = collect($respuesta->json('payment_methods'))->keyBy('name');
+
+        $this->assertCount(2, $metodos, 'La lista de formas de pago llega entera.');
+        $this->assertSame([], $metodos['Mercado Pago']['cuotas_disponibles'], 'El Mercado Pago queda sin cuotas, como antes de la feature.');
+        $this->assertArrayHasKey('Efectivo', $metodos->all());
+
+        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje, $contexto = []) {
+            return strpos($mensaje, 'no se pudieron leer las cuotas') !== false
+                && (int) $contexto['commerce_id'] === (int) $this->comercio->id
+                && strpos($contexto['mensaje'], 'falla simulada') !== false
+                && !array_key_exists('access_token', $contexto);
+        })->once();
+
+        $this->assertStringNotContainsString('TOKEN-DE-PRUEBA', $respuesta->getContent());
+    }
+
+    public function test_cuotas_disponibles_nunca_tira_aunque_la_base_falle()
+    {
+        $this->cuotasDelMetodo([[3, 10]]);
+
+        $this->fallarLasLecturasDeCuotas();
+
+        $this->assertSame([], CuotasMercadoPagoHelper::cuotas_disponibles($this->payment_method));
+        $this->assertSame(1, $this->lecturas_de_cuotas);
     }
 }
