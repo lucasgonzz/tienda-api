@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
 use App\Http\Controllers\Helpers\MercadoPagoCredentialsHelper;
 use App\PaymentMethod;
 use Illuminate\Http\Request;
@@ -29,7 +30,37 @@ class PaymentMethodController extends Controller
 
         $this->publicar_public_key_vigente_de_mercado_pago($payment_methods, $commerce_id);
 
+        $this->publicar_cuotas_disponibles($payment_methods);
+
         return response()->json(['payment_methods' => $payment_methods], 200);
+    }
+
+    /**
+     * Pone en las filas de tipo "MercadoPago" el campo `cuotas_disponibles`: las cuotas que el
+     * comerciante cargo en el ERP para el metodo de cuenta corriente al que vinculo ese metodo
+     * (mision `tienda-cuotas-mercado-pago`, 15/10/2026).
+     *
+     * Forma: `[{"cantidad_cuotas": 3, "recargo": "10.00"}, ...]`, ordenada por cantidad de cuotas y
+     * con el recargo ya NETO (recargo menos descuento, en porcentaje). Los metodos de otro tipo no
+     * ganan el campo. En un Mercado Pago sin vinculo, sin cuotas cargadas o en una base sin la
+     * columna del vinculo viaja `[]`: el SPA lo lee como "este metodo no ofrece cuotas" y el
+     * checkout queda como siempre.
+     *
+     * 🔴 Esta ruta es PUBLICA: el campo solo lleva cantidad de cuotas y porcentaje, que es lo que
+     * el comprador va a ver en pantalla. Solo cambia lo que se serializa; no se guarda nada.
+     *
+     * @param \Illuminate\Database\Eloquent\Collection $payment_methods Filas ya cargadas con `type`.
+     * @return void
+     */
+    protected function publicar_cuotas_disponibles($payment_methods)
+    {
+        foreach ($payment_methods as $payment_method) {
+            if (!CuotasMercadoPagoHelper::es_mercado_pago($payment_method)) {
+                continue;
+            }
+
+            $payment_method->cuotas_disponibles = CuotasMercadoPagoHelper::cuotas_disponibles($payment_method);
+        }
     }
 
     /**
