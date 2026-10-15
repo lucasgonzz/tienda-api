@@ -254,6 +254,34 @@ class PrecioDeLaPreferenciaSaleDelCarritoTest extends TestCase
     }
 
     /**
+     * Mision `sacar-cupones-y-login-google`: la tienda ya no tiene cupones, asi que el `cupon` del
+     * body no se lee en NINGUN camino. Antes, sin carrito resuelto (SPA viejo o `cart_id` ajeno),
+     * un body armado a mano con `cupon.amount` bajaba el total que se cobraba.
+     *
+     * @return void
+     */
+    public function test_un_cupon_en_el_body_ya_no_baja_el_total_sin_carrito()
+    {
+        $articulos = [['name' => 'Articulo suelto', 'amount' => 2, 'final_price' => 1000]];
+
+        $con_monto = Request::create('/api/mercado-pago/preference', 'POST', [
+            'articles' => $articulos,
+            'cupon'    => ['amount' => 1500, 'percentage' => null],
+        ]);
+        $con_porcentaje = Request::create('/api/mercado-pago/preference', 'POST', [
+            'articles' => $articulos,
+            'cupon'    => ['amount' => null, 'percentage' => 90],
+        ]);
+
+        foreach ([$con_monto, $con_porcentaje] as $request) {
+            $items = $this->articulosACobrar($request, null);
+
+            $this->assertCount(1, $items);
+            $this->assertEquals(2000, $this->sumaDeLosItems($items), 'Un cupon del body no puede bajar lo que se cobra.');
+        }
+    }
+
+    /**
      * Un cupón inventado en el body (90% de descuento) no aplica si el carrito no tiene ningún
      * cupón atado de verdad.
      *

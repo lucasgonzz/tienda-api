@@ -165,7 +165,8 @@ class MercadoPagoController extends Controller
      * confirmo (`CartHelper::attachArticles()` los resuelve al agregar cada linea, y
      * `CartHelper::set_total()` los revalida antes de guardar el total): alcanza con leerlos de ahi
      * en vez de confiar en una copia nueva que manda la MISMA request que pide cobrar. Mismo cupon:
-     * se usa `$cart->cupon` (lo que de verdad quedo atado al carrito), nunca `$request->cupon`.
+     * se usa `$cart->cupon` (lo que de verdad quedo atado al carrito, o sea carritos viejos), nunca
+     * `$request->cupon`: ese campo ya no se lee en ningun camino (mision sacar-cupones-y-login-google).
      *
      * 🔴 TRES AGUJEROS QUE DESTAPO EL CHEQUEO INDEPENDIENTE, LOS TRES DE "COBRAR DE MENOS EN
      * SILENCIO" — el mismo problema que esta mision existe para cerrar, asi que no alcanzaba con
@@ -203,7 +204,7 @@ class MercadoPagoController extends Controller
      * uno que esta mision abra. Lo que se cierra es el camino con carrito, que es el que usa
      * cualquier SPA actual.
      *
-     * @param Request $request cupon, delivery_zone, articles (solo se usan sin carrito resuelto).
+     * @param Request $request delivery_zone, articles (solo se usan sin carrito resuelto). El `cupon` del body no se lee.
      * @param \App\User $commerce Comercio que cobra (con su online_configuration).
      * @param \App\PaymentMethod $payment_method Fila de `payment_methods` que eligio el comprador.
      * @param \App\Cart|null $cart Carrito que se paga, si se pudo resolver.
@@ -256,7 +257,9 @@ class MercadoPagoController extends Controller
 
         $delivery_zone = is_null($envio_precio) ? $request->delivery_zone : null;
 
-        return $online_payment_helper->setPrices($request->cupon, $delivery_zone, $request->articles, $envio_precio);
+        // Sin carrito resuelto no hay ningun cupon que valga: la tienda ya no tiene cupones y un
+        // `cupon` armado a mano en el body bajaba el total cobrado. Siempre null en este camino.
+        return $online_payment_helper->setPrices(null, $delivery_zone, $request->articles, $envio_precio);
     }
 
     /**

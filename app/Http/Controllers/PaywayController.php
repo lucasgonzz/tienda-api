@@ -60,7 +60,8 @@ class PaywayController extends Controller
 
         $online_payment_helper = new OnlinePaymentHelper($this->commerce, $this->payment_method);
 
-        $articles = $online_payment_helper->setPrices($request->cupon, $request->delivery_zone, $request->articles);
+        // El cupon del body ya no se lee: la tienda no tiene cupones y un body armado a mano bajaba el total.
+        $articles = $online_payment_helper->setPrices(null, $request->delivery_zone, $request->articles);
 
         foreach ($articles as $article) {
             $total = $article['final_price'] *  $article['amount'];
