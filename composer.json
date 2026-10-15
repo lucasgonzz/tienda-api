@@ -13,7 +13,6 @@
         "guzzlehttp/guzzle": "^7.2",
         "laravel/framework": "^10.48",
         "laravel/sanctum": "^3.3",
-        "laravel/socialite": "^5.12",
         "laravel/tinker": "^2.9",
         "mercadopago/dx-php": "^2.4",
         "paragonie/sodium_compat": "^1.20",

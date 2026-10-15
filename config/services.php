@@ -39,12 +39,6 @@ return [
         // 'redirect' => 'http://localhost:8080/auth/facebook/callback'
     ],
 
-    'google' => [
-        'client_id' => env('GOOGLE_ID'),
-        'client_secret' => env('GOOGLE_SECRET'),
-        'redirect' => env('GOOGLE_URL'),
-    ],
-
     // API de Zipnova (envíos por correo), misión zipnova-envios 14/9/2026. Acá NO hay credenciales:
     // cada comercio conecta su cuenta desde el ERP y el token viaja cifrado en platform_connectors.
     // Solo el host (configurable sin tocar código) y las opciones SSL: el PHP de wamp no valida el
