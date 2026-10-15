@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Cart;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
+use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Http\Controllers\Helpers\MercadoPagoCredentialsHelper;
 use App\Http\Controllers\Helpers\OnlinePaymentHelper;
@@ -86,6 +87,17 @@ class MercadoPagoController extends Controller
 
         $articles = $this->articulos_a_cobrar($request, $this->commerce, $this->payment_method, $cart);
 
+        // Cuotas (mision tienda-cuotas-mercado-pago): `contado` / `cuotas` son OPCIONALES en el body y
+        // sin ninguno de los dos —o con un metodo que no ofrece cuotas— `$cuotas` queda vacio y la
+        // preferencia sale exactamente como antes. El recargo sale de la base, nunca del body.
+        $cuotas = $this->cuotas_de_la_preferencia($request, $this->payment_method, $articles);
+
+        if (!is_null($cuotas['error'])) {
+            return response()->json(['message' => $cuotas['error']], 422);
+        }
+
+        $articles = array_merge($articles, $cuotas['items']);
+
         $items = [];
         foreach ($articles as $article) {
             // Crea un ítem en la preferencia
@@ -99,6 +111,11 @@ class MercadoPagoController extends Controller
 
         foreach ($this->datos_de_preferencia($request, $this->commerce, $cart) as $campo => $valor) {
             $preference->{$campo} = $valor;
+        }
+
+        // Sin cuotas pedidas no se manda `payment_methods`: Mercado Pago ofrece lo que ofrecia siempre.
+        if (!empty($cuotas['payment_methods'])) {
+            $preference->payment_methods = $cuotas['payment_methods'];
         }
 
         $preference->save();
@@ -127,6 +144,7 @@ class MercadoPagoController extends Controller
             'commerce_id'   => $this->commerce->id,
             'cart_id'       => $cart ? $cart->id : null,
             'preference_id' => $preference->id,
+            'cuotas'        => $cuotas['cuotas'],
         ]);
 
         // `init_point` es la URL del Checkout Pro de ESTA preferencia: con ella la tienda manda al
@@ -260,6 +278,92 @@ class MercadoPagoController extends Controller
         // Sin carrito resuelto no hay ningun cupon que valga: la tienda ya no tiene cupones y un
         // `cupon` armado a mano en el body bajaba el total cobrado. Siempre null en este camino.
         return $online_payment_helper->setPrices(null, $delivery_zone, $request->articles, $envio_precio);
+    }
+
+    /**
+     * Lo que el comprador pidio en materia de cuotas (`contado` / `cuotas` del body), resuelto
+     * contra lo que el SERVIDOR ofrece (mision `tienda-cuotas-mercado-pago`, 15/10/2026).
+     *
+     * Esta afuera de `preference()` por el mismo motivo que `articulos_a_cobrar()` y
+     * `datos_de_preferencia()`: es todo lo de las cuotas que se puede probar sin que
+     * `$preference->save()` salga a la red.
+     *
+     * Las reglas, en este orden:
+     *  1. Si el metodo de pago no tiene `cuotas_disponibles` (no es Mercado Pago, no esta vinculado,
+     *     no hay cuotas cargadas o la base no tiene las columnas), `contado` y `cuotas` se IGNORAN
+     *     aunque vengan: la preferencia sale exactamente como antes. Es lo que mantiene andando a un
+     *     SPA que mande los campos contra un comercio que ya no ofrece cuotas.
+     *  2. `contado` y `cuotas` a la vez → error (422): son dos opciones excluyentes.
+     *  3. `cuotas` que no es un entero o que no esta en `cuotas_disponibles` → error (422).
+     *  4. `contado: true` → se excluye la tarjeta de credito, sin recargo.
+     *  5. `cuotas: N` → se suma el item «Recargo por pago en N cuotas» y se restringen los medios.
+     *  6. Ninguno de los dos → nada cambia.
+     *
+     * 🔴 EL PORCENTAJE NUNCA SALE DEL BODY. De `cuotas` se usa solo la cantidad; el recargo se
+     * resuelve de la base (`CuotasMercadoPagoHelper::recargo_neto()`) y se aplica sobre
+     * `$articles`, que ya es lo que el servidor armo desde el carrito (con el envio incluido).
+     *
+     * @param Request $request `contado` (bool, opcional) y `cuotas` (int, opcional).
+     * @param \App\PaymentMethod|null $payment_method Fila de `payment_methods` que eligio el comprador.
+     * @param array $articles Los items que devolvio `articulos_a_cobrar()`.
+     * @return array{error: string|null, modo: string|null, cuotas: int|null, recargo_neto: float|null, recargo_en_plata: float, items: array, payment_methods: array}
+     *         `items` son los items EXTRA a sumar (el recargo, o nada); `payment_methods` es el campo
+     *         de la preferencia (vacio = no se manda).
+     */
+    protected function cuotas_de_la_preferencia(Request $request, $payment_method, array $articles)
+    {
+        $resultado = [
+            'error'            => null,
+            'modo'             => null,
+            'cuotas'           => null,
+            'recargo_neto'     => null,
+            'recargo_en_plata' => 0.0,
+            'items'            => [],
+            'payment_methods'  => [],
+        ];
+
+        if (empty(CuotasMercadoPagoHelper::cuotas_disponibles($payment_method))) {
+            return $resultado;
+        }
+
+        $quiere_contado = $request->boolean('contado');
+        $quiere_cuotas  = $request->filled('cuotas');
+
+        if ($quiere_contado && $quiere_cuotas) {
+            $resultado['error'] = 'Elegí pagar de contado o en cuotas, no las dos opciones a la vez.';
+
+            return $resultado;
+        }
+
+        if ($quiere_cuotas) {
+            $cantidad = CuotasMercadoPagoHelper::entero_de_cuotas($request->input('cuotas'));
+            $neto = is_null($cantidad) ? null : CuotasMercadoPagoHelper::recargo_neto($payment_method, $cantidad);
+
+            if (is_null($neto)) {
+                $resultado['error'] = 'Esa cantidad de cuotas no está disponible. Volvé a elegir cómo querés pagar.';
+
+                return $resultado;
+            }
+
+            $recargo = CuotasMercadoPagoHelper::recargo_en_plata(CuotasMercadoPagoHelper::base_a_cobrar($articles), $neto);
+            $item = CuotasMercadoPagoHelper::item_de_recargo($cantidad, $recargo);
+
+            $resultado['modo']             = CuotasMercadoPagoHelper::MODO_CUOTAS;
+            $resultado['cuotas']           = $cantidad;
+            $resultado['recargo_neto']     = $neto;
+            $resultado['recargo_en_plata'] = $recargo;
+            $resultado['items']            = is_null($item) ? [] : [$item];
+            $resultado['payment_methods']  = CuotasMercadoPagoHelper::restricciones_de_medios(CuotasMercadoPagoHelper::MODO_CUOTAS, $cantidad);
+
+            return $resultado;
+        }
+
+        if ($quiere_contado) {
+            $resultado['modo']            = CuotasMercadoPagoHelper::MODO_CONTADO;
+            $resultado['payment_methods'] = CuotasMercadoPagoHelper::restricciones_de_medios(CuotasMercadoPagoHelper::MODO_CONTADO);
+        }
+
+        return $resultado;
     }
 
     /**
@@ -505,9 +609,12 @@ class MercadoPagoController extends Controller
 
             if ($order) {
                 $order->payment_id = $cart->payment_id;
+                $this->anotar_cobro_en_el_pedido($order, $pago);
                 $order->save();
             }
         }
+
+        $this->avisar_si_el_cobro_no_coincide_con_las_cuotas($cart, $pago, $commerce_id);
 
         Log::info('MercadoPagoController@webhook: pago registrado', [
             'commerce_id' => $commerce_id,
@@ -519,6 +626,69 @@ class MercadoPagoController extends Controller
 
         // Solo `ok`: la ruta es publica y Mercado Pago no lee el cuerpo. Los ids quedan en el log.
         return response()->json(['ok' => true], 200);
+    }
+
+    /**
+     * Anota en el pedido lo que Mercado Pago cobro de verdad: la cantidad de cuotas
+     * (`orders.cuotas_cobradas`) y el tipo de medio (`orders.medio_de_pago_cobrado`). Mision
+     * `tienda-cuotas-mercado-pago`.
+     *
+     * Con Checkout Pro la tienda no puede FORZAR que el comprador pague en las cuotas que eligio
+     * (`installments` es un tope y «dinero en cuenta» no se puede excluir), asi que el pedido
+     * queda con lo que realmente paso. Solo cuando el pago esta APROBADO: un pago rechazado o
+     * pendiente no cobro nada, y anotarlo dejaria en el pedido «3 cuotas con tarjeta» sobre un
+     * pedido sin cobrar. Las notificaciones de un mismo pago siguen siendo idempotentes.
+     *
+     * No guarda: el llamador ya hace el `save()` del pedido. Sin las columnas (guarda de esquema)
+     * no hace nada.
+     *
+     * @param \App\Order $order
+     * @param array $pago El pago tal como lo devuelve la API de Mercado Pago.
+     * @return void
+     */
+    protected function anotar_cobro_en_el_pedido(Order $order, array $pago)
+    {
+        if (!isset($pago['status']) || $pago['status'] !== 'approved') {
+            return;
+        }
+
+        foreach (CuotasMercadoPagoHelper::atributos_de_cobro($pago) as $columna => $valor) {
+            $order->{$columna} = $valor;
+        }
+    }
+
+    /**
+     * Deja un warning si el comprador eligio N cuotas y Mercado Pago cobro otra cosa (otra
+     * cantidad, o un medio que no es tarjeta de credito). No cambia nada del pago: es la alerta
+     * para quien despues revise ese pedido. Solo con el pago aprobado (ver
+     * `anotar_cobro_en_el_pedido()`).
+     *
+     * Lee `carts.cuotas`: en una base sin la columna es null y no hace nada.
+     *
+     * @param \App\Cart $cart
+     * @param array $pago El pago tal como lo devuelve la API de Mercado Pago.
+     * @param int $commerce_id
+     * @return void
+     */
+    protected function avisar_si_el_cobro_no_coincide_con_las_cuotas(Cart $cart, array $pago, $commerce_id)
+    {
+        if (!isset($pago['status']) || $pago['status'] !== 'approved') {
+            return;
+        }
+
+        if (!CuotasMercadoPagoHelper::el_cobro_no_coincide($cart->cuotas, $pago)) {
+            return;
+        }
+
+        Log::warning('MercadoPagoController@webhook: el comprador eligio cuotas y Mercado Pago cobro distinto', [
+            'commerce_id'     => $commerce_id,
+            'cart_id'         => $cart->id,
+            'order_id'        => $cart->order_id,
+            'payment_id'      => isset($pago['id']) ? $pago['id'] : null,
+            'cuotas_elegidas' => $cart->cuotas,
+            'cuotas_cobradas' => isset($pago['installments']) ? $pago['installments'] : null,
+            'medio_cobrado'   => isset($pago['payment_type_id']) ? $pago['payment_type_id'] : null,
+        ]);
     }
 
     /**
