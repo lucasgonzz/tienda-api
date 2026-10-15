@@ -49,6 +49,10 @@ class WebhookConCuotasTest extends TestCase
         parent::setUp();
 
         $this->armarCuotas(1000.0);
+
+        // El escenario por defecto: el metodo ofrece cuotas, o sea la feature APLICA a estos carritos.
+        // Los casos de "no aplica" arman un metodo sin vinculo o vinculado sin cuotas cargadas.
+        $this->cuotasDelMetodo([[3, 10]]);
     }
 
     protected function tearDown(): void
@@ -351,5 +355,139 @@ class WebhookConCuotasTest extends TestCase
         $this->assertNull($order->cuotas_cobradas);
         $this->assertNull($order->medio_de_pago_cobrado);
         $this->assertSame(self::PAYMENT_ID, (int) $order->payment_id, 'Lo de siempre se sigue escribiendo.');
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | Solo se anota cuando la feature aplica al carrito
+    |---------------------------------------------------------------------------------------------
+    */
+
+    /**
+     * 🔴 «Sin vinculo = exactamente como hoy»: el pedido de un comercio que no usa la feature NO
+     * gana el medio ni las cuotas cobradas, por mas que el pago este aprobado.
+     */
+    public function test_un_metodo_sin_vinculo_no_anota_nada_aunque_el_pago_este_aprobado()
+    {
+        $sin_vinculo = $this->metodoMercadoPago($this->comercio, null);
+
+        list($cart, $order) = $this->carritoConPedido(['payment_method_id' => $sin_vinculo->id]);
+
+        $this->notificar($this->pago($cart))->assertStatus(200)->assertExactJson(['ok' => true]);
+
+        $order->refresh();
+
+        $this->assertNull($order->cuotas_cobradas);
+        $this->assertNull($order->medio_de_pago_cobrado);
+        $this->assertSame(self::PAYMENT_ID, (int) $order->payment_id, 'Lo de siempre se sigue escribiendo.');
+        $this->assertSame('approved', $cart->refresh()->payment_status);
+    }
+
+    public function test_un_metodo_vinculado_sin_cuotas_cargadas_tampoco_anota()
+    {
+        $sin_filas = $this->metodoMercadoPago($this->comercio, $this->metodoDeCuentaCorriente('Vinculo sin cuotas'));
+
+        list($cart, $order) = $this->carritoConPedido(['payment_method_id' => $sin_filas->id]);
+
+        $this->notificar($this->pago($cart))->assertStatus(200);
+
+        $order->refresh();
+
+        $this->assertNull($order->cuotas_cobradas);
+        $this->assertNull($order->medio_de_pago_cobrado);
+    }
+
+    public function test_un_carrito_sin_metodo_de_pago_no_anota()
+    {
+        list($cart, $order) = $this->carritoConPedido(['payment_method_id' => null]);
+
+        $this->notificar($this->pago($cart))->assertStatus(200);
+
+        $order->refresh();
+
+        $this->assertNull($order->cuotas_cobradas);
+        $this->assertNull($order->medio_de_pago_cobrado);
+    }
+
+    /**
+     * Si el comprador ya habia elegido cuotas, la feature le aplico aunque el comerciante las haya
+     * sacado despues: el pedido tiene que quedar con lo que se cobro.
+     */
+    public function test_si_el_comprador_eligio_cuotas_se_anota_aunque_el_comerciante_las_haya_sacado_despues()
+    {
+        $sin_filas = $this->metodoMercadoPago($this->comercio, $this->metodoDeCuentaCorriente('Vinculo sin cuotas'));
+
+        list($cart, $order) = $this->carritoConPedido(['payment_method_id' => $sin_filas->id, 'cuotas' => 3]);
+
+        $this->notificar($this->pago($cart))->assertStatus(200);
+
+        $order->refresh();
+
+        $this->assertSame(3, (int) $order->cuotas_cobradas);
+        $this->assertSame('credit_card', $order->medio_de_pago_cobrado);
+    }
+
+    public function test_el_metodo_de_otro_comercio_no_hace_que_la_feature_aplique()
+    {
+        $otro = $this->comercioConTienda();
+        $ajeno = $this->metodoMercadoPago($otro, $this->metodo_cc_id);
+        $this->cuota($otro, $this->metodo_cc_id, 3, 10);
+
+        list($cart, $order) = $this->carritoConPedido(['payment_method_id' => $ajeno->id]);
+
+        $this->notificar($this->pago($cart))->assertStatus(200);
+
+        $order->refresh();
+
+        $this->assertNull($order->cuotas_cobradas);
+        $this->assertNull($order->medio_de_pago_cobrado);
+    }
+
+    /**
+     * El aviso de desajuste NO depende de si se anota: con cuotas elegidas y un cobro distinto
+     * queda el warning aunque el metodo ya no ofrezca cuotas.
+     */
+    public function test_el_aviso_de_desajuste_sigue_aunque_el_metodo_no_ofrezca_cuotas()
+    {
+        Log::spy();
+
+        $sin_vinculo = $this->metodoMercadoPago($this->comercio, null);
+
+        list($cart) = $this->carritoConPedido(['payment_method_id' => $sin_vinculo->id, 'cuotas' => 6]);
+
+        $this->notificar($this->pago($cart, ['installments' => 1]))->assertStatus(200);
+
+        $this->assertAvisoDeDesajuste(['cart_id' => $cart->id, 'cuotas_elegidas' => 6, 'cuotas_cobradas' => 1]);
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | 🔴 Una falla al leer las cuotas NO rompe el webhook
+    |---------------------------------------------------------------------------------------------
+    */
+
+    public function test_si_falla_la_lectura_de_cuotas_el_webhook_responde_igual_y_no_anota()
+    {
+        Log::spy();
+
+        list($cart, $order) = $this->carritoConPedido();
+
+        $this->fallarLasLecturasDeCuotas();
+
+        $this->notificar($this->pago($cart))->assertStatus(200)->assertExactJson(['ok' => true]);
+
+        $this->assertGreaterThanOrEqual(1, $this->lecturas_de_cuotas, 'La falla simulada tiene que haberse disparado.');
+
+        $order->refresh();
+
+        $this->assertNull($order->cuotas_cobradas);
+        $this->assertNull($order->medio_de_pago_cobrado);
+        $this->assertSame(self::PAYMENT_ID, (int) $order->payment_id, 'El pago se registra como siempre.');
+        $this->assertSame('approved', $cart->refresh()->payment_status);
+
+        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje, $contexto = []) {
+            return strpos($mensaje, 'no se pudieron leer las cuotas') !== false
+                && (int) $contexto['commerce_id'] === (int) $this->comercio->id;
+        })->once();
     }
 }

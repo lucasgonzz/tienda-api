@@ -5,6 +5,7 @@ namespace Tests\Feature\CuotasMercadoPago;
 use App\DeliveryZone;
 use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -313,6 +314,7 @@ class PreferenciaConCuotasTest extends TestCase
         $respuesta->assertStatus(422);
         $this->assertNotEmpty($respuesta->json('message'));
         $this->assertSame([], TransporteDelSdkSinRed::preferenciasCreadas(), 'Un 422 no puede haber creado la preferencia en Mercado Pago.');
+        $this->assertSame([], TransporteDelSdkSinRed::$pedidos, 'Un 422 de cuotas no gasta ni el GET /users/me del SDK.');
     }
 
     #[DataProvider('cuotasQueElServidorNoOfrece')]
@@ -326,6 +328,7 @@ class PreferenciaConCuotasTest extends TestCase
         $respuesta->assertStatus(422);
         $this->assertNotEmpty($respuesta->json('message'));
         $this->assertSame([], TransporteDelSdkSinRed::preferenciasCreadas());
+        $this->assertSame([], TransporteDelSdkSinRed::$pedidos, 'Un 422 de cuotas no gasta ni el GET /users/me del SDK.');
     }
 
     public static function cuotasQueElServidorNoOfrece()
@@ -450,5 +453,194 @@ class PreferenciaConCuotasTest extends TestCase
 
         $this->assertArrayNotHasKey('payment_methods', $preferencia);
         $this->assertSame(2000.0, $this->totalDeLaPreferencia($preferencia));
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | El metodo de pago tiene que ser del comercio del carrito
+    |---------------------------------------------------------------------------------------------
+    */
+
+    /**
+     * Un metodo de Mercado Pago VINCULADO de otro comercio, con cuotas cargadas y un recargo
+     * distinto (la lista publica de metodos de pago lo muestra a cualquiera).
+     *
+     * @return \App\PaymentMethod
+     */
+    private function metodoDeOtroComercioConCuotas()
+    {
+        $otro = $this->comercioConTienda();
+        $metodo = $this->metodoMercadoPago($otro, $this->metodo_cc_id);
+        $this->cuota($otro, $this->metodo_cc_id, 3, 50);
+
+        return $metodo;
+    }
+
+    /**
+     * 🔴 EL HUECO DE LA PLATA: el carrito es del comercio A, el body manda el id del metodo
+     * vinculado del comercio B. Sin el cruce se cobraba el recargo de B (50%) sobre el carrito de A.
+     */
+    public function test_cuotas_con_el_metodo_de_otro_comercio_es_422_y_no_gasta_red()
+    {
+        $this->cuotasDelMetodo([[3, 10]]);
+        $cart = $this->carritoDeDosMil();
+        $ajeno = $this->metodoDeOtroComercioConCuotas();
+
+        $respuesta = $this->pedirPreferencia($cart, ['cuotas' => 3], $ajeno);
+
+        $respuesta->assertStatus(422);
+        $this->assertNotEmpty($respuesta->json('message'));
+        $this->assertSame([], TransporteDelSdkSinRed::$pedidos, 'Ni la preferencia ni el GET /users/me.');
+    }
+
+    public function test_contado_con_el_metodo_de_otro_comercio_tambien_es_422()
+    {
+        $this->cuotasDelMetodo([[3, 10]]);
+        $cart = $this->carritoDeDosMil();
+        $ajeno = $this->metodoDeOtroComercioConCuotas();
+
+        $this->pedirPreferencia($cart, ['contado' => true], $ajeno)->assertStatus(422);
+        $this->assertSame([], TransporteDelSdkSinRed::$pedidos);
+    }
+
+    /**
+     * El camino de siempre NO se toca: sin `contado` ni `cuotas` el cruce no corre y la preferencia
+     * sale como antes (es un agujero preexistente y distinto, que esta mision no abre ni cierra).
+     */
+    public function test_sin_contado_ni_cuotas_el_cruce_de_comercios_no_corre()
+    {
+        $this->cuotasDelMetodo([[3, 10]]);
+        $cart = $this->carritoDeDosMil();
+        $ajeno = $this->metodoDeOtroComercioConCuotas();
+
+        $this->pedirPreferencia($cart, [], $ajeno)->assertStatus(201);
+
+        $this->assertArrayNotHasKey('payment_methods', $this->preferenciaEnviada());
+    }
+
+    /**
+     * El cruce es por COMERCIO, no por `carts.payment_method_id`: el carrito del servidor puede no
+     * tener todavia guardado el metodo cuando se pide la preferencia, y eso no puede romper el flujo.
+     */
+    public function test_un_carrito_sin_el_metodo_guardado_igual_puede_pedir_cuotas_con_el_metodo_de_su_comercio()
+    {
+        $this->cuotasDelMetodo([[3, 10]]);
+        $cart = $this->carritoPorElEndpoint(2, [], false);
+
+        $this->assertNull($cart->payment_method_id, 'El escenario: el carrito todavia no tiene metodo de pago.');
+
+        $this->pedirPreferencia($cart, ['cuotas' => 3])->assertStatus(201);
+
+        $preferencia = $this->preferenciaEnviada();
+
+        $this->assertSame(200.0, (float) $preferencia['items'][1]['unit_price']);
+        $this->assertSame(3, $preferencia['payment_methods']['installments']);
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | El orden: el 422 de cuotas va antes del SDK
+    |---------------------------------------------------------------------------------------------
+    */
+
+    /**
+     * El control de los `assertSame([], TransporteDelSdkSinRed::$pedidos)` de los 422: el camino
+     * feliz SI hace los dos pedidos (el GET /users/me del SDK y el POST de la preferencia). Sin este
+     * caso, "no hubo pedidos" podria ser que el doble no anota nada.
+     */
+    public function test_el_caso_feliz_si_pasa_por_el_sdk_y_el_422_no()
+    {
+        $this->cuotasDelMetodo([[3, 10]]);
+        $cart = $this->carritoDeDosMil();
+
+        $this->pedirPreferencia($cart, ['cuotas' => 3])->assertStatus(201);
+
+        $this->assertCount(2, TransporteDelSdkSinRed::$pedidos);
+        $this->assertSame('GET', TransporteDelSdkSinRed::$pedidos[0]['verbo']);
+        $this->assertSame('POST', TransporteDelSdkSinRed::$pedidos[1]['verbo']);
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | Texto del item
+    |---------------------------------------------------------------------------------------------
+    */
+
+    public function test_el_item_de_una_sola_cuota_dice_cuota_en_singular()
+    {
+        $this->cuotasDelMetodo([[1, 10], [3, 10]]);
+
+        foreach ([1 => 'Recargo por pago en 1 cuota', 3 => 'Recargo por pago en 3 cuotas'] as $cantidad => $titulo) {
+            $cart = $this->carritoDeDosMil();
+
+            TransporteDelSdkSinRed::instalar();
+
+            $this->pedirPreferencia($cart, ['cuotas' => $cantidad])->assertStatus(201);
+
+            $this->assertSame($titulo, $this->preferenciaEnviada()['items'][1]['title']);
+        }
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | Una falla al leer las cuotas
+    |---------------------------------------------------------------------------------------------
+    */
+
+    /**
+     * 🔴 La feature opcional NUNCA rompe el checkout de hoy: sin `contado` ni `cuotas` ni siquiera
+     * se lee la tabla de cuotas, asi que una falla de la base ahi no puede tocar la preferencia.
+     */
+    public function test_sin_pedir_cuotas_ni_se_lee_la_tabla_y_la_preferencia_sale_aunque_la_lectura_fallaria()
+    {
+        $this->cuotasDelMetodo([[3, 10]]);
+        $cart = $this->carritoDeDosMil();
+
+        $this->fallarLasLecturasDeCuotas();
+
+        $this->pedirPreferencia($cart)->assertStatus(201);
+
+        $this->assertSame(0, $this->lecturas_de_cuotas, 'El camino de siempre no lee cuotas.');
+        $this->assertArrayNotHasKey('payment_methods', $this->preferenciaEnviada());
+        $this->assertSame(2000.0, $this->totalDeLaPreferencia($this->preferenciaEnviada()));
+    }
+
+    /**
+     * Si el comprador PIDIO cuotas y la lectura falla, es un 422 claro: ignorarlo cobraria el
+     * precio sin recargo en una compra que el comprador vio en cuotas.
+     */
+    public function test_si_la_lectura_falla_pidiendo_cuotas_es_422_y_no_cobra_de_menos()
+    {
+        $this->cuotasDelMetodo([[3, 10]]);
+        $cart = $this->carritoDeDosMil();
+
+        $this->fallarLasLecturasDeCuotas();
+        Log::spy();
+
+        $respuesta = $this->pedirPreferencia($cart, ['cuotas' => 3]);
+
+        $respuesta->assertStatus(422);
+        $this->assertNotEmpty($respuesta->json('message'));
+        $this->assertSame(1, $this->lecturas_de_cuotas, 'Una sola lectura: la lista ya leida se reusa.');
+        $this->assertSame([], TransporteDelSdkSinRed::$pedidos);
+
+        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje, $contexto = []) {
+            return strpos($mensaje, 'no se pudieron leer las cuotas') !== false
+                && (int) $contexto['commerce_id'] === (int) $this->comercio->id
+                && strpos($contexto['mensaje'], 'falla simulada') !== false
+                && !array_key_exists('access_token', $contexto);
+        })->once();
+    }
+
+    public function test_se_lee_la_tabla_una_sola_vez_por_preferencia_con_cuotas()
+    {
+        $this->cuotasDelMetodo([[3, 10]]);
+        $cart = $this->carritoDeDosMil();
+
+        $this->contarLasLecturasDeCuotas();
+
+        $this->pedirPreferencia($cart, ['cuotas' => 3])->assertStatus(201);
+
+        $this->assertSame(1, $this->lecturas_de_cuotas);
     }
 }
