@@ -6,7 +6,6 @@ use App\Article;
 use App\ArticlePriceTypeGroup;
 use App\Cart;
 use App\Combo;
-use App\Cupon;
 use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ClientOfferHelper;
@@ -21,13 +20,6 @@ class CartHelper {
             $order = Order::find($cart->order_id);
             $order->payment_id = $cart->payment_id;
             $order->save();
-        }
-    }
-
-    static function attachCupons($cart, $cupons) {
-        $cart->cupons()->detach();
-        foreach ($cupons as $cupon) {
-            $cart->cupons()->attach($cupon['id']);
         }
     }
 

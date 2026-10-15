@@ -4,14 +4,12 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Buyer;
 use App\Cart;
-use App\Cupon;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Order;
 use App\Payment;
 use App\User;
-use Illuminate\Support\Facades\Log;
 
 
 class OrderHelper {
@@ -41,13 +39,6 @@ class OrderHelper {
         if ($cart) {
             $cart->order_id = $order->id;
             $cart->save();
-        }
-    }
-
-    static function attachCupons($cart, $order) {
-        Log::info('Cupones del carrito: '.count($cart->cupons));
-        foreach ($cart->cupons as $cupon) {
-            $order->cupons()->attach($cupon->id);
         }
     }
 

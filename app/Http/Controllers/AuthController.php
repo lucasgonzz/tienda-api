@@ -3,10 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Buyer;
-use App\Cupon;
 use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\BuyerHelper;
-use App\Http\Controllers\Helpers\CuponHelper;
 use App\Http\Controllers\Helpers\TwilioHelper;
 use App\Mail\PasswordReset;
 use App\Notifications\VerificationCode;
@@ -181,24 +179,5 @@ class AuthController extends Controller
     static function setLastLogin($buyer) {
         $buyer->last_login = Carbon::now();
         $buyer->save();
-    }
-
-    function checkCupons($buyer) {
-        $cupon_for_new_buyers = Cupon::where('type', 'for_new_buyers');
-        if (!is_null($buyer->user_id)) {
-            $cupon_for_new_buyers = $cupon_for_new_buyers->where('user_id', $buyer->user_id);
-        }
-        $cupon_for_new_buyers = $cupon_for_new_buyers->first();
-        if (!is_null($cupon_for_new_buyers)) {
-            $cupon = Cupon::create([
-                        'amount'            => CuponHelper::getAmount($cupon_for_new_buyers),
-                        'percentage'        => CuponHelper::getPercentage($cupon_for_new_buyers),
-                        'min_amount'        => CuponHelper::getMinAmount($cupon_for_new_buyers),
-                        'expiration_date'   => CuponHelper::getExpirationDate($cupon_for_new_buyers),
-                        'buyer_id'          => $buyer->id,
-                        'user_id'           => $buyer->user_id ? $buyer->user_id : null,
-                    ]);
-            // CuponHelper::sendCuponNotification($cupon);
-        }
     }
 }
