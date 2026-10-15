@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
+use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
@@ -329,7 +330,10 @@ class OrderController extends Controller
                 'address'                   => $address,
         	// Las columnas envio_* copiadas del carrito, solo si el esquema está y el carrito va
         	// por Zipnova (vacío en cualquier otro caso: el create de siempre no cambia).
-        	], EnvioCartHelper::atributos_para_pedido($cart)));
+        	], EnvioCartHelper::atributos_para_pedido($cart),
+        	// Las cuotas de Mercado Pago (mision tienda-cuotas-mercado-pago): `cuotas` y el recargo neto
+        	// resuelto de la base, solo con el esquema y si el carrito eligio cuotas (vacio si no).
+        	CuotasMercadoPagoHelper::atributos_para_pedido($cart)));
 
             Log::info('order address:');
             Log::info($order->address);

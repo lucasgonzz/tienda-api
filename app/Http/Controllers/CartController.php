@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
+use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Order;
 use Illuminate\Http\Request;
@@ -399,6 +400,9 @@ class CartController extends Controller
     /**
      * Copia al carrito los campos del paso de checkout (entrega, pago, notas, etc.).
      *
+     * Guarda `cuotas` (misión tienda-cuotas-mercado-pago) solo si el método de pago elegido la
+     * ofrece (`CuotasMercadoPagoHelper::sincronizar_carrito()`).
+     *
      * Al final sincroniza el envío por correo (`$data['envio']`, misión zipnova-envios): si el
      * comprador eligió una opción de Zipnova, el servidor la re-cotiza cuando hace falta y deja el
      * precio en `carts.envio_precio`; si eligió retiro o una zona propia, limpia esas columnas.
@@ -423,6 +427,11 @@ class CartController extends Controller
         $cart->cupon_id             = null;
         $cart->description          = isset($data['description']) ? $data['description'] : null;
         $cart->fecha_entrega        = !empty($data['fecha_entrega']) ? $data['fecha_entrega'] : null;
+
+        // Cuotas de Mercado Pago (mision tienda-cuotas-mercado-pago): `carts.cuotas` queda con lo que
+        // el comprador eligio SOLO si el metodo de pago que se acaba de copiar arriba ofrece esa
+        // cantidad; si no, NULL. Detras de la guarda de esquema: sin la columna no hace nada.
+        CuotasMercadoPagoHelper::sincronizar_carrito($cart, is_array($data) ? $data : []);
 
         EnvioCartHelper::sincronizar($cart, is_array($data) ? $data : []);
     }
