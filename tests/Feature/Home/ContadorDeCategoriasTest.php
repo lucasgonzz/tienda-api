@@ -139,6 +139,28 @@ class ContadorDeCategoriasTest extends TestCase
     }
 
     /**
+     * La forma de la respuesta no cambia: las categorias y las subcategorias salen como LISTAS JSON
+     * (no como objetos con claves salteadas por el filtro) y en orden alfabetico.
+     */
+    public function test_la_respuesta_sigue_siendo_una_lista_ordenada()
+    {
+        $this->armarCategoriaMixta(1, 1);
+
+        $zeta = $this->categoria($this->comercio, 'Zeta');
+        $this->conImagen($this->articulo($this->comercio, ['category_id' => $zeta->id, 'name' => 'Art Zeta']));
+        $beta = $this->categoria($this->comercio, 'Beta');
+        $this->conImagen($this->articulo($this->comercio, ['category_id' => $beta->id, 'name' => 'Art Beta']));
+
+        $crudo = $this->json('GET', '/api/categories/'.$this->comercio->id)->assertStatus(200)->json('categories');
+
+        $this->assertSame(['Beta', 'Mixta', 'Zeta'], array_column($crudo, 'name'));
+        $this->assertSame(range(0, count($crudo) - 1), array_keys($crudo), 'una lista, no un objeto');
+
+        $mixta = $crudo[1];
+        $this->assertSame(range(0, count($mixta['sub_categories']) - 1), array_keys($mixta['sub_categories']));
+    }
+
+    /**
      * La cuenta sigue a la configuracion de la tienda, igual que el listado: si la tienda muestra
      * articulos sin imagen y sin stock, esos cuentan; lo no publicado (`online = 0`, inactivo) sigue
      * sin contar nunca.

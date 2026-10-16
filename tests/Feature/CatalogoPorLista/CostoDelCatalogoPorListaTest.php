@@ -60,7 +60,7 @@ use Tests\TestCase;
  * categorias-contador-publicado (16/10/2026), MEDIDO, no estimado: el numero del panel de categorias
  * ahora cuenta con `checkOnline()` + `checkStock()` (lo que muestra el listado) y cada evaluacion de esos
  * scopes cuesta 4 consultas (`User::find` y la `online_configuration` del comercio, dos veces). Se evalua
- * dos veces (categorias y subcategorias): 3 + 8 = 11. Marcas ya pagaba una evaluacion (5 -> 6). Bajarlo
+ * dos veces (categorias y subcategorias): 3 + 8 = 11. Marcas ya evaluaba los scopes una vez (esas 4 consultas ya estan en su total de 6). Bajarlo
  * pide memoizar el comercio dentro de los scopes de `Article`, que es otro cambio: lo bajaria tambien en
  * nombres, marcas y seleccion. Es un cambio de costo deliberado y medido, no un ajuste para que el
  * test pase.
@@ -270,7 +270,7 @@ class CostoDelCatalogoPorListaTest extends TestCase
     /**
      * 🔴 EL COSTO MEDIDO de los endpoints que antes NO resolvian ninguna lista (B3): el visitante paga
      * UNA consulta de las listas del comercio (master: ninguna), y nada mas. Las cifras son las del
-     * docblock de la clase: nombres 8 -> 9, marcas 5 -> 6, categorias 2 -> 3 (11 desde el 16/10/2026, ver abajo), subcategorias 1 -> 2,
+     * docblock de la clase: nombres 8 -> 9, marcas 5 -> 6, categorias 2 -> 3 (11 desde el 16/10/2026, ver arriba), subcategorias 1 -> 2,
      * seleccion 39 -> 40.
      */
     public function test_el_visitante_paga_una_consulta_de_listas_en_los_endpoints_que_antes_no_la_hacian()
