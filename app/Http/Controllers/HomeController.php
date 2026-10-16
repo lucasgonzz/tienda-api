@@ -266,17 +266,28 @@ class HomeController extends Controller
             $query->checkOnline()->checkStock();
         };
 
+        // Se cuenta UNA sola vez por nivel (no `whereHas` + `withCount` con el mismo filtro): cada
+        // evaluacion de los scopes cuesta consultas del comercio y un EXISTS de imagenes por articulo.
+        // Las que quedan en 0 se descartan despues, sobre la coleccion.
         $categories = Category::where('user_id', $commerce_id)
                                 ->where('name', '!=', 'La de siempre')
-                                ->whereHas('articles', $publicados)
                                 ->withCount(['articles' => $publicados])
                                 ->with(['sub_categories' => function($query) use ($publicados) {
-                                    $query->whereHas('articles', $publicados)
-                                            ->withCount(['articles' => $publicados])
+                                    $query->withCount(['articles' => $publicados])
                                             ->orderBy('name', 'ASC');
                                 }])
                                 ->orderBy('name', 'ASC')
-                                ->get();
+                                ->get()
+                                ->filter(function ($category) {
+                                    return $category->articles_count > 0;
+                                })
+                                ->values();
+
+        foreach ($categories as $category) {
+            $category->setRelation('sub_categories', $category->sub_categories->filter(function ($sub_category) {
+                return $sub_category->articles_count > 0;
+            })->values());
+        }
 
         // $categories = HomeHelper::addIndexCategory($categories, $commerce_id);
         // $categories = HomeHelper::removeCategoriesWithoutArticles($categories, $commerce_id);
