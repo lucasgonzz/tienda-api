@@ -9,12 +9,11 @@ use Tests\TestCase;
  * (c) Categorias, subcategorias y marcas con lista restringida (mision catalogo-por-lista-tienda,
  * 5/10/2026).
  *
- * `HomeController::categories()` y `subCategories()` cuentan con `withCount('articles')` /
- * `whereHas('articles')` SIN pasar por `checkOnline()`: hoy cuentan todo. Con lista restringida eso
- * seria un defecto doble —categorias que al abrirlas estan vacias, y conteos que le dicen al
- * mayorista cuantos articulos existen que no le muestran—, asi que SOLO en ese caso se restringen.
- * Sin lista restringida la consulta queda identica, incluido que una categoria vacia se sigue
- * devolviendo: eso es lo que esta clase fija en la otra mitad.
+ * `HomeController::subCategories()` sigue con `whereHas('articles')` sin pasar por `checkOnline()`,
+ * asi que solo se restringe con lista restringida. `categories()` (desde el 16/10/2026, mision
+ * categorias-contador-publicado) cuenta y esconde con `checkOnline()` + `checkStock()`, que ya
+ * incluyen la lista: el numero es el del listado, con o sin lista restringida (el detalle esta en
+ * `Home\ContadorDeCategoriasTest`).
  *
  * Las marcas: el `whereHas` ya pasaba por `checkOnline()`; el conteo se restringe con el mismo
  * criterio que el de las categorias.
@@ -61,9 +60,10 @@ class CategoriasYMarcasTest extends TestCase
     }
 
     /**
-     * Sin lista restringida, todo como hoy: los conteos cuentan todo, y una categoria SIN articulos
-     * se sigue devolviendo (con 0). Si este caso se pone rojo, se cambio el comportamiento del 100%
-     * de los clientes.
+     * Sin lista restringida, los conteos cuentan todo lo publicado. Una categoria SIN articulos para
+     * mostrar ya NO se devuelve (mision categorias-contador-publicado, decision de Lucas 16/10/2026:
+     * antes se devolvia con 0; ahora es el mismo criterio que la rama con lista restringida).
+     * Los articulos del fixture estan todos publicados, asi que los numeros son los de siempre.
      */
     public function test_el_visitante_ve_las_categorias_y_los_conteos_de_siempre()
     {
@@ -73,10 +73,9 @@ class CategoriasYMarcasTest extends TestCase
 
         $categorias = $this->categorias();
 
-        $this->assertSame(['Herramientas', 'Solo Minorista', 'Vacia'], array_keys($categorias));
+        $this->assertSame(['Herramientas', 'Solo Minorista'], array_keys($categorias));
         $this->assertSame(2, (int) $categorias['Herramientas']['articles_count']);
         $this->assertSame(1, (int) $categorias['Solo Minorista']['articles_count']);
-        $this->assertSame(0, (int) $categorias['Vacia']['articles_count']);
 
         $subs = $this->porNombre($categorias['Herramientas']['sub_categories']);
         $this->assertSame(['Martillos', 'Taladros'], array_keys($subs));

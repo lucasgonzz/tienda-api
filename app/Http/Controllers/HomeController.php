@@ -240,52 +240,44 @@ class HomeController extends Controller
     /**
      * Las categorias del comercio, con cuantos articulos tiene cada una (y sus subcategorias).
      *
-     * Catalogo por lista (mision catalogo-por-lista-tienda, 5/10/2026): SOLO si el comprador tiene
-     * una lista restringida, los conteos cuentan los articulos habilitados para su lista y las
-     * categorias sin ninguno no se devuelven. Es por dos motivos: una categoria que al abrirla esta
-     * vacia es un defecto visible, y un conteo de todo el catalogo le diria al mayorista cuantos
-     * articulos existen que no le muestran.
+     * 🔴 El numero es EL DEL LISTADO (mision categorias-contador-publicado, 16/10/2026): un articulo
+     * cuenta si `articlesFromCategory()` lo mostraria, o sea si pasa `checkOnline()` (publicado,
+     * activo, con imagen si la tienda las exige) y `checkStock()` (con stock si la tienda lo exige).
+     * Antes el conteo era `withCount('articles')` pelado y el panel lateral de todas las tiendas
+     * mostraba articulos que despues no aparecian al abrir la categoria. La logica no se duplica: son
+     * los mismos scopes de `Article`, que leen el comercio de `request()->commerce_id`.
      *
-     * 🔴 Sin lista restringida (el 100% de los clientes de hoy) la consulta queda IDENTICA a la de
-     * antes, incluido que las categorias sin articulos SI se devuelven: el SPA de hoy convive con
-     * eso y esta mision no lo cambia. Por eso son dos ramas y no un closure que "a veces no hace
-     * nada": la rama de siempre no se toca ni en el SQL.
+     * Una categoria o subcategoria que queda sin ningun articulo para mostrar NO se devuelve
+     * (decision de Lucas, 16/10/2026): el mismo criterio que ya tenian las subcategorias y la rama
+     * con lista restringida, porque una categoria que al abrirla esta vacia es un defecto visible.
      *
-     * Lo que se cuenta con lista restringida es lo mismo que se contaba antes (todos los articulos de
-     * la categoria, sin mirar `online` ni el stock) menos los no habilitados: se agrega SOLO la
-     * restriccion de la lista.
+     * Catalogo por lista (mision catalogo-por-lista-tienda, 5/10/2026): `checkOnline()` ya cuelga de
+     * `CatalogoPorListaHelper::restringir()` (via `visibleParaLaLista()`), asi que el comprador con
+     * lista restringida cuenta solo los articulos habilitados para su lista, sin una rama aparte.
+     * Sin lista restringida `restringir()` no toca la consulta. Un conteo de todo el catalogo le
+     * diria al mayorista cuantos articulos existen que no le muestran.
      */
     function categories($commerce_id) {
-        $lista = CatalogoPorListaHelper::lista_restringida($commerce_id);
+        // Los scopes de Article leen el comercio del request, igual que en el listado.
+        CatalogoPorListaHelper::fijar_el_comercio($commerce_id);
 
-        if (is_null($lista)) {
-            $categories = Category::where('user_id', $commerce_id)
-                                    ->where('name', '!=', 'La de siempre')
-                                    ->withCount('articles')
-                                    ->with(['sub_categories' => function($query) {
-                                        $query->whereHas('articles')
-                                                ->withCount('articles')
-                                                ->orderBy('name', 'ASC');
-                                    }])
-                                    ->orderBy('name', 'ASC')
-                                    ->get();
-        } else {
-            $solo_habilitados = function ($query) use ($commerce_id) {
-                CatalogoPorListaHelper::restringir($query, $commerce_id);
-            };
+        // Lo que el listado muestra: publicado, con el stock/imagen que pida la tienda, y de la lista.
+        $publicados = function ($query) {
+            $query->checkOnline()->checkStock();
+        };
 
-            $categories = Category::where('user_id', $commerce_id)
-                                    ->where('name', '!=', 'La de siempre')
-                                    ->whereHas('articles', $solo_habilitados)
-                                    ->withCount(['articles' => $solo_habilitados])
-                                    ->with(['sub_categories' => function($query) use ($solo_habilitados) {
-                                        $query->whereHas('articles', $solo_habilitados)
-                                                ->withCount(['articles' => $solo_habilitados])
-                                                ->orderBy('name', 'ASC');
-                                    }])
-                                    ->orderBy('name', 'ASC')
-                                    ->get();
-        }
+        $categories = Category::where('user_id', $commerce_id)
+                                ->where('name', '!=', 'La de siempre')
+                                ->whereHas('articles', $publicados)
+                                ->withCount(['articles' => $publicados])
+                                ->with(['sub_categories' => function($query) use ($publicados) {
+                                    $query->whereHas('articles', $publicados)
+                                            ->withCount(['articles' => $publicados])
+                                            ->orderBy('name', 'ASC');
+                                }])
+                                ->orderBy('name', 'ASC')
+                                ->get();
+
         // $categories = HomeHelper::addIndexCategory($categories, $commerce_id);
         // $categories = HomeHelper::removeCategoriesWithoutArticles($categories, $commerce_id);
         return response()->json(['categories' => $categories], 200);
