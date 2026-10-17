@@ -135,33 +135,26 @@ class HomeController extends Controller
      */
     function brands($commerce_id)
     {
-        request()->merge(['commerce_id' => $commerce_id]);
+        CatalogoPorListaHelper::fijar_el_comercio($commerce_id);
 
-        /* Catalogo por lista (mision catalogo-por-lista-tienda, 5/10/2026). El `whereHas` ya
-           respeta la lista del comprador porque pasa por checkOnline(), asi que una marca sin
-           articulos habilitados no se devuelve. El conteo, en cambio, no pasaba por ahi: con una
-           lista restringida cuenta solo los habilitados, por el mismo motivo que categories() (el
-           numero le diria al mayorista cuantos articulos existen que no le muestran). Sin lista
-           restringida la consulta queda identica a la de antes. */
-        $lista = CatalogoPorListaHelper::lista_restringida($commerce_id);
-
+        /* 🔴 El numero es EL DEL LISTADO (mision contadores-bodegas-cepas-marcas-subcategorias,
+           17/10/2026): un articulo cuenta si `articlesFromBrand()` lo mostraria, o sea si pasa
+           `checkOnline()` (publicado, con imagen si la tienda la exige, y de la lista del comprador) y
+           `checkStock()`. Se cuenta UNA vez y las marcas que quedan en 0 no se devuelven (decision de
+           Lucas, 17/10/2026). Antes el `whereHas` filtraba pero el `withCount` sin lista restringida
+           era pelado, y la marca decia mas de lo que despues aparecia. */
         $brands = Brand::where('user_id', $commerce_id)
-            ->whereHas('articles', function ($query) use ($commerce_id) {
+            ->withCount(['articles' => function ($query) use ($commerce_id) {
                 $query->where('user_id', $commerce_id)
                     ->checkOnline()
                     ->checkStock();
-            });
-
-        if (is_null($lista)) {
-            $brands->withCount('articles');
-        } else {
-            $brands->withCount(['articles' => function ($query) use ($commerce_id) {
-                CatalogoPorListaHelper::restringir($query, $commerce_id);
-            }]);
-        }
-
-        $brands = $brands->orderBy('name', 'ASC')
-            ->get();
+            }])
+            ->orderBy('name', 'ASC')
+            ->get()
+            ->filter(function ($brand) {
+                return $brand->articles_count > 0;
+            })
+            ->values();
 
         return response()->json(['brands' => $brands], 200);
     }
@@ -204,34 +197,31 @@ class HomeController extends Controller
     }
 
     /**
-     * Las subcategorias de una categoria que tienen articulos.
+     * Las subcategorias de una categoria que tienen articulos PARA MOSTRAR, con cuantos.
      *
-     * Catalogo por lista (mision catalogo-por-lista-tienda, 5/10/2026): SOLO si el comprador tiene
-     * una lista restringida, "tiene articulos" pasa a ser "tiene articulos habilitados para su
-     * lista" — si no, el mayorista veria subcategorias que al abrirlas estan vacias. Sin lista
-     * restringida la consulta de subcategorias queda identica a la de antes.
+     * 🔴 El numero y la presencia son los del listado (mision contadores-bodegas-cepas-marcas-
+     * subcategorias, 17/10/2026): una subcategoria solo viene si `articlesFromCategory()` mostraria
+     * al menos un articulo suyo (`checkOnline()` + `checkStock()`, que ya incluyen la lista
+     * restringida del comprador). Antes era `whereHas('articles')` pelado y el SPA, que abre la
+     * primera subcategoria al entrar a una categoria, podia abrir una vacia que el panel ya no muestra.
      *
-     * La ruta no trae `commerce_id`, y averiguarlo antes costaria una lectura de la categoria en
-     * cada request. Por eso la consulta de siempre corre PRIMERO, tal cual, y el comercio sale de lo
-     * que devolvio (`sub_categories.user_id`, que lo escribio el ERP): si no hay subcategorias no hay
-     * nada que esconder, y si las hay y la lista no es restringida se devuelven esas mismas. Solo el
-     * comprador de una lista restringida paga la segunda consulta, la filtrada.
+     * La ruta no trae `commerce_id`: sale de `sub_categories.user_id` (lo escribe el ERP). Los scopes de
+     * `Article` leen el comercio del request, asi que se fija antes de contar. Sin subcategorias no hay
+     * nada que contar ni comercio que averiguar.
      */
     function subCategories($category_id) {
-        $sub_categories = SubCategory::where('category_id', $category_id)
-                                    ->whereHas('articles')
-                                    ->get();
+        $sub_categories = SubCategory::where('category_id', $category_id)->get();
 
         if (count($sub_categories) >= 1) {
-            $commerce_id = $sub_categories->first()->user_id;
+            CatalogoPorListaHelper::fijar_el_comercio($sub_categories->first()->user_id);
 
-            if (!is_null(CatalogoPorListaHelper::lista_restringida($commerce_id))) {
-                $sub_categories = SubCategory::where('category_id', $category_id)
-                                            ->whereHas('articles', function ($query) use ($commerce_id) {
-                                                CatalogoPorListaHelper::restringir($query, $commerce_id);
-                                            })
-                                            ->get();
-            }
+            $sub_categories->loadCount(['articles' => function ($query) {
+                $query->checkOnline()->checkStock();
+            }]);
+
+            $sub_categories = $sub_categories->filter(function ($sub_category) {
+                return $sub_category->articles_count > 0;
+            })->values();
         }
 
         return response()->json(['sub_categories' => $sub_categories], 200);

@@ -65,6 +65,14 @@ use Tests\TestCase;
  * nombres, marcas y seleccion. Es un cambio de costo deliberado y medido, no un ajuste para que el
  * test pase.
  *
+ * 🔴 `subcategorias` pasa de 2 a 7 (3 -> 8 y 4 -> 9 en los otros perfiles) desde la mision
+ * contadores-bodegas-cepas-marcas-subcategorias (17/10/2026), MEDIDO: `subCategories()` ahora cuenta con
+ * `checkOnline()` + `checkStock()` para no devolver una subcategoria que el listado no muestra. Sale de
+ * 2 consultas (subcategorias + la de listas) a 7: la de subcategorias, el conteo y las 4 de los scopes
+ * (`User::find` y `online_configuration`, dos veces), mas la de listas. Marcas no cambia (6): ya
+ * evaluaba los scopes una vez. Memoizar el comercio en los scopes de `Article` lo bajaria. Cambio de costo
+ * deliberado, no un ajuste para que el test pase.
+ *
  * No hay forma simple y segura de evitarlas: hace falta la lista del comprador para armar el SQL del
  * listado, y saber si el comercio tiene alguna lista restringida sin leer las listas pide otra consulta
  * sobre una columna que puede no existir (la guarda de esquema que justamente se evita) o cambiar la
@@ -74,8 +82,8 @@ use Tests\TestCase;
  * ── Que fija esta clase, y que NO (N5 de la revision de cierre) ────────────────────────────────────
  *
  * FIJA los totales de consultas de los cinco endpoints de arranque (nombres, marcas, categorias,
- * subcategorias y seleccion especial) para los tres perfiles: visitante 9, 6, 11, 2 y 40; logueado sin
- * cliente 10, 7, 12, 3 y 41; logueado con cliente con lista 11, 8, 13, 4 y 42. Fija tambien que haya UNA
+ * subcategorias y seleccion especial) para los tres perfiles: visitante 9, 6, 11, 7 y 40; logueado sin
+ * cliente 10, 7, 12, 8 y 41; logueado con cliente con lista 11, 8, 13, 9 y 42. Fija tambien que haya UNA
  * consulta de las listas del comercio en la home del visitante (a lo sumo una por request en la busqueda y
  * el carrito) y exactamente una en la home y la busqueda con la extension de rangos y con `register_to_buy`,
  * que la busqueda del logueado con cliente y rangos cargue `clients`, que la seleccion especial de un
@@ -270,7 +278,7 @@ class CostoDelCatalogoPorListaTest extends TestCase
     /**
      * 🔴 EL COSTO MEDIDO de los endpoints que antes NO resolvian ninguna lista (B3): el visitante paga
      * UNA consulta de las listas del comercio (master: ninguna), y nada mas. Las cifras son las del
-     * docblock de la clase: nombres 8 -> 9, marcas 5 -> 6, categorias 2 -> 3 (11 desde el 16/10/2026, ver arriba), subcategorias 1 -> 2,
+     * docblock de la clase: nombres 8 -> 9, marcas 5 -> 6, categorias 2 -> 3 (11 desde el 16/10/2026, ver arriba), subcategorias 1 -> 2 (7 desde el 17/10/2026, ver arriba),
      * seleccion 39 -> 40.
      */
     public function test_el_visitante_paga_una_consulta_de_listas_en_los_endpoints_que_antes_no_la_hacian()
@@ -280,7 +288,7 @@ class CostoDelCatalogoPorListaTest extends TestCase
         $totales = $this->medirLosEndpointsDeArranque(1, 0, 0);
 
         $this->assertSame(
-            ['nombres' => 9, 'marcas' => 6, 'categorias' => 11, 'subcategorias' => 2, 'seleccion' => 40],
+            ['nombres' => 9, 'marcas' => 6, 'categorias' => 11, 'subcategorias' => 7, 'seleccion' => 40],
             $totales
         );
     }
@@ -296,7 +304,7 @@ class CostoDelCatalogoPorListaTest extends TestCase
         $totales = $this->medirLosEndpointsDeArranque(1, 1, 0);
 
         $this->assertSame(
-            ['nombres' => 10, 'marcas' => 7, 'categorias' => 12, 'subcategorias' => 3, 'seleccion' => 41],
+            ['nombres' => 10, 'marcas' => 7, 'categorias' => 12, 'subcategorias' => 8, 'seleccion' => 41],
             $totales
         );
     }
@@ -312,7 +320,7 @@ class CostoDelCatalogoPorListaTest extends TestCase
         $totales = $this->medirLosEndpointsDeArranque(0, 1, 1);
 
         $this->assertSame(
-            ['nombres' => 11, 'marcas' => 8, 'categorias' => 13, 'subcategorias' => 4, 'seleccion' => 42],
+            ['nombres' => 11, 'marcas' => 8, 'categorias' => 13, 'subcategorias' => 9, 'seleccion' => 42],
             $totales
         );
     }
