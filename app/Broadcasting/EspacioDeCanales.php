@@ -33,16 +33,20 @@ use Illuminate\Support\Facades\DB;
  *              `ferretotal`…) de la de producción aunque se llamen igual; los slots emiten a la
  *              misma app de Pusher que la flota.
  *  - CLAVE   = el secret de Pusher (o la constante de respaldo si está vacío). Con el secret, el
- *              nombre del canal no se adivina desde afuera sabiendo el nombre de la base. Dos
+ *              nombre del canal no se calcula desde afuera sabiendo el nombre de la base. Dos
  *              procesos que comparten canales están en la misma app de Pusher, y una app tiene un
  *              solo secret: el resultado es consistente donde importa.
+ *              ⚠️ Eso NO lo vuelve secreto: `Buyer::canales_en_vivo` se lo da a todo comprador y a
+ *              toda ficha de invitado (`POST /api/buyer` es pública). Lo que separa a los sistemas es
+ *              que cada uno emite y autoriza solo con el suyo; un canal público sigue siendo público.
  *
  * 🔴 ESTA CLASE TIENE UNA GEMELA en `empresa-api` (app/Broadcasting/EspacioDeCanales.php), que
  * corre en PHP 7.4. Las dos tienen que dar EL MISMO string para la misma entrada: si difieren, el
  * ERP y la tienda del mismo cliente dejan de oírse en modo estricto, sin ningún error en ningún
- * lado. Los dos repos afirman los mismos tres vectores literales en sus tests
- * (tests/Feature/Broadcast/CanalesPorSistemaTest.php). Cualquier cambio del algoritmo se hace en
- * los dos repos a la vez.
+ * lado. Los dos repos afirman los mismos tres vectores literales en sus tests (acá
+ * `tests/Feature/Broadcast/CanalesPorSistemaTest.php`; en empresa-api
+ * `tests/Feature/Broadcast/EspacioDeCanalesTest.php`). Cualquier cambio del algoritmo, del saneo del
+ * override o de la lectura del modo se hace en los dos repos a la vez.
  *
  * Lo que tienda-api NO tiene, a diferencia de la gemela: la parte de autorización de canales
  * privados. tienda-api no autoriza ningún canal (routes/channels.php está todo comentado y
@@ -167,6 +171,11 @@ class EspacioDeCanales
     {
         $canal = (string) $canal;
 
+        // Sin nombre no hay canal: igual que empresa-api, no se fabrica un `@espacio` suelto.
+        if ($canal === '') {
+            return '';
+        }
+
         // El sufijo propio de este sistema.
         $sufijo = self::SEPARADOR . self::espacio();
 
@@ -187,9 +196,9 @@ class EspacioDeCanales
      *
      * Misma función que en empresa-api, para que las dos mitades lean igual el mismo valor: solo un
      * falso EXPLÍCITO es estricto (un bool false, o el texto 'false'/'0'/'off'/'no'). Si la clave
-     * falta en la config (un `config:cache` hecho antes de este release) el valor es null, y lo
-     * seguro ahí es la transición, que es exactamente el comportamiento de hoy; lo mismo con un
-     * vacío o un valor mal tipeado.
+     * falta en la config (un `config:cache` hecho antes de este release) `config()` devuelve el
+     * default `true`; si está pero en null, o vacía, o mal tipeada, también es transición: lo seguro,
+     * porque es exactamente el comportamiento de hoy.
      *
      * @return bool true = transición (con y sin espacio), false = estricto (solo con espacio).
      */
@@ -266,7 +275,13 @@ class EspacioDeCanales
     {
         $override = config('broadcasting.espacio');
 
-        if ($override === null || $override === false) {
+        /*
+         * Misma guarda que `sanear_override()` de empresa-api: solo un texto o un número cuentan. Un
+         * bool (`BROADCAST_ESPACIO=true` llega como `true` de `env()`), un null o un array no son un
+         * espacio y se usa el calculado. Sin esto, `true` daba '1' acá y '' allá: las dos mitades del
+         * mismo sistema quedaban con espacios distintos.
+         */
+        if (!is_string($override) && !is_numeric($override)) {
             return '';
         }
 

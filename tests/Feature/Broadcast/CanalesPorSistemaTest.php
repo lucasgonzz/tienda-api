@@ -181,6 +181,66 @@ class CanalesPorSistemaTest extends TestCase
 
         config(['broadcasting.espacio' => '']);
         $this->assertSame($this->espacio_esperado(), EspacioDeCanales::espacio());
+
+        // `BROADCAST_ESPACIO=true` llega como bool de env(): no es un espacio, como en empresa-api.
+        config(['broadcasting.espacio' => true]);
+        $this->assertSame($this->espacio_esperado(), EspacioDeCanales::espacio());
+
+        // Un número sí cuenta (es texto en el .env), igual que allá.
+        config(['broadcasting.espacio' => 123]);
+        $this->assertSame('123', EspacioDeCanales::espacio());
+    }
+
+    /**
+     * 🔴 La trampa del `.env` a medio editar, con la MISMA tabla que empresa-api:
+     * `BROADCAST_CANALES_VIEJOS_DE_TIENDA=` (vacío), `null` escrito o un valor mal tipeado NO pueden
+     * pasar a estricto en silencio; solo un falso explícito lo hace. Se lee el archivo de config de
+     * verdad con cada valor en `$_SERVER`, que es de donde lo toma `env()`.
+     *
+     * @return void
+     */
+    public function test_el_modo_de_la_config_solo_pasa_a_estricto_con_un_falso_explicito()
+    {
+        /** Valor del .env => lo que tiene que quedar en la config. */
+        $casos = [
+            ''       => true,
+            'null'   => true,
+            '(null)' => true,
+            'true'   => true,
+            '1'      => true,
+            'flase'  => true,
+            'false'  => false,
+            '0'      => false,
+            'off'    => false,
+            'no'     => false,
+        ];
+
+        /** Lo que había antes, para dejarlo como estaba. */
+        $habia = array_key_exists('BROADCAST_CANALES_VIEJOS_DE_TIENDA', $_SERVER)
+            ? $_SERVER['BROADCAST_CANALES_VIEJOS_DE_TIENDA']
+            : null;
+
+        try {
+            foreach ($casos as $valor => $esperado) {
+                $_SERVER['BROADCAST_CANALES_VIEJOS_DE_TIENDA'] = (string) $valor;
+
+                $config = require base_path('config/broadcasting.php');
+
+                $this->assertSame($esperado, $config['canales_viejos_de_tienda'], 'Con BROADCAST_CANALES_VIEJOS_DE_TIENDA=' . $valor);
+            }
+
+            unset($_SERVER['BROADCAST_CANALES_VIEJOS_DE_TIENDA']);
+
+            $config = require base_path('config/broadcasting.php');
+
+            $this->assertTrue($config['canales_viejos_de_tienda'], 'Sin la variable, el default es la transición.');
+        } finally {
+            if ($habia === null) {
+                unset($_SERVER['BROADCAST_CANALES_VIEJOS_DE_TIENDA']);
+            } else {
+                $_SERVER['BROADCAST_CANALES_VIEJOS_DE_TIENDA'] = $habia;
+            }
+        }
     }
 
     /**
@@ -197,6 +257,7 @@ class CanalesPorSistemaTest extends TestCase
         $this->assertSame('private-tienda-mensajes.5@' . $espacio, EspacioDeCanales::con_espacio('private-tienda-mensajes.5'));
         $this->assertSame('order.created.5@' . $espacio, EspacioDeCanales::con_espacio('order.created.5@' . $espacio),
             'un nombre que ya es físico no puede quedar con el sufijo dos veces');
+        $this->assertSame('', EspacioDeCanales::con_espacio(''), 'sin nombre no se fabrica un @espacio suelto (como empresa-api)');
 
         $this->assertSame(
             ['message.from_commerce.9', 'message.from_commerce.9@' . $espacio],

@@ -36,19 +36,17 @@ return [
     | oyendo a esta tienda y un ERP nuevo también. En false (estricto) sale solo con espacio. Se
     | pone en false en las DOS mitades del mismo sistema a la vez (empresa-api y tienda-api).
     | 🔴 Solo un falso EXPLÍCITO (`false`, `0`, `off`, `no`) pasa a estricto. Una línea presente pero
-    | vacía (`BROADCAST_CANALES_VIEJOS_DE_TIENDA=`) o mal tipeada queda en transición: con un
-    | filter_var pelado, el vacío daba estricto en silencio y la tienda dejaba de oírse con un ERP
-    | viejo. Es la MISMA expresión que en empresa-api: las dos mitades leen igual el mismo valor.
+    | vacía (`BROADCAST_CANALES_VIEJOS_DE_TIENDA=`), un `null`/`(null)` escrito o un valor mal tipeado
+    | quedan en transición: con un filter_var pelado, el vacío y el null daban estricto en silencio y
+    | la tienda dejaba de oírse con un ERP viejo. Es la MISMA expresión que en empresa-api: las dos
+    | mitades leen igual el mismo valor.
     |
     */
 
     'espacio' => env('BROADCAST_ESPACIO'),
 
-    'canales_viejos_de_tienda' => filter_var(
-        env('BROADCAST_CANALES_VIEJOS_DE_TIENDA') === '' ? 'true' : env('BROADCAST_CANALES_VIEJOS_DE_TIENDA', 'true'),
-        FILTER_VALIDATE_BOOLEAN,
-        FILTER_NULL_ON_FAILURE
-    ) !== false,
+    'canales_viejos_de_tienda' => in_array(env('BROADCAST_CANALES_VIEJOS_DE_TIENDA'), [null, ''], true)
+        || filter_var(env('BROADCAST_CANALES_VIEJOS_DE_TIENDA'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) !== false,
 
     /*
     |--------------------------------------------------------------------------
