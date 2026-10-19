@@ -2,6 +2,7 @@
 
 namespace App;
 
+use App\Broadcasting\EspacioDeCanales;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
@@ -38,6 +39,45 @@ class Buyer extends Authenticatable implements MustVerifyEmail
         'visible_password',
         'provider_id',
     ];
+
+    /**
+     * Atributos calculados que viajan en toda serialización del comprador: login, registro,
+     * GET /api/user, POST /api/buyer (ficha de invitado) y cualquier otra respuesta que lo incluya.
+     *
+     * `canales_en_vivo` es el contrato API → SPA de la misión pusher-canales-por-sistema
+     * (19/10/2026): idéntico, clave por clave, al de App\Models\User en empresa-api. Con eso
+     * tienda-spa arma los nombres físicos de los canales (src/helpers/canales_en_vivo.js).
+     *
+     * Ningún flujo de tienda-api guarda el comprador a partir del objeto que vuelve del SPA
+     * (`Buyer::create($buyer->toArray())`, `->update($request->all())`): se escribe campo por
+     * campo (verificado el 19/10/2026 con grep sobre app/), así que este atributo agregado no
+     * llega nunca a un INSERT ni a un UPDATE.
+     *
+     * @var array
+     */
+    protected $appends = ['canales_en_vivo'];
+
+    /**
+     * Lo que tienda-spa necesita para escuchar los canales en vivo de ESTE sistema:
+     * `{ "espacio": "26d5013a6846", "canales_viejos_de_tienda": true }`.
+     *
+     * Si calcular el espacio fallara (una config de base rota), el comprador se sigue serializando
+     * igual, con `espacio` null: el SPA trata un espacio null como "API vieja" y escucha los
+     * nombres de siempre. Que esto tire rompería el login entero de la tienda.
+     *
+     * @return array{espacio: string|null, canales_viejos_de_tienda: bool}
+     */
+    public function getCanalesEnVivoAttribute()
+    {
+        try {
+            return EspacioDeCanales::para_el_spa();
+        } catch (\Throwable $excepcion) {
+            return [
+                'espacio'                  => null,
+                'canales_viejos_de_tienda' => true,
+            ];
+        }
+    }
 
     // function cards() {
     //     return $this->hasMany('App\Cards');
