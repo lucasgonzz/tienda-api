@@ -35,14 +35,20 @@ return [
     | en transición todo lo que emite tienda-api sale con Y sin espacio, para que un ERP viejo siga
     | oyendo a esta tienda y un ERP nuevo también. En false (estricto) sale solo con espacio. Se
     | pone en false en las DOS mitades del mismo sistema a la vez (empresa-api y tienda-api).
-    | ⚠️ Una variable presente pero vacía (`BROADCAST_CANALES_VIEJOS_DE_TIENDA=`) es false para
-    | filter_var, o sea estricto: si no se quiere estricto, la línea no va.
+    | 🔴 Solo un falso EXPLÍCITO (`false`, `0`, `off`, `no`) pasa a estricto. Una línea presente pero
+    | vacía (`BROADCAST_CANALES_VIEJOS_DE_TIENDA=`) o mal tipeada queda en transición: con un
+    | filter_var pelado, el vacío daba estricto en silencio y la tienda dejaba de oírse con un ERP
+    | viejo. Es la MISMA expresión que en empresa-api: las dos mitades leen igual el mismo valor.
     |
     */
 
     'espacio' => env('BROADCAST_ESPACIO'),
 
-    'canales_viejos_de_tienda' => filter_var(env('BROADCAST_CANALES_VIEJOS_DE_TIENDA', true), FILTER_VALIDATE_BOOLEAN),
+    'canales_viejos_de_tienda' => filter_var(
+        env('BROADCAST_CANALES_VIEJOS_DE_TIENDA') === '' ? 'true' : env('BROADCAST_CANALES_VIEJOS_DE_TIENDA', 'true'),
+        FILTER_VALIDATE_BOOLEAN,
+        FILTER_NULL_ON_FAILURE
+    ) !== false,
 
     /*
     |--------------------------------------------------------------------------

@@ -185,11 +185,28 @@ class EspacioDeCanales
      * 14/8: el ERP sale por release a cada cliente y la tienda se actualiza aparte). El estricto se
      * prende en las dos mitades del mismo sistema a la vez (empresa-api y tienda-api).
      *
-     * @return bool
+     * Misma función que en empresa-api, para que las dos mitades lean igual el mismo valor: solo un
+     * falso EXPLÍCITO es estricto (un bool false, o el texto 'false'/'0'/'off'/'no'). Si la clave
+     * falta en la config (un `config:cache` hecho antes de este release) el valor es null, y lo
+     * seguro ahí es la transición, que es exactamente el comportamiento de hoy; lo mismo con un
+     * vacío o un valor mal tipeado.
+     *
+     * @return bool true = transición (con y sin espacio), false = estricto (solo con espacio).
      */
     public static function canales_viejos_de_tienda()
     {
-        return filter_var(config('broadcasting.canales_viejos_de_tienda', true), FILTER_VALIDATE_BOOLEAN);
+        /** Valor crudo de la config: normalmente un bool (lo normaliza config/broadcasting.php). */
+        $valor = config('broadcasting.canales_viejos_de_tienda', true);
+
+        if (is_bool($valor)) {
+            return $valor;
+        }
+
+        if ($valor === null || $valor === '') {
+            return true;
+        }
+
+        return filter_var($valor, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) !== false;
     }
 
     /**
