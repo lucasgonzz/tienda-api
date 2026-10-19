@@ -11,6 +11,7 @@ use App\Notifications\OrderCreated;
 use App\Order;
 use App\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -34,6 +35,7 @@ use Tests\TestCase;
  *    canales del trigger y los pasa por la validación de nombres del propio SDK (sin red):
  *    transición = lógico + físico, estricto = solo físico;
  *  - que GET /api/user del comprador logueado trae `canales_en_vivo`;
+ *  - el comando `canales:espacio`, sin el secret.
  *
  * DatabaseTransactions contra la base del slot (tienda-api no tiene migraciones propias): el
  * comercio y el comprador se crean adentro de la transacción y se deshacen al terminar.
@@ -369,6 +371,37 @@ class CanalesPorSistemaTest extends TestCase
             ->assertStatus(200)
             ->assertJsonPath('buyer.canales_en_vivo.espacio', $this->espacio_esperado())
             ->assertJsonPath('buyer.canales_en_vivo.canales_viejos_de_tienda', false);
+    }
+
+    /**
+     * `php artisan canales:espacio`: una línea JSON con base, entorno, espacio, modo y driver, en
+     * ese orden, y NUNCA el secret ni la key de Pusher.
+     *
+     * @return void
+     */
+    public function test_el_comando_muestra_el_espacio_y_no_el_secret()
+    {
+        config([
+            'broadcasting.default'                => 'pusher',
+            'broadcasting.connections.pusher.key' => self::KEY_FALSA,
+        ]);
+
+        $codigo = Artisan::call('canales:espacio');
+        $salida = trim(Artisan::output());
+
+        $this->assertSame(0, $codigo);
+        $this->assertStringNotContainsString("\n", $salida, 'tiene que ser una sola línea');
+        $this->assertStringNotContainsString(self::SECRETO, $salida, 'el comando no puede imprimir el secret');
+        $this->assertStringNotContainsString(self::KEY_FALSA, $salida, 'ni la key');
+
+        $datos = json_decode($salida, true);
+
+        $this->assertSame(['base', 'entorno', 'espacio', 'canales_viejos_de_tienda', 'driver'], array_keys($datos));
+        $this->assertSame(DB::connection()->getDatabaseName(), $datos['base']);
+        $this->assertSame(config('app.env'), $datos['entorno']);
+        $this->assertSame($this->espacio_esperado(), $datos['espacio']);
+        $this->assertTrue($datos['canales_viejos_de_tienda']);
+        $this->assertSame('pusher', $datos['driver']);
     }
 
     /**
