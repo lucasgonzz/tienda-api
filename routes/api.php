@@ -273,6 +273,23 @@ Route::middleware('auth:buyer')->group(function() {
 		'BuyerController@updateEnvioZipcode'
 	);
 
+	// "Mis direcciones" del comprador (mision formas-envio-direcciones-maps, 19/10/2026). Solo con
+	// sesion de cuenta: el invitado manda la direccion entera en el carrito, sin guardarla. Cada una
+	// se acota por el buyer_id de la SESION (la de otro comprador es 404), y sin la tabla
+	// `buyer_addresses` (ERP viejo) responden 422 `sin_direcciones`. Ver BuyerAddressController.
+	Route::get('/buyer/addresses',
+		'BuyerAddressController@index'
+	);
+	Route::post('/buyer/addresses',
+		'BuyerAddressController@store'
+	);
+	Route::put('/buyer/addresses/{id}',
+		'BuyerAddressController@update'
+	);
+	Route::delete('/buyer/addresses/{id}',
+		'BuyerAddressController@destroy'
+	);
+
 	// Last Searchs
 	Route::get('/last-searchs',
 		'LastSearchController@index'

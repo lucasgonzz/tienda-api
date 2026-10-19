@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
 use App\Services\Zipnova\ZipnovaCotizadorService;
 use App\User;
 use App\Workday;
@@ -107,6 +108,12 @@ class CommerceController extends Controller
         // todavia no tiene el esquema, o cuyo conector no se puede descifrar, ve `false`.
         if (!is_null($publico)) {
             $publico = array_merge($publico, ZipnovaCotizadorService::disponibilidad_publica($commerce_id));
+
+            // Direcciones del comprador con el buscador de Google (mision formas-envio-direcciones-maps,
+            // 19/10/2026): clave ADITIVA y calculada, como las de Zipnova. `true` solo si la base ya
+            // tiene `buyer_addresses` y la foto de la direccion en carritos y pedidos; con `false` el
+            // SPA usa el checkout de siempre, campo por campo.
+            $publico['direcciones_de_envio'] = DireccionesEsquemaHelper::disponible();
         }
 
         return response()->json(['commerce' => $publico], 200);

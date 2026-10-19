@@ -72,6 +72,17 @@ class Buyer extends Authenticatable implements MustVerifyEmail
         return $this->hasMany('App\Address');
     }
 
+    /**
+     * Las direcciones de entrega guardadas por el comprador (misión formas-envio-direcciones-maps,
+     * 19/10/2026). No es `addresses()`: esa es la tabla de sucursales del ERP, de un flujo viejo.
+     *
+     * 🔴 La tabla la crea `empresa-api` y hay bases sin ella: nunca se carga sin preguntarle antes
+     * a `DireccionesEsquemaHelper::disponible()`, y por eso NO va en el `withAll()`.
+     */
+    function buyer_addresses() {
+        return $this->hasMany('App\BuyerAddress');
+    }
+
     public function messages() {
         return $this->hasMany('App\Message');
     }
