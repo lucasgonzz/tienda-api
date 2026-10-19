@@ -48,10 +48,16 @@
 		<td align="right" style="padding:4px 0 4px 24px; font-size:14px; color:#374151; white-space:nowrap;">{{ OrderTotalsHelper::money($totals['cupon_amount']) }}</td>
 	</tr>
 	@endif
+	{{-- Forma propia "a convenir" (mision formas-envio-direcciones-maps): sin monto, con el texto en la columna del importe. Nunca "$ 0,00". --}}
 	@if (!is_null($totals['delivery_amount']))
 	<tr>
 		<td align="right" style="padding:4px 0; font-size:14px; color:#6b7280;">{{ $totals['delivery_label'] }}</td>
 		<td align="right" style="padding:4px 0 4px 24px; font-size:14px; color:#374151; white-space:nowrap;">{{ OrderTotalsHelper::money($totals['delivery_amount']) }}</td>
+	</tr>
+	@elseif (!empty($totals['delivery_text']))
+	<tr>
+		<td align="right" style="padding:4px 0; font-size:14px; color:#6b7280;">{{ $totals['delivery_label'] }}</td>
+		<td align="right" style="padding:4px 0 4px 24px; font-size:14px; color:#374151; white-space:nowrap;">{{ $totals['delivery_text'] }}</td>
 	</tr>
 	@endif
 	<tr>

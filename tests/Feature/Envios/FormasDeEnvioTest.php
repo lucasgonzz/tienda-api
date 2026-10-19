@@ -10,6 +10,8 @@ use App\Http\Controllers\Helpers\OnlinePaymentHelper;
 use App\Http\Controllers\Helpers\OrderTotalsHelper;
 use App\Http\Controllers\Helpers\ZipnovaEsquemaHelper;
 use App\Http\Controllers\MercadoPagoController;
+use App\Mail\NuevoPedidoComercio;
+use App\Mail\PedidoRecibidoComprador;
 use App\OnlineConfiguration;
 use App\Order;
 use App\PaymentMethod;
@@ -28,7 +30,7 @@ use Tests\TestCase;
  * ── Qué fija esta clase ───────────────────────────────────────────────────────────────────────
  *
  * 1. Una forma propia "a convenir" (`delivery_zones.costo_a_convenir = 1`) no cobra NADA online:
- *    no suma en el desglose del mail (y no aparece como "$ 0,00"), no agrega ítem de envío a la
+ *    no suma en el desglose del mail (la fila dice "A coordinar con el vendedor", nunca "$ 0,00"), no agrega ítem de envío a la
  *    preferencia de Mercado Pago (ni con carrito ni con la zona del body) y no infla el recargo por
  *    cuotas.
  * 2. El carrito solo acepta una forma propia DEL COMERCIO: la de otro comercio o una inexistente
@@ -217,19 +219,40 @@ class FormasDeEnvioTest extends TestCase
         $cart = Cart::find($this->crearCarrito(['delivery_zone_id' => $zona->id])->assertStatus(201)->json('cart.id'));
         $this->assertSame((int) $zona->id, (int) $cart->delivery_zone_id);
 
-        $totales = OrderTotalsHelper::breakdown($this->pedidoDe($cart));
+        $order = $this->pedidoDe($cart);
+        $totales = OrderTotalsHelper::breakdown($order);
 
         $this->assertSame(2000.0, (float) $totales['subtotal']);
-        $this->assertNull($totales['delivery_amount'], 'sin monto: el mail no imprime "$ 0,00" ni suma nada');
-        $this->assertSame('Envio a Acordar con el vendedor (costo a coordinar con el vendedor)', $totales['delivery_label']);
+        $this->assertNull($totales['delivery_amount'], 'sin monto: no suma nada');
+        $this->assertSame('Envio a Acordar con el vendedor', $totales['delivery_label']);
+        $this->assertSame('A coordinar con el vendedor', $totales['delivery_text']);
         $this->assertSame(2000.0, (float) $totales['total']);
 
-        /* El blade del mail no muestra el envío como gratis. */
-        $html = view('emails.orders.partials.detalle', [
-            'totals'       => $totales,
-            'accent_color' => '#000000',
-        ])->render();
-        $this->assertStringNotContainsString('800', $html);
+        /* Los dos mails renderizados: la fila del envío nombra la forma y dice "A coordinar con el
+           vendedor", nunca "$ 0,00" ni el precio guardado. */
+        foreach ([new PedidoRecibidoComprador($order), new NuevoPedidoComercio($order)] as $mail) {
+            $html = $mail->render();
+
+            $this->assertStringContainsString('Envio a Acordar con el vendedor', $html, get_class($mail));
+            $this->assertStringContainsString('A coordinar con el vendedor', $html, get_class($mail));
+            $this->assertStringNotContainsString('$ 0,00', $html, get_class($mail));
+            $this->assertStringNotContainsString('$ 800', $html, get_class($mail));
+            $this->assertStringContainsString('$ 2.000,00', $html, 'el total es el de los artículos');
+        }
+    }
+
+    public function test_el_mail_de_una_forma_con_precio_muestra_el_importe_como_siempre()
+    {
+        Http::fake();
+
+        $zona = $this->formaPropia($this->comercio, 500, false);
+        $cart = Cart::find($this->crearCarrito(['delivery_zone_id' => $zona->id])->assertStatus(201)->json('cart.id'));
+
+        $html = (new PedidoRecibidoComprador($this->pedidoDe($cart)))->render();
+
+        $this->assertStringContainsString('Envio a Moto en el centro', $html);
+        $this->assertStringContainsString('$ 500,00', $html);
+        $this->assertStringNotContainsString('A coordinar con el vendedor', $html);
     }
 
     public function test_una_forma_con_precio_sigue_sumando_como_siempre()

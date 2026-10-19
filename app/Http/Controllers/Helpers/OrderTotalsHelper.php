@@ -213,6 +213,8 @@ class OrderTotalsHelper
         //    trajera ambos manda el correo, que es el precio que el servidor cotizo y cobro.
         $delivery_label = null;
         $delivery_amount = null;
+        // Lo que va en la columna del importe cuando el envio no tiene monto (forma "a convenir").
+        $delivery_text = null;
 
         $envio_por_correo = EnvioCartHelper::opcion_de($order);
 
@@ -226,10 +228,11 @@ class OrderTotalsHelper
             $total = $total + $delivery_amount;
         } elseif (!is_null($order->delivery_zone) && DireccionesEsquemaHelper::zona_a_convenir($order->delivery_zone)) {
             // Forma propia "a convenir" (mision formas-envio-direcciones-maps): no cobra nada online,
-            // asi que no suma al total. `delivery_amount` queda en null a proposito: el blade imprime
-            // la fila solo con un monto, y un "$ 0,00" diria que el envio es gratis, que no es lo que
-            // pasa (el costo lo coordinan el comercio y el comprador).
-            $delivery_label = 'Envio a '.$order->delivery_zone->name.' (costo a coordinar con el vendedor)';
+            // asi que no suma al total. `delivery_amount` queda en null a proposito: un "$ 0,00"
+            // diria que el envio es gratis, que no es lo que pasa (el costo lo coordinan el comercio
+            // y el comprador). El blade pone `delivery_text` en la columna del importe.
+            $delivery_label = 'Envio a '.$order->delivery_zone->name;
+            $delivery_text = 'A coordinar con el vendedor';
         } elseif (!is_null($order->delivery_zone)) {
             $delivery_amount = (float) $order->delivery_zone->price;
             $delivery_label = 'Envio a '.$order->delivery_zone->name;
@@ -245,6 +248,7 @@ class OrderTotalsHelper
             'cupon_amount'          => $cupon_amount,
             'delivery_label'        => $delivery_label,
             'delivery_amount'       => $delivery_amount,
+            'delivery_text'         => $delivery_text,
             'total'                 => $total,
         ];
     }
