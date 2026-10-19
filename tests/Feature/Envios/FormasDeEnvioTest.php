@@ -224,7 +224,7 @@ class FormasDeEnvioTest extends TestCase
 
         $this->assertSame(2000.0, (float) $totales['subtotal']);
         $this->assertNull($totales['delivery_amount'], 'sin monto: no suma nada');
-        $this->assertSame('Envio a Acordar con el vendedor', $totales['delivery_label']);
+        $this->assertSame('Envío: Acordar con el vendedor', $totales['delivery_label']);
         $this->assertSame('A coordinar con el vendedor', $totales['delivery_text']);
         $this->assertSame(2000.0, (float) $totales['total']);
 
@@ -233,7 +233,7 @@ class FormasDeEnvioTest extends TestCase
         foreach ([new PedidoRecibidoComprador($order), new NuevoPedidoComercio($order)] as $mail) {
             $html = $mail->render();
 
-            $this->assertStringContainsString('Envio a Acordar con el vendedor', $html, get_class($mail));
+            $this->assertStringContainsString('Envío: Acordar con el vendedor', $html, get_class($mail));
             $this->assertStringContainsString('A coordinar con el vendedor', $html, get_class($mail));
             $this->assertStringNotContainsString('$ 0,00', $html, get_class($mail));
             $this->assertStringNotContainsString('$ 800', $html, get_class($mail));

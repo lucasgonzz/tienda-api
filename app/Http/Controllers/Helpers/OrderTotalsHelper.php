@@ -230,8 +230,10 @@ class OrderTotalsHelper
             // Forma propia "a convenir" (mision formas-envio-direcciones-maps): no cobra nada online,
             // asi que no suma al total. `delivery_amount` queda en null a proposito: un "$ 0,00"
             // diria que el envio es gratis, que no es lo que pasa (el costo lo coordinan el comercio
-            // y el comprador). El blade pone `delivery_text` en la columna del importe.
-            $delivery_label = 'Envio a '.$order->delivery_zone->name;
+            // y el comprador). El blade pone `delivery_text` en la columna del importe. El label es
+            // "Envío: <forma>" y no "Envio a <forma>": una forma propia se llama "Acordar con el
+            // vendedor", no es un lugar.
+            $delivery_label = 'Envío: '.$order->delivery_zone->name;
             $delivery_text = 'A coordinar con el vendedor';
         } elseif (!is_null($order->delivery_zone)) {
             $delivery_amount = (float) $order->delivery_zone->price;
