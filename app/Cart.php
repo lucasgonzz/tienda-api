@@ -19,12 +19,18 @@ class Cart extends Model
      * todavía no están. Leer un atributo ausente devuelve null sin consultar nada, pero
      * ESCRIBIRLO revienta el UPDATE: por eso toda escritura pasa por `ZipnovaEsquemaHelper`.
      *
+     * `envio_direccion` (misión formas-envio-direcciones-maps, 19/10/2026) es la foto de la
+     * dirección de entrega elegida, con las claves de `BuyerAddress::snapshot()`. Mismo criterio:
+     * la escribe `CartController::sync_direccion_envio()` solo detrás de
+     * `DireccionesEsquemaHelper::disponible()`.
+     *
      * @var array<string, string>
      */
     protected $casts = [
         'envio_cotizacion' => 'array',
         'envio_opcion'     => 'array',
         'envio_destino'    => 'array',
+        'envio_direccion'  => 'array',
     ];
 
     /**

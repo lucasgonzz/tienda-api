@@ -2,14 +2,18 @@
 
 namespace App\Http\Controllers;
 
+use App\BuyerAddress;
 use App\Cart;
+use App\DeliveryZone;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
+use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Order;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -410,12 +414,17 @@ class CartController extends Controller
      * del `save()`, así que no deja el carrito a medias. En una base sin las columnas de envío
      * el helper no hace nada (`ZipnovaEsquemaHelper`).
      *
+     * Misión formas-envio-direcciones-maps (19/10/2026): la forma de envío propia tiene que ser una
+     * zona DEL COMERCIO del carrito (`zona_del_comercio()`), y la dirección de entrega elegida viaja
+     * en `$data['direccion_envio']` (`sync_direccion_envio()`), con la misma regla de "el 422 antes
+     * del save()".
+     *
      * @param \App\Cart $cart
      * @param array $data Payload del carrito enviado por tienda-spa
      * @return void
      */
     function sync_checkout_fields($cart, $data) {
-        $cart->delivery_zone_id     = isset($data['delivery_zone_id']) ? $data['delivery_zone_id'] : null;
+        $cart->delivery_zone_id     = $this->zona_del_comercio($cart, isset($data['delivery_zone_id']) ? $data['delivery_zone_id'] : null);
         $cart->payment_card_info_id = isset($data['payment_card_info_id']) ? $data['payment_card_info_id'] : null;
         $cart->payment_method_id    = isset($data['payment_method_id']) ? $data['payment_method_id'] : null;
         $cart->payment_id           = isset($data['payment_id']) ? $data['payment_id'] : null;
@@ -433,6 +442,167 @@ class CartController extends Controller
         // cantidad; si no, NULL. Detras de la guarda de esquema: sin la columna no hace nada.
         CuotasMercadoPagoHelper::sincronizar_carrito($cart, is_array($data) ? $data : []);
 
+        $this->sync_direccion_envio($cart, is_array($data) ? $data : []);
+
         EnvioCartHelper::sincronizar($cart, is_array($data) ? $data : []);
+    }
+
+    /**
+     * El `delivery_zone_id` del payload, solo si es una forma de envío propia DEL COMERCIO del
+     * carrito; si no, null.
+     *
+     * 🔴 Antes se copiaba cualquier id tal cual. Como la base es compartida entre todos los comercios
+     * de la instancia, un carrito podía quedar atado a la zona de OTRO comercio (o a una que no
+     * existe), y el precio de esa zona viajaba a la preferencia de Mercado Pago y al pedido del ERP.
+     * Ahora también importa por las formas "a convenir": la que decide si se cobra el envío tiene que
+     * ser una del comercio que vende.
+     *
+     * No es un 422 a propósito: un id que no es del comercio es un estado viejo del store del SPA (o
+     * un payload armado a mano), y el carrito se guarda igual, sin forma propia elegida.
+     *
+     * @param \App\Cart $cart Con `user_id` ya puesto.
+     * @param mixed $delivery_zone_id
+     * @return int|null
+     */
+    private function zona_del_comercio($cart, $delivery_zone_id) {
+        if (!is_numeric($delivery_zone_id) || (int) $delivery_zone_id <= 0) {
+            return null;
+        }
+
+        $id = DeliveryZone::where('id', (int) $delivery_zone_id)
+            ->where('user_id', $cart->user_id)
+            ->value('id');
+
+        if (is_null($id)) {
+            Log::warning('CartController: se descarto una forma de envio que no es del comercio del carrito', [
+                'cart_id'          => $cart->id,
+                'commerce_id'      => $cart->user_id,
+                'delivery_zone_id' => $delivery_zone_id,
+            ]);
+
+            return null;
+        }
+
+        return (int) $id;
+    }
+
+    /**
+     * Copia al carrito la dirección de entrega elegida (misión formas-envio-direcciones-maps,
+     * 19/10/2026): `carts.buyer_address_id` y la foto en `carts.envio_direccion`, con las claves de
+     * `BuyerAddress::snapshot()`.
+     *
+     * `$data['direccion_envio']` puede venir de dos formas:
+     *   - `{buyer_address_id}`: una dirección guardada del comprador con sesión de cuenta. Se lee de
+     *     la base y tiene que ser SUYA; si no (o si no hay sesión de cuenta), 422 `direccion`.
+     *   - el objeto entero (invitado, o el vendedor cargando el pedido de un cliente): se normaliza con
+     *     las mismas reglas que el ABM (`BuyerAddress::normalizar()`); si le faltan datos, 422
+     *     `direccion` con `errors` por campo.
+     *
+     * Las reglas de compatibilidad:
+     *   - Sin el esquema (`DireccionesEsquemaHelper`) no hace nada: es la tienda de siempre.
+     *   - Con `deliver != 1` limpia las dos columnas: sin envío no hay dirección de entrega.
+     *   - Si el payload NO trae la clave `direccion_envio` (un SPA viejo), no toca nada.
+     *   - `direccion_envio: null` (o vacío) limpia.
+     *
+     * Como el resto de `sync_checkout_fields()`, corre ANTES del `save()`: un 422 de acá no deja el
+     * carrito escrito.
+     *
+     * @param \App\Cart $cart
+     * @param array $data
+     * @return void
+     * @throws HttpResponseException 422 `direccion`.
+     */
+    private function sync_direccion_envio($cart, array $data) {
+        if (!DireccionesEsquemaHelper::disponible()) {
+            return;
+        }
+
+        $deliver = isset($data['deliver']) ? (int) $data['deliver'] : 0;
+
+        if ($deliver !== 1) {
+            $cart->buyer_address_id = null;
+            $cart->envio_direccion = null;
+
+            return;
+        }
+
+        if (!array_key_exists('direccion_envio', $data)) {
+            return;
+        }
+
+        $direccion = $data['direccion_envio'];
+
+        if (!is_array($direccion) || count($direccion) === 0) {
+            $cart->buyer_address_id = null;
+            $cart->envio_direccion = null;
+
+            return;
+        }
+
+        if (isset($direccion['buyer_address_id']) && $direccion['buyer_address_id'] !== '') {
+            $guardada = $this->direccion_guardada_del_comprador($direccion['buyer_address_id']);
+
+            if (is_null($guardada)) {
+                Log::warning('CartController: se pidio una direccion guardada que no es del comprador de la sesion', [
+                    'cart_id'          => $cart->id,
+                    'buyer_address_id' => $direccion['buyer_address_id'],
+                    'buyer_id'         => $this->buyerId(),
+                ]);
+
+                $this->fallar_direccion('Esa dirección ya no está en tu cuenta. Elegí otra o cargala de nuevo.');
+            }
+
+            $cart->buyer_address_id = $guardada->id;
+            $cart->envio_direccion = $guardada->como_snapshot();
+
+            return;
+        }
+
+        $normalizada = BuyerAddress::normalizar($direccion);
+
+        if (count($normalizada['errores']) > 0) {
+            $this->fallar_direccion('Faltan datos de la dirección de entrega.', $normalizada['errores']);
+        }
+
+        $cart->buyer_address_id = null;
+        $cart->envio_direccion = BuyerAddress::snapshot($normalizada['datos'], null);
+    }
+
+    /**
+     * Una dirección guardada del comprador con sesión de CUENTA, o null. Nunca la identidad de
+     * checkout del invitado: esa no tiene libreta de direcciones.
+     *
+     * @param mixed $buyer_address_id
+     * @return \App\BuyerAddress|null
+     */
+    private function direccion_guardada_del_comprador($buyer_address_id) {
+        $buyer_id = $this->buyerId();
+
+        if (is_null($buyer_id) || !is_numeric($buyer_address_id)) {
+            return null;
+        }
+
+        return BuyerAddress::where('id', (int) $buyer_address_id)
+            ->where('buyer_id', $buyer_id)
+            ->first();
+    }
+
+    /**
+     * Corta el guardado del carrito con un 422 `direccion` (mismo mecanismo que
+     * `EnvioCartHelper::fallar()`: la respuesta sale tal cual, sin pasar por el handler).
+     *
+     * @param string $message
+     * @param array $errores `{campo: [mensaje]}`
+     * @return void
+     * @throws HttpResponseException
+     */
+    private function fallar_direccion($message, array $errores = []) {
+        $body = ['codigo' => 'direccion', 'message' => $message];
+
+        if (count($errores) > 0) {
+            $body['errors'] = $errores;
+        }
+
+        throw new HttpResponseException(response()->json($body, 422));
     }
 }

@@ -436,16 +436,26 @@ class CarritoConEnvioTest extends TestCase
 
         $cart = $this->crearCarritoPorApi();
 
+        /* Una zona REAL del comercio. Hasta la misión formas-envio-direcciones-maps (19/10/2026) este
+           caso usaba el id 777 sin fila: el carrito copiaba cualquier `delivery_zone_id` tal cual.
+           Desde esa misión solo acepta una zona del comercio del carrito (pedido del plan, 🔴 del
+           relevamiento), así que el escenario necesita una que exista; lo que se fija es lo mismo. */
+        $zona = new DeliveryZone();
+        $zona->name = 'Zona';
+        $zona->price = 350;
+        $zona->user_id = $this->comercio->id;
+        $zona->save();
+
         /* Zona propia: el SPA anula opcion_key y manda delivery_zone_id. */
-        $this->actualizarCarrito($cart, ['delivery_zone_id' => 777, 'envio' => null])->assertStatus(200);
+        $this->actualizarCarrito($cart, ['delivery_zone_id' => $zona->id, 'envio' => null])->assertStatus(200);
 
         $cart->refresh();
-        $this->assertSame(777, (int) $cart->delivery_zone_id);
+        $this->assertSame((int) $zona->id, (int) $cart->delivery_zone_id);
         $this->assertNull($cart->envio_opcion);
         $this->assertNull($cart->envio_precio);
 
         /* Vuelve a Zipnova (con la zona todavía en el payload, como un store viejo): gana el correo. */
-        $this->actualizarCarrito($cart, ['delivery_zone_id' => 777])->assertStatus(200);
+        $this->actualizarCarrito($cart, ['delivery_zone_id' => $zona->id])->assertStatus(200);
 
         $cart->refresh();
         $this->assertNull($cart->delivery_zone_id);

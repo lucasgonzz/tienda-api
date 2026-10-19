@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Buyer;
+use App\BuyerAddress;
 use App\Cart;
 use App\Combo;
 use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
@@ -12,6 +13,7 @@ use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
+use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
@@ -297,10 +299,18 @@ class OrderController extends Controller
                 ], 422);
             }
 
+            // La dirección de entrega elegida en el checkout (misión formas-envio-direcciones-maps):
+            // la foto del carrito, o [] si no hay (esquema viejo, retiro, SPA viejo).
+            $atributos_de_direccion = $this->atributos_de_direccion($cart);
+
             // Si el carrito va por Zipnova, la dirección del pedido es el destino del envío en
-            // texto (el ERP viejo y los mails la muestran tal cual); si no, lo que resolvió
-            // get_address() como siempre.
+            // texto (el ERP viejo y los mails la muestran tal cual). Si no va por Zipnova pero el
+            // comprador eligió una dirección de entrega, es esa en una línea, armada por el
+            // servidor y no la que manda el body. Si no, lo que resolvió get_address() como siempre.
             $address = EnvioCartHelper::direccion_en_texto($cart);
+            if (is_null($address) && isset($atributos_de_direccion['envio_direccion'])) {
+                $address = BuyerAddress::linea_en_texto($atributos_de_direccion['envio_direccion']);
+            }
             if (is_null($address)) {
                 $address = $this->get_address($request);
             }
@@ -333,7 +343,10 @@ class OrderController extends Controller
         	], EnvioCartHelper::atributos_para_pedido($cart),
         	// Las cuotas de Mercado Pago (mision tienda-cuotas-mercado-pago): `cuotas` y el recargo neto
         	// resuelto de la base, solo con el esquema y si el carrito eligio cuotas (vacio si no).
-        	CuotasMercadoPagoHelper::atributos_para_pedido($cart)));
+        	CuotasMercadoPagoHelper::atributos_para_pedido($cart),
+        	// La direccion de entrega (`buyer_address_id` + `envio_direccion`), solo con el esquema y si
+        	// el carrito tiene una (vacio si no: el create de siempre no cambia).
+        	$atributos_de_direccion));
 
             Log::info('order address:');
             Log::info($order->address);
@@ -538,6 +551,33 @@ class OrderController extends Controller
         return null;
     }
 
+
+    /**
+     * Las columnas de la dirección de entrega que `store()` copia del carrito al pedido (misión
+     * formas-envio-direcciones-maps, 19/10/2026): `buyer_address_id` y la foto `envio_direccion`.
+     *
+     * Vacío —y entonces el `Order::create` de siempre no cambia— si la base no tiene el esquema
+     * (`DireccionesEsquemaHelper`), si el pedido no se envía o si el carrito no tiene dirección
+     * elegida (un SPA viejo nunca la manda). Se copia sea cual sea la forma de envío: Zipnova, una
+     * forma propia o ninguna; para Zipnova, `envio_destino` sigue siendo la fuente del envío.
+     *
+     * @param \App\Cart $cart
+     * @return array
+     */
+    private function atributos_de_direccion($cart) {
+        if (!DireccionesEsquemaHelper::disponible() || (int) $cart->deliver !== 1) {
+            return [];
+        }
+
+        if (!is_array($cart->envio_direccion) || count($cart->envio_direccion) === 0) {
+            return [];
+        }
+
+        return [
+            'buyer_address_id' => is_numeric($cart->buyer_address_id) ? (int) $cart->buyer_address_id : null,
+            'envio_direccion'  => $cart->envio_direccion,
+        ];
+    }
 
     function no_es_denuevo_por_mercadopago($request) {
         $cart_ya_guardado = Cart::find($request->cart_id);

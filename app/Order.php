@@ -14,12 +14,16 @@ class Order extends Model
      * al crear el pedido. `envio_precio` y `envio_proveedor` son columnas planas, sin cast. Misma
      * forma que en `empresa-api/app/Models/Order.php`.
      *
+     * `envio_direccion` (misión formas-envio-direcciones-maps, 19/10/2026): la foto de la dirección
+     * de entrega que el comprador eligió, copiada del carrito. El ERP la usa para el mapa del pedido.
+     *
      * @var array<string, string>
      */
     protected $casts = [
         'envio_cotizacion' => 'array',
         'envio_opcion'     => 'array',
         'envio_destino'    => 'array',
+        'envio_direccion'  => 'array',
     ];
 
     /**
