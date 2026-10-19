@@ -55,7 +55,8 @@ class CarritoYPedidoConDireccionTest extends TestCase
 
         $this->comercio = $this->comercioConTienda();
         $this->articulo = $this->articuloConMedidas($this->comercio);
-        $this->comprador = $this->compradorDe($this->comercio);
+        // Una CUENTA: las direcciones guardadas son solo de las cuentas (`Buyer::es_cuenta()`).
+        $this->comprador = $this->compradorConCuenta($this->comercio);
 
         // Ningún caso de esta clase sale a Zipnova: no hay conector ni opción de correo.
         Http::fake();
@@ -193,6 +194,59 @@ class CarritoYPedidoConDireccionTest extends TestCase
             ])
             ->assertStatus(422)
             ->assertJson(['codigo' => 'direccion']);
+    }
+
+    public function test_la_direccion_ya_elegida_que_se_borro_conserva_la_foto_y_no_traba_el_carrito()
+    {
+        $direccion = $this->direccionGuardada($this->comprador, ['is_default' => true]);
+        $cart = Cart::find($this->crearCarrito(['direccion_envio' => ['buyer_address_id' => $direccion->id]])->json('cart.id'));
+        $foto = $cart->envio_direccion;
+
+        /* La borra desde "Mis direcciones" (en otra pestaña) con el carrito abierto. */
+        $this->actingAs($this->comprador, 'buyer')->deleteJson('/api/buyer/addresses/'.$direccion->id)->assertStatus(200);
+        $this->assertNull(BuyerAddress::find($direccion->id));
+
+        /* El SPA sigue mandando el mismo id al agregar un artículo: el carrito se guarda con la foto. */
+        $this->actualizarCarrito($cart, [
+            'articles'        => [$this->lineaDelPayload($this->articulo, 3)],
+            'direccion_envio' => ['buyer_address_id' => $direccion->id],
+        ])->assertStatus(200);
+
+        $cart->refresh();
+        $this->assertSame($direccion->id, (int) $cart->buyer_address_id);
+        $this->assertEquals($foto, $cart->envio_direccion);
+        $this->assertSame(3000.0, (float) $cart->total);
+
+        /* Pero un id DISTINTO que no es del comprador sigue siendo 422. */
+        $ajena = $this->direccionGuardada($this->compradorConCuenta($this->comercio), ['street' => 'Ajena']);
+
+        $this->actualizarCarrito($cart, ['direccion_envio' => ['buyer_address_id' => $ajena->id]])
+            ->assertStatus(422)
+            ->assertJson(['codigo' => 'direccion']);
+
+        $this->assertEquals($foto, $cart->fresh()->envio_direccion);
+    }
+
+    public function test_una_ficha_de_invitado_logueada_no_puede_usar_una_direccion_guardada()
+    {
+        $ficha = $this->fichaDeInvitado($this->comercio);
+        $suya = $this->direccionGuardada($ficha);
+
+        $this->actingAs($ficha, 'buyer')
+            ->postJson('/api/carts', [
+                'commerce_id' => $this->comercio->id,
+                'cart'        => $this->payloadDelCarrito(['direccion_envio' => ['buyer_address_id' => $suya->id]]),
+            ])
+            ->assertStatus(422)
+            ->assertJson(['codigo' => 'direccion']);
+
+        /* Con la dirección entera, como cualquier invitado, sí. */
+        $this->actingAs($ficha, 'buyer')
+            ->postJson('/api/carts', [
+                'commerce_id' => $this->comercio->id,
+                'cart'        => $this->payloadDelCarrito(['direccion_envio' => $this->direccionDeGoogle()]),
+            ])
+            ->assertStatus(201);
     }
 
     /*

@@ -492,8 +492,10 @@ class CartController extends Controller
      * `BuyerAddress::snapshot()`.
      *
      * `$data['direccion_envio']` puede venir de dos formas:
-     *   - `{buyer_address_id}`: una dirección guardada del comprador con sesión de cuenta. Se lee de
-     *     la base y tiene que ser SUYA; si no (o si no hay sesión de cuenta), 422 `direccion`.
+     *   - `{buyer_address_id}`: una dirección guardada del comprador con sesión de CUENTA
+     *     (`Buyer::es_cuenta()`). Se lee de la base y tiene que ser SUYA; si no (o si la sesión no es
+     *     de una cuenta), 422 `direccion`. Excepción: si es el MISMO id que el carrito ya tiene
+     *     elegido y ya no se resuelve (la borró), se conserva la foto que el carrito tenía.
      *   - el objeto entero (invitado, o el vendedor cargando el pedido de un cliente): se normaliza con
      *     las mismas reglas que el ABM (`BuyerAddress::normalizar()`); si le faltan datos, 422
      *     `direccion` con `errors` por campo.
@@ -542,6 +544,15 @@ class CartController extends Controller
         if (isset($direccion['buyer_address_id']) && $direccion['buyer_address_id'] !== '') {
             $guardada = $this->direccion_guardada_del_comprador($direccion['buyer_address_id']);
 
+            /* La dirección que el carrito YA tiene elegida y que dejó de resolverse: el comprador la
+               borró desde "Mis direcciones" (u otro dispositivo), o la sesión ya no es la de su
+               cuenta. El carrito conserva su foto: agregar un artículo no puede trabarse con un 422
+               por algo que el comprador eligió antes. Solo vale para el MISMO id y con foto: un id
+               distinto que no es del comprador sigue siendo 422. */
+            if (is_null($guardada) && $this->es_la_direccion_ya_elegida($cart, $direccion['buyer_address_id'])) {
+                return;
+            }
+
             if (is_null($guardada)) {
                 Log::warning('CartController: se pidio una direccion guardada que no es del comprador de la sesion', [
                     'cart_id'          => $cart->id,
@@ -576,15 +587,33 @@ class CartController extends Controller
      * @return \App\BuyerAddress|null
      */
     private function direccion_guardada_del_comprador($buyer_address_id) {
-        $buyer_id = $this->buyerId();
+        // La misma "cuenta" que exige /api/buyer/addresses (`Buyer::es_cuenta()`): la ficha de un
+        // invitado también abre el guard `buyer`, pero no tiene libreta de direcciones.
+        $buyer = $this->buyer();
 
-        if (is_null($buyer_id) || !is_numeric($buyer_address_id)) {
+        if (is_null($buyer) || !$buyer->es_cuenta() || !is_numeric($buyer_address_id)) {
             return null;
         }
 
         return BuyerAddress::where('id', (int) $buyer_address_id)
-            ->where('buyer_id', $buyer_id)
+            ->where('buyer_id', $buyer->id)
             ->first();
+    }
+
+    /**
+     * True si `$buyer_address_id` es la dirección que el carrito ya tiene elegida, con su foto.
+     *
+     * @param \App\Cart $cart
+     * @param mixed $buyer_address_id
+     * @return bool
+     */
+    private function es_la_direccion_ya_elegida($cart, $buyer_address_id) {
+        return $cart->exists
+            && is_numeric($buyer_address_id)
+            && !is_null($cart->buyer_address_id)
+            && (int) $cart->buyer_address_id === (int) $buyer_address_id
+            && is_array($cart->envio_direccion)
+            && count($cart->envio_direccion) > 0;
     }
 
     /**

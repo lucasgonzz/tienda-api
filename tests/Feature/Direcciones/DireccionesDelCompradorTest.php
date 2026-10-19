@@ -2,10 +2,13 @@
 
 namespace Tests\Feature\Direcciones;
 
+use App\Buyer;
 use App\BuyerAddress;
 use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -261,5 +264,134 @@ class DireccionesDelCompradorTest extends TestCase
             ->deleteJson(self::RUTA.'/'.$vieja->id)
             ->assertStatus(200);
         $this->assertTrue($nueva->fresh()->is_default);
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | Solo las cuentas tienen libreta (ronda de revisión, 19/10/2026)
+    |---------------------------------------------------------------------------------------------
+    */
+
+    public function test_una_ficha_de_invitado_logueada_no_guarda_ni_lista_direcciones()
+    {
+        $ficha = $this->fichaDeInvitado($this->comercio);
+        $this->assertFalse($ficha->es_cuenta());
+
+        /* Una dirección suya que hubiera quedado en la base: igual no la ve ni la toca. */
+        $suya = $this->direccionGuardada($ficha, ['is_default' => true]);
+
+        $respuestas = [
+            $this->actingAs($ficha, 'buyer')->getJson(self::RUTA),
+            $this->actingAs($ficha, 'buyer')->postJson(self::RUTA, $this->direccionDeGoogle()),
+            $this->actingAs($ficha, 'buyer')->putJson(self::RUTA.'/'.$suya->id, ['street' => 'Otra']),
+            $this->actingAs($ficha, 'buyer')->deleteJson(self::RUTA.'/'.$suya->id),
+        ];
+
+        foreach ($respuestas as $respuesta) {
+            $respuesta->assertStatus(422)->assertExactJson([
+                'codigo'  => 'sin_cuenta',
+                'message' => 'Iniciá sesión con tu cuenta para guardar direcciones.',
+            ]);
+        }
+
+        $this->assertSame(1, BuyerAddress::where('buyer_id', $ficha->id)->count());
+        $this->assertSame('Avenida Colón', $suya->fresh()->street);
+    }
+
+    public function test_una_cuenta_sin_contrasena_pero_con_provider_id_si_tiene_libreta()
+    {
+        /* Las cuentas que creó el login con Google (sacado el 14/10/2026) no tienen contraseña. */
+        $de_google = Buyer::create([
+            'name'        => 'Cuenta Google',
+            'email'       => 'google-'.Str::random(8).'@test.local',
+            'user_id'     => $this->comercio->id,
+            'provider_id' => 'google-123',
+        ]);
+        $this->assertTrue($de_google->es_cuenta());
+
+        $this->actingAs($de_google, 'buyer')->postJson(self::RUTA, $this->direccionDeGoogle())->assertStatus(201);
+    }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | Concurrencia y coordenadas (ronda de revisión, 19/10/2026)
+    |---------------------------------------------------------------------------------------------
+    */
+
+    public function test_alta_cambio_de_principal_y_baja_toman_el_candado_del_comprador()
+    {
+        $principal = $this->direccionGuardada($this->comprador, ['is_default' => true]);
+        $otra = $this->direccionGuardada($this->comprador, ['street' => 'Belgrano']);
+
+        $consultas = [];
+        DB::listen(function ($query) use (&$consultas) {
+            $consultas[] = strtolower($query->sql);
+        });
+
+        $pedidos = [
+            function () { return $this->actingAs($this->comprador, 'buyer')->postJson(self::RUTA, $this->direccionDeGoogle(['street' => 'Nueva'])); },
+            function () use ($otra) { return $this->actingAs($this->comprador, 'buyer')->putJson(self::RUTA.'/'.$otra->id, ['is_default' => true]); },
+            function () use ($principal) { return $this->actingAs($this->comprador, 'buyer')->deleteJson(self::RUTA.'/'.$principal->id); },
+        ];
+
+        foreach ($pedidos as $pedido) {
+            $consultas = [];
+            $pedido()->assertSuccessful();
+
+            $candado_comprador = array_filter($consultas, function ($sql) {
+                return strpos($sql, 'from `buyers`') !== false && strpos($sql, 'for update') !== false;
+            });
+            $candado_direcciones = array_filter($consultas, function ($sql) {
+                return strpos($sql, 'from `buyer_addresses`') !== false && strpos($sql, 'for update') !== false;
+            });
+
+            $this->assertNotEmpty($candado_comprador, 'el comprador se bloquea antes de contar o desmarcar');
+            $this->assertNotEmpty($candado_direcciones, 'y sus direcciones también');
+        }
+
+        /* Y al final hay una sola principal. */
+        $this->assertSame(1, BuyerAddress::where('buyer_id', $this->comprador->id)->where('is_default', 1)->count());
+    }
+
+    public function test_cambiar_la_direccion_sin_coordenadas_nuevas_borra_las_del_lugar_viejo()
+    {
+        $direccion = $this->direccionGuardada($this->comprador, ['is_default' => true]);
+
+        /* Cambiar solo el piso no toca lo de Google. */
+        $modelo = $this->actingAs($this->comprador, 'buyer')
+            ->putJson(self::RUTA.'/'.$direccion->id, ['apartment' => '7 A'])
+            ->assertStatus(200)
+            ->json('model');
+
+        $this->assertSame(-31.4135, $modelo['lat']);
+        $this->assertSame('ChIJ-prueba-123', $modelo['place_id']);
+
+        /* Cambiar la calle a mano, sin coordenadas: las del lugar viejo se van. */
+        $modelo = $this->actingAs($this->comprador, 'buyer')
+            ->putJson(self::RUTA.'/'.$direccion->id, ['street' => 'Rivadavia', 'street_number' => '900'])
+            ->assertStatus(200)
+            ->json('model');
+
+        $this->assertNull($modelo['lat']);
+        $this->assertNull($modelo['lng']);
+        $this->assertNull($modelo['place_id']);
+        $this->assertSame('Rivadavia 900, Córdoba, Córdoba', $modelo['formatted_address']);
+
+        /* Elegida de nuevo en Google: vienen las coordenadas nuevas y se guardan. */
+        $modelo = $this->actingAs($this->comprador, 'buyer')
+            ->putJson(self::RUTA.'/'.$direccion->id, [
+                'street'            => 'San Juan',
+                'street_number'     => '50',
+                'formatted_address' => 'San Juan 50, Córdoba, Argentina',
+                'lat'               => -31.42,
+                'lng'               => -64.19,
+                'place_id'          => 'ChIJ-otro-lugar',
+            ])
+            ->assertStatus(200)
+            ->json('model');
+
+        $this->assertSame(-31.42, $modelo['lat']);
+        $this->assertSame(-64.19, $modelo['lng']);
+        $this->assertSame('ChIJ-otro-lugar', $modelo['place_id']);
     }
 }

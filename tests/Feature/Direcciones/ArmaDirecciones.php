@@ -27,14 +27,35 @@ trait ArmaDirecciones
     }
 
     /**
+     * Un comprador con CUENTA: con contraseña (`Buyer::es_cuenta()`). Sin ella sería una ficha de
+     * invitado, que no tiene libreta de direcciones.
+     *
      * @param \App\User $comercio
      * @return \App\Buyer
      */
     protected function compradorConCuenta(User $comercio)
     {
         return Buyer::create([
-            'name'    => 'Comprador Direcciones Test',
-            'email'   => 'comprador-dir-'.Str::random(8).'@test.local',
+            'name'     => 'Comprador Direcciones Test',
+            'email'    => 'comprador-dir-'.Str::random(8).'@test.local',
+            'phone'    => '3511234567',
+            'password' => bcrypt('secreto'),
+            'user_id'  => $comercio->id,
+        ]);
+    }
+
+    /**
+     * La ficha que deja un checkout de invitado: sin contraseña ni `provider_id`.
+     * `BuyerController::login()` igual le abre el guard `buyer`.
+     *
+     * @param \App\User $comercio
+     * @return \App\Buyer
+     */
+    protected function fichaDeInvitado(User $comercio)
+    {
+        return Buyer::create([
+            'name'    => 'Invitado Direcciones Test',
+            'email'   => 'invitado-dir-'.Str::random(8).'@test.local',
             'phone'   => '3511234567',
             'user_id' => $comercio->id,
         ]);

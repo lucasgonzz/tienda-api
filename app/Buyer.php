@@ -83,6 +83,27 @@ class Buyer extends Authenticatable implements MustVerifyEmail
         return $this->hasMany('App\BuyerAddress');
     }
 
+    /**
+     * True si el comprador es una CUENTA (tiene contraseña o `provider_id`) y no una ficha de
+     * invitado (misión formas-envio-direcciones-maps, 19/10/2026).
+     *
+     * Es el mismo criterio que `BuyerController::esFichaDeInvitado()`, dado vuelta: la ficha que
+     * deja un checkout de invitado no tiene credencial, y `BuyerController::login()` igual le abre
+     * el guard `buyer` (no hay nada que proteger). Por eso "estar logueado" no alcanza para tener
+     * libreta de direcciones: solo una cuenta guarda, lista y elige direcciones guardadas.
+     *
+     * `password` y `provider_id` están en `$hidden`: el SPA no los ve. Lo que el SPA espeja es la
+     * respuesta 422 `sin_cuenta` de `/api/buyer/addresses`.
+     *
+     * @return bool
+     */
+    public function es_cuenta() {
+        $con_password = !is_null($this->password) && $this->password !== '';
+        $con_provider = !is_null($this->provider_id) && $this->provider_id !== '';
+
+        return $con_password || $con_provider;
+    }
+
     public function messages() {
         return $this->hasMany('App\Message');
     }
