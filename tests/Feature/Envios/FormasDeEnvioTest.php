@@ -373,6 +373,63 @@ class FormasDeEnvioTest extends TestCase
         Http::assertNothingSent();
     }
 
+    /**
+     * El hueco que el carrito no ve: el comprador eligió Zipnova (cotización vigente) y DESPUÉS el
+     * comercio lo apagó. El pedido no puede nacer con Zipnova, porque al confirmarlo en el ERP se
+     * generaría y cobraría el envío.
+     */
+    public function test_un_pedido_no_nace_con_zipnova_si_el_comercio_lo_apago_despues_de_elegirlo()
+    {
+        $conector = $this->conectorZipnova($this->comercio);
+        $this->zipnovaCotiza();
+        $this->asegurarEstadoSinConfirmar();
+
+        $cart = Cart::find($this->crearCarrito([
+            'envio' => [
+                'zipcode'    => '5000',
+                'opcion_key' => self::KEY_DOMICILIO_CORREO_ARG,
+                'point_id'   => null,
+                'destino'    => $this->destinoCompleto(),
+            ],
+        ])->assertStatus(201)->json('cart.id'));
+        $this->assertSame(self::KEY_DOMICILIO_CORREO_ARG, $cart->envio_opcion['key']);
+
+        $comprador = $this->compradorDe($this->comercio);
+        $pedidos_antes = Order::where('user_id', $this->comercio->id)->count();
+
+        $pedir = function () use ($cart, $comprador) {
+            return $this->withSession(['carritos_propios' => [$cart->id], 'checkout_buyer_id' => $comprador->id])
+                ->postJson('/api/orders', ['cart_id' => $cart->id, 'commerce_id' => $this->comercio->id, 'address' => 'San Martin 100']);
+        };
+
+        /* 1. El comercio destildó "Ofrecer envío por correo con Zipnova". */
+        $this->ofrecerZipnova(0);
+
+        $respuesta = $pedir()->assertStatus(422);
+        $this->assertSame('opcion_envio', $respuesta->json('codigo'));
+        $this->assertSame('Esa forma de envío ya no está disponible. Elegí otra.', $respuesta->json('message'));
+        $this->assertSame($pedidos_antes, Order::where('user_id', $this->comercio->id)->count(), 'no se creó ningún pedido');
+        $this->assertNotNull(Cart::find($cart->id), 'el carrito queda para volver a elegir');
+
+        /* 2. Lo vuelve a ofrecer pero ya no tiene el conector (lo desconectó en el ERP): igual. La
+              tienda decide "conectado" por la credencial (`PlatformConnector::is_connected()`),
+              no por `status`, así que se simula sacando el conector. */
+        $this->ofrecerZipnova(1);
+        $conector->delete();
+
+        $pedir()->assertStatus(422)->assertJson(['codigo' => 'opcion_envio']);
+        $this->assertSame($pedidos_antes, Order::where('user_id', $this->comercio->id)->count());
+
+        /* 3. Con los dos en orden, el pedido nace con Zipnova como siempre. */
+        $this->conectorZipnova($this->comercio);
+
+        $order = Order::find($pedir()->assertStatus(201)->json('order_id'));
+        $this->assertSame('zipnova', $order->envio_proveedor);
+
+        /* La cotización vigente no volvió a salir a Zipnova: la única llamada fue la del carrito. */
+        Http::assertSentCount(1);
+    }
+
     /*
     |---------------------------------------------------------------------------------------------
     | 4. Zipnova con la dirección elegida

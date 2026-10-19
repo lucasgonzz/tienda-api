@@ -22,6 +22,7 @@ use App\Http\Controllers\Helpers\ZipnovaEsquemaHelper;
 use App\Jobs\BroadcastOrderCreated;
 use App\Jobs\SendOrderEmails;
 use App\Order;
+use App\Services\Zipnova\ZipnovaCotizadorService;
 use App\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -263,6 +264,35 @@ class OrderController extends Controller
 
             if (AjustesDeClienteHelper::tiene_ajustes($ajustes_de_cliente)) {
                 CartHelper::set_total($cart);
+            }
+
+            /*
+             * 🔴 Un pedido nunca nace con Zipnova si el comercio ya no lo ofrece (misión
+             * formas-envio-direcciones-maps, 19/10/2026): destildó "Ofrecer envío por correo con
+             * Zipnova" o el conector dejó de estar conectado DESPUÉS de que el comprador eligió la
+             * opción. El carrito no lo ve solo: con la cotización vigente (menos de 24 h, mismas
+             * líneas y mismo CP) no vuelve a cotizar. Y si el pedido naciera igual, al confirmarlo
+             * en el ERP se generaría —y se le cobraría al comercio— un envío que apagó.
+             *
+             * La pregunta es la misma que publica `GET /api/commerce/{id}` (`envios_zipnova`):
+             * esquema + llave del comercio + conector, y nunca lanza. Va ANTES de crear nada; el
+             * comprador vuelve a elegir la forma de envío, con el mismo `codigo` que el SPA ya
+             * maneja para "volvé a elegir".
+             */
+            if (!is_null(EnvioCartHelper::opcion_de($cart))) {
+                $zipnova = ZipnovaCotizadorService::disponibilidad_publica($commerce_id);
+
+                if (empty($zipnova['envios_zipnova'])) {
+                    Log::warning('OrderController@store: el carrito trae una opción de Zipnova y el comercio ya no lo ofrece, se pide volver a elegir', [
+                        'cart_id'     => $cart->id,
+                        'commerce_id' => $commerce_id,
+                    ]);
+
+                    return response()->json([
+                        'codigo'  => 'opcion_envio',
+                        'message' => 'Esa forma de envío ya no está disponible. Elegí otra.',
+                    ], 422);
+                }
             }
 
             // Envío por correo (misión zipnova-envios): el precio guardado tiene que ser el de
