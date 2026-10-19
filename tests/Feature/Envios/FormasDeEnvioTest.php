@@ -470,6 +470,81 @@ class FormasDeEnvioTest extends TestCase
         $this->assertStringStartsWith('Av. Colon 123 4 B, Cordoba, Cordoba (CP 5000)', $order->address, 'con Zipnova la línea es la del destino del correo');
     }
 
+    /*
+    |---------------------------------------------------------------------------------------------
+    | 5. El código postal de la dirección elegida y el cotizado (ronda de revisión, 19/10/2026)
+    |---------------------------------------------------------------------------------------------
+    */
+
+    public function test_la_direccion_elegida_tiene_que_estar_en_el_codigo_postal_cotizado()
+    {
+        $this->conectorZipnova($this->comercio);
+        $this->zipnovaCotiza();
+
+        $envio = [
+            'zipcode'    => '5000',
+            'opcion_key' => self::KEY_DOMICILIO_CORREO_ARG,
+            'point_id'   => null,
+            'destino'    => $this->destinoCompleto(),
+        ];
+        $direccion = [
+            'street'        => 'Belgrano',
+            'street_number' => '120',
+            'city'          => 'Campana',
+            'province'      => 'Buenos Aires',
+            'zip_code'      => '2840',
+        ];
+
+        $carritos_antes = Cart::where('user_id', $this->comercio->id)->count();
+
+        /* Cotizado al 5000, dirección elegida en el 2840: hay que volver a cotizar. */
+        $respuesta = $this->crearCarrito(['envio' => $envio, 'direccion_envio' => $direccion])->assertStatus(422);
+
+        $this->assertSame('opcion_envio', $respuesta->json('codigo'));
+        $this->assertStringContainsString('2840', $respuesta->json('message'));
+        $this->assertSame($carritos_antes, Cart::where('user_id', $this->comercio->id)->count(), 'no queda ningún carrito escrito');
+        Http::assertNothingSent();
+
+        /* El mismo lugar escrito como lo da Google ("X5000") o como CPA: pasa. */
+        foreach (['X5000', 'x5000abc', '5000'] as $cp) {
+            $this->crearCarrito([
+                'envio'           => $envio,
+                'direccion_envio' => array_merge($direccion, ['city' => 'Córdoba', 'province' => 'Córdoba', 'zip_code' => $cp]),
+            ])->assertStatus(201);
+        }
+
+        /* Y una dirección sin código postal no se compara (la carga a mano lo puede no traer). */
+        $this->crearCarrito([
+            'envio'           => $envio,
+            'direccion_envio' => array_merge($direccion, ['zip_code' => null]),
+        ])->assertStatus(201);
+    }
+
+    public function test_el_codigo_postal_de_google_con_letra_se_cotiza_con_los_cuatro_digitos()
+    {
+        /* La regla, en el servicio. */
+        $this->assertSame('5000', \App\Services\Zipnova\ZipnovaCotizadorService::zipcode_limpio('X5000'));
+        $this->assertSame('1425', \App\Services\Zipnova\ZipnovaCotizadorService::zipcode_limpio('c 1425'));
+        $this->assertSame('5000', \App\Services\Zipnova\ZipnovaCotizadorService::zipcode_limpio('5000'));
+        $this->assertSame('X5000ABC', \App\Services\Zipnova\ZipnovaCotizadorService::zipcode_limpio('x5000-abc'), 'el CPA completo queda como está');
+        $this->assertTrue(\App\Services\Zipnova\ZipnovaCotizadorService::mismo_codigo_postal('X5000ABC', '5000'));
+        $this->assertFalse(\App\Services\Zipnova\ZipnovaCotizadorService::mismo_codigo_postal('2840', '5000'));
+
+        /* Y lo que viaja a Zipnova. */
+        $this->conectorZipnova($this->comercio);
+        $this->zipnovaCotiza();
+
+        $this->postJson('/api/envios/cotizar', [
+            'commerce_id' => $this->comercio->id,
+            'zipcode'     => 'X5000',
+            'articles'    => [['id' => $this->articulo->id, 'amount' => 1]],
+        ])->assertStatus(200)->assertJson(['zipcode' => '5000']);
+
+        Http::assertSent(function ($request) {
+            return $request->data()['destination']['zipcode'] === '5000';
+        });
+    }
+
     public function test_el_comercio_publica_si_hay_direcciones_de_envio()
     {
         Http::fake();

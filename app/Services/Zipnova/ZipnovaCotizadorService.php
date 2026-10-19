@@ -529,6 +529,13 @@ class ZipnovaCotizadorService
      * Código postal sin espacios ni signos, en mayúsculas: Zipnova acepta el numérico ("5000") y
      * el CPA ("X5000ABC"); todo lo demás es ruido del teclado del teléfono.
      *
+     * La forma intermedia "letra de provincia + 4 dígitos" ("X5000", "C1425") no es ninguna de las
+     * dos, y es justo la que devuelve Google Places como `postal_code` en Argentina (misión
+     * formas-envio-direcciones-maps: el CP del checkout ahora sale de la dirección elegida). Se
+     * deja en los 4 dígitos, que es la forma numérica que Zipnova resuelve (medido el 17/9/2026,
+     * ver `CENTINELA_UBICACION`); mandarla con la letra era una apuesta a algo no medido. El CPA
+     * completo queda como está.
+     *
      * @param mixed $zipcode
      * @return string Vacío si después de limpiar no quedan entre 4 y 8 caracteres.
      */
@@ -543,6 +550,48 @@ class ZipnovaCotizadorService
 
         if ($largo < 4 || $largo > 8) {
             return '';
+        }
+
+        if (preg_match('/^[A-Z](\d{4})$/', $limpio, $partes)) {
+            return $partes[1];
+        }
+
+        return $limpio;
+    }
+
+    /**
+     * True si dos códigos postales son el mismo lugar para el envío: iguales después de limpiar, o
+     * con el mismo número de 4 dígitos cuando uno es el CPA ("X5000ABC") y el otro el numérico
+     * ("5000"). Para comparar el CP de la dirección elegida con el cotizado sin rechazar el mismo
+     * lugar escrito de otra forma.
+     *
+     * @param mixed $uno
+     * @param mixed $otro
+     * @return bool
+     */
+    public static function mismo_codigo_postal($uno, $otro)
+    {
+        $uno = self::zipcode_limpio($uno);
+        $otro = self::zipcode_limpio($otro);
+
+        if ($uno === '' || $otro === '') {
+            return false;
+        }
+
+        return $uno === $otro || self::numero_del_codigo_postal($uno) === self::numero_del_codigo_postal($otro);
+    }
+
+    /**
+     * Los 4 dígitos de un CP ya limpio ("X5000ABC" → "5000", "5000" → "5000"), o el CP tal cual si
+     * no tiene esa forma.
+     *
+     * @param string $limpio
+     * @return string
+     */
+    protected static function numero_del_codigo_postal($limpio)
+    {
+        if (preg_match('/^[A-Z]?(\d{4})[A-Z]{0,3}$/', $limpio, $partes)) {
+            return $partes[1];
         }
 
         return $limpio;

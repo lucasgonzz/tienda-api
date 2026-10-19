@@ -60,7 +60,8 @@ use Illuminate\Support\Facades\Log;
  *
  * Los 422 llevan `codigo` para que el SPA sepa qué mostrar:
  *   `opcion_envio`  la key ya no está en la cotización nueva (trae `opciones` frescas), o el
- *                   carrito cambió / la cotización venció al crear el pedido
+ *                   carrito cambió / la cotización venció al crear el pedido, o la dirección de
+ *                   entrega elegida es de otro código postal que el cotizado
  *   `destino`       faltan datos de la dirección (`errors: {campo: [mensaje]}`), o la sucursal
  *                   elegida no es de la opción
  *   `sin_zipnova` / `sin_articulos` / `ubicacion` / `zipnova` (502): mismos que el cotizador
@@ -137,6 +138,17 @@ class EnvioCartHelper
 
         if ($zipcode === '') {
             self::fallar('opcion_envio', 'Falta el código postal para cotizar el envío. Volvé a cotizar.');
+        }
+
+        // La dirección de entrega elegida (misión formas-envio-direcciones-maps) tiene que estar en
+        // el código postal que se cotiza: si no, Zipnova cobraría el envío a un lugar y el paquete
+        // iría a otro. Va antes de cotizar, así un pedido que ya no cierra no le cuesta una consulta
+        // a Zipnova. La foto ya está en el carrito: `CartController::sync_direccion_envio()` corre
+        // antes que esto.
+        $cp_de_la_direccion = self::cp_de_la_direccion_elegida($cart);
+
+        if (!is_null($cp_de_la_direccion) && !ZipnovaCotizadorService::mismo_codigo_postal($cp_de_la_direccion, $zipcode)) {
+            self::fallar('opcion_envio', 'La dirección elegida es de otro código postal ('.$cp_de_la_direccion.'): volvé a cotizar el envío para esa dirección.');
         }
 
         $items_hash = self::hash_de_partes(self::partes_del_request($data));
@@ -602,6 +614,29 @@ class EnvioCartHelper
     protected static function zipcode_del_snapshot(array $cotizacion)
     {
         return ZipnovaCotizadorService::zipcode_limpio(isset($cotizacion['zipcode']) ? $cotizacion['zipcode'] : null);
+    }
+
+    /**
+     * El código postal de la dirección de entrega elegida en el carrito (`carts.envio_direccion`,
+     * misión formas-envio-direcciones-maps), o null si no hay dirección, no trae CP, o la base no
+     * tiene el esquema (`DireccionesEsquemaHelper`). Se devuelve como lo escribió el comprador o
+     * Google, para mostrarlo en el mensaje; la comparación limpia la hace
+     * `ZipnovaCotizadorService::mismo_codigo_postal()`.
+     *
+     * @param Cart $cart
+     * @return string|null
+     */
+    protected static function cp_de_la_direccion_elegida(Cart $cart)
+    {
+        if (!DireccionesEsquemaHelper::disponible() || !is_array($cart->envio_direccion)) {
+            return null;
+        }
+
+        $cp = isset($cart->envio_direccion['zip_code']) && is_scalar($cart->envio_direccion['zip_code'])
+            ? trim((string) $cart->envio_direccion['zip_code'])
+            : '';
+
+        return ZipnovaCotizadorService::zipcode_limpio($cp) === '' ? null : $cp;
     }
 
     /**
