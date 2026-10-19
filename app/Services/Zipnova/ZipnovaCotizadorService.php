@@ -5,8 +5,10 @@ namespace App\Services\Zipnova;
 use App\Article;
 use App\Cart;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
 use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
 use App\Http\Controllers\Helpers\ZipnovaEsquemaHelper;
+use App\OnlineConfiguration;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
@@ -18,8 +20,10 @@ use Illuminate\Support\Facades\Log;
  *
  * ── Qué decide ────────────────────────────────────────────────────────────────────────────────
  *
- *  - Si el comercio puede cotizar: esquema disponible + conector de Zipnova conectado. Si no,
- *    `SinZipnovaException` (422 `sin_zipnova`, sin log: es el estado normal de la mayoría).
+ *  - Si el comercio puede cotizar: esquema disponible + "Ofrecer envío por correo con Zipnova"
+ *    prendido (`el_comercio_ofrece_zipnova()`, misión formas-envio-direcciones-maps) + conector de
+ *    Zipnova conectado. Si no, `SinZipnovaException` (422 `sin_zipnova`, sin log: es el estado
+ *    normal de la mayoría).
  *  - Los ítems: `ZipnovaPaquetesHelper` con el bulto por defecto del conector. Sin ítems,
  *    `SinArticulosException`.
  *  - El valor declarado: el subtotal si el comercio marcó "asegurar por el valor de la compra",
@@ -115,6 +119,14 @@ class ZipnovaCotizadorService
     {
         if (!ZipnovaEsquemaHelper::disponible()) {
             throw new SinZipnovaException('La base de este negocio todavía no tiene el esquema de envíos.');
+        }
+
+        // El comercio destildó "Ofrecer envío por correo con Zipnova" (misión
+        // formas-envio-direcciones-maps): para el comprador es igual que no tener el conector. Va
+        // acá, en la única puerta hacia `/shipments/quote`, así lo ven juntos `/envios/cotizar`
+        // (422 `sin_zipnova`) y el carrito cuando re-cotiza (`EnvioCartHelper`, mismo 422).
+        if (!self::el_comercio_ofrece_zipnova($commerce_id)) {
+            throw new SinZipnovaException('El negocio no ofrece envíos por correo con Zipnova en la tienda.');
         }
 
         $credentials = ZipnovaCredentialsHelper::credentials((int) $commerce_id);
@@ -559,6 +571,12 @@ class ZipnovaCotizadorService
                 return $publico;
             }
 
+            // Con "Ofrecer envío por correo con Zipnova" destildado la tienda no lo ofrece aunque
+            // el conector esté conectado (misión formas-envio-direcciones-maps).
+            if (!self::el_comercio_ofrece_zipnova($commerce_id)) {
+                return $publico;
+            }
+
             $credentials = ZipnovaCredentialsHelper::credentials((int) $commerce_id);
 
             if (is_null($credentials['basic'])) {
@@ -572,5 +590,29 @@ class ZipnovaCotizadorService
         }
 
         return $publico;
+    }
+
+    /**
+     * True si el comercio ofrece Zipnova en la tienda (`online_configurations.ofrecer_envio_zipnova`,
+     * misión formas-envio-direcciones-maps, 19/10/2026). Es la llave del COMERCIO, aparte del
+     * conector: con el conector conectado puede querer ofrecer solo sus formas de envío propias.
+     *
+     * `null`, la columna ausente (ERP viejo, `DireccionesEsquemaHelper`) o el comercio sin
+     * configuración online ⇒ se ofrece, que es el comportamiento de antes. Solo un 0 explícito lo
+     * apaga.
+     *
+     * @param int $commerce_id
+     * @return bool
+     */
+    public static function el_comercio_ofrece_zipnova($commerce_id)
+    {
+        if (!DireccionesEsquemaHelper::ofrecer_envio_zipnova_disponible()) {
+            return true;
+        }
+
+        $valor = OnlineConfiguration::where('user_id', (int) $commerce_id)
+            ->value(DireccionesEsquemaHelper::COLUMNA_OFRECER_ZIPNOVA);
+
+        return is_null($valor) || filter_var($valor, FILTER_VALIDATE_BOOLEAN);
     }
 }

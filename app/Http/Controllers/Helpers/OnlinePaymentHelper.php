@@ -23,6 +23,13 @@ class OnlinePaymentHelper {
      *     mayor a cero (0 = el comercio absorbio el envio). El parametro es opcional para que los
      *     otros llamadores (PaywayController) sigan igual.
      *
+     * Una zona "a convenir" (`costo_a_convenir`, mision formas-envio-direcciones-maps) no agrega
+     * ningun item: el costo lo coordinan el comercio y el comprador, nada se cobra online. Tampoco
+     * un item de $0: un renglon "Envio $0" se lee como envio gratis, y no se pudo verificar (sin
+     * red en los tests) que Mercado Pago acepte un `unit_price` 0, asi que no se le manda. Cubre la
+     * zona que manda el SPA en el body (Payway, preferencia sin carrito); con carrito,
+     * `MercadoPagoController::articulos_a_cobrar()` ya no la pasa.
+     *
      * @param array|null $cupon
      * @param array|null $delivery_zone
      * @param array $articles
@@ -89,7 +96,7 @@ class OnlinePaymentHelper {
                 $index++;
             }
         }
-        if (!is_null($delivery_zone)) {
+        if (!is_null($delivery_zone) && !DireccionesEsquemaHelper::zona_a_convenir($delivery_zone)) {
             $articles[] = [
                 'name'          => 'Envio',
                 'amount'        => 1,

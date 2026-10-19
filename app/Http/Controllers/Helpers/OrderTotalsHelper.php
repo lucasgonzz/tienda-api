@@ -224,6 +224,12 @@ class OrderTotalsHelper
                 $delivery_label .= ' - gratis';
             }
             $total = $total + $delivery_amount;
+        } elseif (!is_null($order->delivery_zone) && DireccionesEsquemaHelper::zona_a_convenir($order->delivery_zone)) {
+            // Forma propia "a convenir" (mision formas-envio-direcciones-maps): no cobra nada online,
+            // asi que no suma al total. `delivery_amount` queda en null a proposito: el blade imprime
+            // la fila solo con un monto, y un "$ 0,00" diria que el envio es gratis, que no es lo que
+            // pasa (el costo lo coordinan el comercio y el comprador).
+            $delivery_label = 'Envio a '.$order->delivery_zone->name.' (costo a coordinar con el vendedor)';
         } elseif (!is_null($order->delivery_zone)) {
             $delivery_amount = (float) $order->delivery_zone->price;
             $delivery_label = 'Envio a '.$order->delivery_zone->name;

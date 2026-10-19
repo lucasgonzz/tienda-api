@@ -6,6 +6,7 @@ use App\Cart;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
+use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Http\Controllers\Helpers\MercadoPagoCredentialsHelper;
 use App\Http\Controllers\Helpers\OnlinePaymentHelper;
@@ -239,7 +240,10 @@ class MercadoPagoController extends Controller
         $envio_precio = EnvioCartHelper::precio_para_cobrar($cart);
 
         if ($cart) {
-            $delivery_zone = is_null($envio_precio) && $cart->delivery_zone
+            // Una forma propia "a convenir" (mision formas-envio-direcciones-maps) no se cobra
+            // online: no viaja ningun item de envio, ni siquiera uno de $0. El recargo por cuotas
+            // tampoco la suma, porque se calcula sobre estos mismos items.
+            $delivery_zone = is_null($envio_precio) && $cart->delivery_zone && !DireccionesEsquemaHelper::zona_a_convenir($cart->delivery_zone)
                 ? ['price' => $cart->delivery_zone->price]
                 : null;
 
