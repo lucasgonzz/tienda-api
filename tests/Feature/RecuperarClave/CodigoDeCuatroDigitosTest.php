@@ -364,6 +364,10 @@ class CodigoDeCuatroDigitosTest extends TestCase
     /** 5 códigos por hora: el sexto pedido se rechaza y no manda mail. */
     public function test_no_se_pueden_pedir_mas_de_cinco_codigos_por_hora()
     {
+        // Throttle por IP (mision throttle-recuperar-clave-por-ip): este test hace muchos pedidos desde
+        // 127.0.0.1 y lo que prueba es el tope POR CUENTA; la capa por IP se prueba en ThrottlePorIpTest.
+        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+
         Mail::fake();
 
         foreach (range(1, 5) as $i) {
@@ -387,6 +391,10 @@ class CodigoDeCuatroDigitosTest extends TestCase
      */
     public function test_no_se_pueden_probar_mas_de_veinticinco_codigos_por_hora()
     {
+        // Throttle por IP (mision throttle-recuperar-clave-por-ip): este test hace muchos pedidos desde
+        // 127.0.0.1 y lo que prueba es el tope POR CUENTA; la capa por IP se prueba en ThrottlePorIpTest.
+        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+
         Mail::fake();
 
         $probados = 0;
@@ -422,6 +430,10 @@ class CodigoDeCuatroDigitosTest extends TestCase
 
     public function test_pasada_la_hora_se_pueden_pedir_codigos_otra_vez()
     {
+        // Throttle por IP (mision throttle-recuperar-clave-por-ip): este test hace muchos pedidos desde
+        // 127.0.0.1 y lo que prueba es el tope POR CUENTA; la capa por IP se prueba en ThrottlePorIpTest.
+        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+
         Mail::fake();
 
         foreach (range(1, 5) as $i) {
@@ -437,6 +449,10 @@ class CodigoDeCuatroDigitosTest extends TestCase
     /** El tope por hora es por comprador: a otro comprador no le gasta pedidos. */
     public function test_el_tope_por_hora_es_por_comprador()
     {
+        // Throttle por IP (mision throttle-recuperar-clave-por-ip): este test hace muchos pedidos desde
+        // 127.0.0.1 y lo que prueba es el tope POR CUENTA; la capa por IP se prueba en ThrottlePorIpTest.
+        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+
         Mail::fake();
 
         $otro = $this->crear_comprador($this->comercio, 'otro-4d-'.Str::random(8).'@test.local');
@@ -452,6 +468,10 @@ class CodigoDeCuatroDigitosTest extends TestCase
     /** Un problema del servidor de correo no le gasta al comprador los pedidos de la hora. */
     public function test_un_mail_que_no_salio_no_cuenta_para_el_tope_por_hora()
     {
+        // Throttle por IP (mision throttle-recuperar-clave-por-ip): este test hace muchos pedidos desde
+        // 127.0.0.1 y lo que prueba es el tope POR CUENTA; la capa por IP se prueba en ThrottlePorIpTest.
+        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+
         Mail::shouldReceive('to')->andReturnSelf();
         Mail::shouldReceive('send')->times(6)->andThrow(
             new \Symfony\Component\Mailer\Exception\TransportException('sin conexión')
@@ -530,6 +550,10 @@ class CodigoDeCuatroDigitosTest extends TestCase
     /** Cambiar la clave con el código de A y el commerce_id de B no toca a nadie. */
     public function test_los_intentos_de_un_comercio_no_le_gastan_el_codigo_al_otro()
     {
+        // Throttle por IP (mision throttle-recuperar-clave-por-ip): este test hace muchos pedidos desde
+        // 127.0.0.1 y lo que prueba es el tope POR CUENTA; la capa por IP se prueba en ThrottlePorIpTest.
+        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+
         Mail::fake();
 
         $comercio_b = $this->crear_comercio('Comercio B Intentos');
