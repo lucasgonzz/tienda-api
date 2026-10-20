@@ -3,9 +3,11 @@
 namespace Tests\Feature\RecuperarClave;
 
 use App\Buyer;
+use App\Mail\PasswordReset;
 use App\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -16,6 +18,11 @@ use Tests\TestCase;
  * La contraseña nueva se guarda solo con el código vigente de ese comprador, el mismo que valida el
  * segundo paso. La pantalla siempre mandó el código junto con la contraseña (también la versión 1.1.0),
  * así que exigirlo no cambia nada para quien sigue los tres pasos.
+ *
+ * Desde el 20/10/2026 (misión recuperar-clave-codigo-4-digitos) el código vive en CACHÉ y no en
+ * `buyers.verification_code` (esa columna es del registro del comprador; ver el docblock de
+ * PasswordResetController). Por eso los tests ya no lo siembran en la columna: lo piden por el mismo
+ * camino que la pantalla (`send-verification-code`) y lo leen del mail. Lo que verifican no cambió.
  */
 class CambioDeClaveTest extends TestCase
 {
@@ -47,6 +54,30 @@ class CambioDeClaveTest extends TestCase
         ]);
     }
 
+    /**
+     * Pide el código por el camino real (`send-verification-code`, mail falso) y devuelve el que salió en el mail.
+     *
+     * @param  array  $extra  Campos extra del pedido, p. ej. `longitud_del_codigo`.
+     * @return string
+     */
+    private function pedir_codigo(array $extra = [])
+    {
+        Mail::fake();
+
+        $this->postJson('/password-reset/send-verification-code', array_merge([
+            'email'       => $this->comprador->email,
+            'commerce_id' => $this->comercio->id,
+        ], $extra))->assertStatus(200)->assertJson(['email_send' => true]);
+
+        return (string) Mail::sent(PasswordReset::class)->last()->code;
+    }
+
+    /** Un código que seguro NO es el dado (para probar el caso del código equivocado). */
+    private function codigo_distinto_de($codigo)
+    {
+        return $codigo === '111111' ? '222222' : '111111';
+    }
+
     /** El cuerpo que manda la pantalla en el tercer paso. */
     private function pedido_de_cambio($codigo, $clave = 'nueva-clave-123')
     {
@@ -60,36 +91,43 @@ class CambioDeClaveTest extends TestCase
 
     public function test_con_el_codigo_vigente_cambia_la_clave_y_borra_el_codigo()
     {
-        $this->comprador->verification_code = 482913;
-        $this->comprador->save();
+        $codigo = $this->pedir_codigo();
 
-        $respuesta = $this->postJson('/password-reset/update-password', $this->pedido_de_cambio('482913'));
+        $respuesta = $this->postJson('/password-reset/update-password', $this->pedido_de_cambio($codigo));
 
         $respuesta->assertStatus(200)->assertJson(['password_updated' => true]);
         $this->comprador->refresh();
         $this->assertTrue(Hash::check('nueva-clave-123', $this->comprador->password));
-        $this->assertNull($this->comprador->verification_code);
+
+        // El código se borró: no se puede reusar para cambiar la clave otra vez.
+        $this->postJson('/password-reset/update-password', $this->pedido_de_cambio($codigo, 'otra-clave-456'))
+            ->assertStatus(422);
+        $this->assertTrue(Hash::check('nueva-clave-123', $this->comprador->fresh()->password));
     }
 
     public function test_sin_codigo_no_cambia_la_clave()
     {
-        $this->comprador->verification_code = 482913;
-        $this->comprador->save();
+        $codigo = $this->pedir_codigo();
 
         $respuesta = $this->postJson('/password-reset/update-password', $this->pedido_de_cambio(null));
 
         $respuesta->assertStatus(422)->assertJson(['password_updated' => false]);
         $this->comprador->refresh();
         $this->assertTrue(Hash::check('vieja-clave', $this->comprador->password));
-        $this->assertEquals(482913, (int) $this->comprador->verification_code);
+
+        // El código pendiente sigue sirviendo: un pedido sin código no lo rompe.
+        $this->postJson('/password-reset/check-verification-code', [
+            'email'             => $this->comprador->email,
+            'commerce_id'       => $this->comercio->id,
+            'verification_code' => $codigo,
+        ])->assertJson(['verified' => true]);
     }
 
     public function test_con_un_codigo_que_no_es_no_cambia_la_clave()
     {
-        $this->comprador->verification_code = 482913;
-        $this->comprador->save();
+        $codigo = $this->pedir_codigo();
 
-        $respuesta = $this->postJson('/password-reset/update-password', $this->pedido_de_cambio('111111'));
+        $respuesta = $this->postJson('/password-reset/update-password', $this->pedido_de_cambio($this->codigo_distinto_de($codigo)));
 
         $respuesta->assertStatus(422);
         $this->assertTrue(Hash::check('vieja-clave', $this->comprador->fresh()->password));
@@ -116,13 +154,12 @@ class CambioDeClaveTest extends TestCase
 
     public function test_el_segundo_paso_acepta_el_codigo_vigente()
     {
-        $this->comprador->verification_code = 482913;
-        $this->comprador->save();
+        $codigo = $this->pedir_codigo();
 
         $respuesta = $this->postJson('/password-reset/check-verification-code', [
             'email'             => $this->comprador->email,
             'commerce_id'       => $this->comercio->id,
-            'verification_code' => '482913',
+            'verification_code' => $codigo,
         ]);
 
         $respuesta->assertStatus(200)->assertJson(['verified' => true]);

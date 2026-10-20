@@ -154,17 +154,27 @@ class EnvioDelCodigoTest extends TestCase
     /** Un codigo pedido antes (que si se mando) no se pierde porque el reenvio fallo. */
     public function test_un_fallo_deja_el_codigo_que_el_comprador_ya_tenia()
     {
-        $this->comprador->verification_code = 123456;
-        $this->comprador->save();
+        // Un primer pedido que sale bien: el comprador tiene un código vigente.
+        Mail::fake();
+        $this->pedirCodigo($this->comprador->email)->assertStatus(200);
+        $codigo_que_salio = (string) Mail::sent(PasswordReset::class)->last()->code;
 
+        // El reenvío falla: el código nuevo no se guarda, el anterior sigue sirviendo. Se saca el mail falso
+        // para que el envío recorra el transporte que rechaza.
+        Mail::clearResolvedInstance('mail.manager');
+        $this->app->forgetInstance('mail.manager');
         $this->servidorDeCorreoQueRechaza(new TransportException('Connection could not be established with host "smtp.test:465"'));
 
         $this->pedirCodigo($this->comprador->email)->assertStatus(422);
 
-        $this->assertEquals(123456, $this->comprador->fresh()->verification_code);
+        $this->postJson('/password-reset/check-verification-code', [
+            'email'             => $this->comprador->email,
+            'commerce_id'       => $this->comercio->id,
+            'verification_code' => $codigo_que_salio,
+        ])->assertJson(['verified' => true]);
     }
 
-    /** El caso que anda no cambia: 200, `email_send` true, el mail sale al comprador con el codigo guardado. */
+    /** El caso que anda no cambia: 200, `email_send` true, el mail sale al comprador con el codigo (6 digitos si la pantalla no pide otro largo). */
     public function test_el_envio_que_anda_responde_igual_que_siempre()
     {
         Mail::fake();
@@ -174,11 +184,12 @@ class EnvioDelCodigoTest extends TestCase
         $respuesta->assertStatus(200);
         $this->assertSame(['email_send' => true], $respuesta->json());
 
-        $codigo = $this->comprador->fresh()->verification_code;
-        $this->assertNotNull($codigo);
+        // El código ya no se guarda en `buyers.verification_code` (ver PasswordResetController): sale en el
+        // mail, al comprador que lo pidió, y esa columna queda como estaba.
+        $this->assertNull($this->comprador->fresh()->verification_code);
 
-        Mail::assertSent(PasswordReset::class, function ($mail) use ($codigo) {
-            return $mail->hasTo($this->comprador->email) && (string) $mail->code === (string) $codigo;
+        Mail::assertSent(PasswordReset::class, function ($mail) {
+            return $mail->hasTo($this->comprador->email) && preg_match('/^\d{6}$/', (string) $mail->code) === 1;
         });
     }
 
