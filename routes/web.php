@@ -38,14 +38,16 @@ Route::post('/login', 'AuthController@login');
 Route::post('/logout', 'AuthController@logout');
 
 // Password Reset
+// Cada paso lleva su throttle POR IP (limitadores definidos en App\Providers\RouteServiceProvider:
+// minuto y hora, cubo propio por paso). Al pasarse responden 429. Los topes por cuenta siguen en el controlador.
 Route::post('/password-reset/send-verification-code',
 	'PasswordResetController@sendVerificationCode'
-);
+)->middleware('throttle:recuperar-clave-pedir');
 Route::post('/password-reset/check-verification-code',
 	'PasswordResetController@checkVerificationCode'
-);
+)->middleware('throttle:recuperar-clave-verificar');
 Route::post('/password-reset/update-password',
 	'PasswordResetController@updatePassword'
-);
+)->middleware('throttle:recuperar-clave-cambiar');
 
 Route::post('/payment-notification', 'PaymentController@notification');
