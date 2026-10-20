@@ -43,13 +43,25 @@ use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
  * Que se guarda en cache, por comercio + comprador (el codigo de un comercio no sirve en otro):
  *   - el codigo pendiente: su HMAC-SHA256 (el codigo en claro no queda en ningun lado), los intentos
  *     fallidos y cuando vence. Vive MINUTOS_DE_VIDA_DEL_CODIGO; pedir otro pisa el anterior.
- *   - los codigos emitidos en la ventana de VENTANA_DE_PEDIDOS_EN_MINUTOS, aparte del codigo para que
- *     pedir otro no reinicie el contador.
+ *   - los codigos emitidos en la ventana de VENTANA_DE_PEDIDOS_EN_MINUTOS (la hora) y, con otro contador y
+ *     otra clave, en la de VENTANA_DIARIA_EN_MINUTOS (el dia). Van aparte del codigo para que pedir otro
+ *     no reinicie los contadores.
  *
  * Los topes son los mismos que los de empresa-api (`CommonLaravel\PasswordResetController`):
  *   - INTENTOS_FALLIDOS_MAXIMOS por codigo: al 5.º error el codigo muere, aunque despues llegue el bueno.
  *   - CODIGOS_POR_HORA_MAXIMOS por comprador: sin este, el de intentos no sirve (cada codigo nuevo
  *     arranca en 0 intentos). Entre los dos, como mucho 5 x 5 = 25 codigos probados por hora.
+ *   - CODIGOS_POR_DIA_MAXIMOS por comprador (mision tope-diario-de-codigos-recuperar-clave, 20/10/2026):
+ *     el de la hora solo, sostenido todo el dia, dejaba probar 5 x 5 x 24 = 600 codigos por dia contra
+ *     9.000 combinaciones de 4 digitos (≈ 6,5 % por dia de ataque). Con 10 codigos por dia son
+ *     10 x 5 = 50 intentos por dia (≈ 0,55 %), unas 12 veces menos. Con codigos de 6 digitos mejora mas.
+ *
+ * 🔴 TRADE-OFF ACEPTADO (Lucas, 20/10/2026): quien conozca el correo de un comprador puede pedir los 10
+ * codigos del dia y dejarlo sin poder recuperar su clave hasta 24 horas (con el tope de la hora eran 60
+ * minutos). Por eso el mensaje le dice que pruebe de nuevo mas tarde o pida ayuda a soporte. Las dos
+ * ventanas son FIJAS (arrancan con el primer pedido y no se estiran con los siguientes), se cuentan y se
+ * devuelven juntas bajo el mismo candado, y se chequea primero la del dia y despues la de la hora: con las
+ * dos llenas, el mensaje es el del dia (el mas restrictivo y el mas verdadero).
  */
 class PasswordResetController extends Controller
 {
@@ -59,6 +71,9 @@ class PasswordResetController extends Controller
 
     /** Lo que ve el comprador cuando pidio demasiados codigos en una hora. */
     const MENSAJE_DEMASIADOS_PEDIDOS = 'Pediste demasiados códigos de recuperación. Esperá una hora y volvé a intentar.';
+
+    /** Lo que ve el comprador cuando pidio demasiados codigos en el dia (se chequea antes que el de la hora). */
+    const MENSAJE_DEMASIADOS_PEDIDOS_POR_DIA = 'Llegaste al máximo de códigos de recuperación por día. Probá de nuevo en 24 horas o pedile ayuda a soporte.';
 
     /** Lo que ve el comprador cuando el codigo no sirve (equivocado, vencido, agotado) al cambiar la contraseña. */
     const MENSAJE_CODIGO_INVALIDO = 'El código venció o no es correcto. Pedí uno nuevo.';
@@ -80,6 +95,12 @@ class PasswordResetController extends Controller
 
     /** Ventana FIJA (desde el primer pedido; no se corre con cada uno) del tope de codigos emitidos. */
     const VENTANA_DE_PEDIDOS_EN_MINUTOS = 60;
+
+    /** Codigos que se le pueden emitir a un comprador por ventana de VENTANA_DIARIA_EN_MINUTOS (10 x 5 intentos = 50 por dia). */
+    const CODIGOS_POR_DIA_MAXIMOS = 10;
+
+    /** Ventana FIJA (desde el primer pedido) del tope diario de codigos emitidos: 24 horas. */
+    const VENTANA_DIARIA_EN_MINUTOS = 1440;
 
     /** Largo minimo de la contraseña nueva (la pantalla ya exige 6 o mas: lo que manda siempre pasa). */
     const MINIMO_DE_LA_CONTRASENA = 6;
@@ -104,8 +125,9 @@ class PasswordResetController extends Controller
      * el comprador ya tenia (si tenia uno) sigue sirviendo, porque el nuevo no se guarda hasta que el
      * mail salio.
      *
-     * Pasado el tope de CODIGOS_POR_HORA_MAXIMOS NO se genera codigo ni se manda mail: 422 con `message`
-     * (la pantalla —la de hoy y la vieja— muestra ese texto) y `email_send` false.
+     * Pasado el tope de CODIGOS_POR_DIA_MAXIMOS (o el de CODIGOS_POR_HORA_MAXIMOS) NO se genera codigo ni se
+     * manda mail ni se toca el codigo pendiente: 422 con `message` (la pantalla —la de hoy y la vieja—
+     * muestra ese texto) y `email_send` false, con la misma forma en los dos casos; solo cambia el texto.
      *
      * El caso que anda (mail enviado) y el del email desconocido responden igual que siempre.
      *
@@ -205,9 +227,10 @@ class PasswordResetController extends Controller
     /**
      * Genera, guarda y manda el codigo. Se llama con el candado del comprador tomado.
      *
-     * El orden importa: primero se cuenta el pedido en la ventana (para que pedidos en paralelo no se
-     * cuelen), despues sale el mail, y recien cuando salio se guarda el codigo. Si el mail falla, se
-     * devuelve el pedido a la ventana y el codigo anterior queda como estaba.
+     * El orden importa: primero se mira el tope (el del dia y despues el de la hora), despues se cuenta el
+     * pedido en las dos ventanas (para que pedidos en paralelo no se cuelen), despues sale el mail, y
+     * recien cuando salio se guarda el codigo. Si el mail falla, se devuelve el pedido a las dos ventanas
+     * y el codigo anterior queda como estaba.
      *
      * @param  Request  $request
      * @param  \App\Buyer  $buyer
@@ -215,10 +238,12 @@ class PasswordResetController extends Controller
      */
     private function emitir_codigo(Request $request, Buyer $buyer)
     {
-        if (!$this->puede_emitir_otro_codigo($buyer)) {
+        $motivo_del_tope = $this->motivo_para_no_emitir_otro_codigo($buyer);
+
+        if (!is_null($motivo_del_tope)) {
             return response()->json([
                 'email_send' => false,
-                'message'    => self::MENSAJE_DEMASIADOS_PEDIDOS,
+                'message'    => $motivo_del_tope,
             ], 422);
         }
 
@@ -245,7 +270,7 @@ class PasswordResetController extends Controller
             ], 422);
         } catch (\Throwable $e) {
             // Cualquier otro error al armar o mandar el mail (una vista rota, por ejemplo) tampoco
-            // le gasta al comprador un codigo de la hora: se devuelve y el error sigue su camino.
+            // le gasta al comprador un codigo de la hora ni del dia: se devuelve y el error sigue su camino.
             $this->devolver_codigo_emitido($buyer);
 
             throw $e;
@@ -345,8 +370,8 @@ class PasswordResetController extends Controller
     }
 
     /**
-     * Clave de cache de los codigos emitidos de un comprador. Es APARTE del codigo pendiente a proposito:
-     * emitir un codigo nuevo pisa el pendiente, pero este contador no se reinicia.
+     * Clave de cache de los codigos emitidos de un comprador en la HORA. Es APARTE del codigo pendiente a
+     * proposito: emitir un codigo nuevo pisa el pendiente, pero este contador no se reinicia.
      *
      * @param  \App\Buyer  $buyer
      * @return string
@@ -356,6 +381,18 @@ class PasswordResetController extends Controller
         return 'tienda_password_reset_pedidos:'.$buyer->user_id.':'.$buyer->id;
     }
 
+    /**
+     * Clave de cache de los codigos emitidos de un comprador en el DIA. Contador propio, aparte del de la
+     * hora y del codigo pendiente. Lleva el comercio ademas del comprador, igual que las otras: el mismo
+     * correo en otro comercio es otro comprador y tiene su propio tope diario.
+     *
+     * @param  \App\Buyer  $buyer
+     * @return string
+     */
+    private function clave_de_pedidos_del_dia(Buyer $buyer)
+    {
+        return 'tienda_password_reset_pedidos_dia:'.$buyer->user_id.':'.$buyer->id;
+    }
     /**
      * Huella del codigo que se guarda en cache: HMAC-SHA256 con la clave de la app y la identidad
      * comercio + comprador. El codigo en claro no queda en ningun lado y la huella de un comprador no
@@ -371,22 +408,49 @@ class PasswordResetController extends Controller
     }
 
     /**
-     * Los pedidos de la ventana vigente del comprador: `desde` (timestamp del primero) y `cantidad`. Una
-     * ventana vencida, o nada guardado, cuenta como ventana nueva (null).
+     * Las ventanas de tope de codigos emitidos, EN EL ORDEN EN QUE SE CHEQUEAN: primero el dia y despues
+     * la hora, para que con las dos llenas el mensaje sea el del dia (el mas restrictivo y el mas
+     * verdadero). Cada una: `clave` del contador en cache, `minutos` de la ventana fija, `maximo` de
+     * codigos y `mensaje` que ve el comprador cuando se llena.
      *
      * @param  \App\Buyer  $buyer
+     * @return array
+     */
+    private function ventanas_de_pedidos(Buyer $buyer)
+    {
+        return [
+            [
+                'clave'   => $this->clave_de_pedidos_del_dia($buyer),
+                'minutos' => self::VENTANA_DIARIA_EN_MINUTOS,
+                'maximo'  => self::CODIGOS_POR_DIA_MAXIMOS,
+                'mensaje' => self::MENSAJE_DEMASIADOS_PEDIDOS_POR_DIA,
+            ],
+            [
+                'clave'   => $this->clave_de_pedidos($buyer),
+                'minutos' => self::VENTANA_DE_PEDIDOS_EN_MINUTOS,
+                'maximo'  => self::CODIGOS_POR_HORA_MAXIMOS,
+                'mensaje' => self::MENSAJE_DEMASIADOS_PEDIDOS,
+            ],
+        ];
+    }
+
+    /**
+     * Los pedidos de una ventana vigente del comprador: `desde` (timestamp del primero) y `cantidad`. Una
+     * ventana vencida, o nada guardado, cuenta como ventana nueva (null).
+     *
+     * @param  array  $ventana  Una de `ventanas_de_pedidos()`.
      * @return array|null
      */
-    private function pedidos_de_la_ventana(Buyer $buyer)
+    private function pedidos_de_la_ventana(array $ventana)
     {
-        $pedidos = Cache::get($this->clave_de_pedidos($buyer));
+        $pedidos = Cache::get($ventana['clave']);
 
         if (!is_array($pedidos) || !isset($pedidos['desde'], $pedidos['cantidad'])) {
             return null;
         }
 
         // now() y no time(): el reloj de Carbon es el que mueven los tests.
-        if ((int) $pedidos['desde'] + self::VENTANA_DE_PEDIDOS_EN_MINUTOS * 60 <= now()->getTimestamp()) {
+        if ((int) $pedidos['desde'] + $ventana['minutos'] * 60 <= now()->getTimestamp()) {
             return null;
         }
 
@@ -394,73 +458,83 @@ class PasswordResetController extends Controller
     }
 
     /**
-     * ¿Se le puede emitir otro codigo a este comprador en la ventana vigente?
+     * ¿Hay que negarle otro codigo a este comprador? Mira las ventanas en orden (primero el dia, despues
+     * la hora) y devuelve el mensaje de la primera que esta llena, o null si puede pedir otro.
      *
      * @param  \App\Buyer  $buyer
-     * @return bool
+     * @return string|null
      */
-    private function puede_emitir_otro_codigo(Buyer $buyer)
+    private function motivo_para_no_emitir_otro_codigo(Buyer $buyer)
     {
-        $pedidos = $this->pedidos_de_la_ventana($buyer);
+        foreach ($this->ventanas_de_pedidos($buyer) as $ventana) {
+            $pedidos = $this->pedidos_de_la_ventana($ventana);
 
-        return is_null($pedidos) || (int) $pedidos['cantidad'] < self::CODIGOS_POR_HORA_MAXIMOS;
+            if (!is_null($pedidos) && (int) $pedidos['cantidad'] >= $ventana['maximo']) {
+                return $ventana['mensaje'];
+            }
+        }
+
+        return null;
     }
 
     /**
-     * Suma un codigo emitido. La ventana es FIJA: arranca con el primer pedido y no se corre con los
-     * siguientes (si se corriera, pedir uno cada 59 minutos la estiraria para siempre); la cache vive
-     * hasta que la ventana vence.
+     * Suma un codigo emitido en las dos ventanas a la vez. Cada ventana es FIJA: arranca con el primer
+     * pedido y no se corre con los siguientes (si se corriera, pedir uno cada 59 minutos —o cada 23 horas—
+     * la estiraria para siempre); la cache vive hasta que la ventana vence.
      *
      * @param  \App\Buyer  $buyer
      * @return void
      */
     private function contar_codigo_emitido(Buyer $buyer)
     {
-        $pedidos = $this->pedidos_de_la_ventana($buyer);
+        foreach ($this->ventanas_de_pedidos($buyer) as $ventana) {
+            $pedidos = $this->pedidos_de_la_ventana($ventana);
 
-        if (is_null($pedidos)) {
-            $pedidos = ['desde' => now()->getTimestamp(), 'cantidad' => 0];
+            if (is_null($pedidos)) {
+                $pedidos = ['desde' => now()->getTimestamp(), 'cantidad' => 0];
+            }
+
+            $pedidos['cantidad'] = (int) $pedidos['cantidad'] + 1;
+
+            $this->guardar_pedidos($ventana, $pedidos);
         }
-
-        $pedidos['cantidad'] = (int) $pedidos['cantidad'] + 1;
-
-        $this->guardar_pedidos($buyer, $pedidos);
     }
 
     /**
-     * Le saca a la ventana un pedido que no llego a salir (el servidor de correo lo rechazo): un
-     * problema del correo no tiene que gastarle al comprador sus codigos de la hora.
+     * Le saca a las dos ventanas un pedido que no llego a salir (el servidor de correo lo rechazo): un
+     * problema del correo no tiene que gastarle al comprador sus codigos de la hora ni del dia.
      *
      * @param  \App\Buyer  $buyer
      * @return void
      */
     private function devolver_codigo_emitido(Buyer $buyer)
     {
-        $pedidos = $this->pedidos_de_la_ventana($buyer);
+        foreach ($this->ventanas_de_pedidos($buyer) as $ventana) {
+            $pedidos = $this->pedidos_de_la_ventana($ventana);
 
-        if (is_null($pedidos)) {
-            return;
+            if (is_null($pedidos)) {
+                continue;
+            }
+
+            $pedidos['cantidad'] = max(0, (int) $pedidos['cantidad'] - 1);
+
+            $this->guardar_pedidos($ventana, $pedidos);
         }
-
-        $pedidos['cantidad'] = max(0, (int) $pedidos['cantidad'] - 1);
-
-        $this->guardar_pedidos($buyer, $pedidos);
     }
 
     /**
-     * Escribe el contador de la ventana con el tiempo que le queda (no con 60 minutos nuevos).
+     * Escribe el contador de una ventana con el tiempo que le queda (no con una ventana entera nueva).
      *
-     * @param  \App\Buyer  $buyer
+     * @param  array  $ventana  Una de `ventanas_de_pedidos()`.
      * @param  array  $pedidos  ['desde' => timestamp, 'cantidad' => int]
      * @return void
      */
-    private function guardar_pedidos(Buyer $buyer, array $pedidos)
+    private function guardar_pedidos(array $ventana, array $pedidos)
     {
-        $segundos_que_le_quedan = (int) $pedidos['desde'] + self::VENTANA_DE_PEDIDOS_EN_MINUTOS * 60 - now()->getTimestamp();
+        $segundos_que_le_quedan = (int) $pedidos['desde'] + $ventana['minutos'] * 60 - now()->getTimestamp();
 
-        Cache::put($this->clave_de_pedidos($buyer), $pedidos, max(1, $segundos_que_le_quedan));
+        Cache::put($ventana['clave'], $pedidos, max(1, $segundos_que_le_quedan));
     }
-
     /**
      * Guarda el codigo pendiente: su huella, los intentos fallidos y cuando vence. El vencimiento va
      * tambien adentro del valor porque el contador de intentos se reescribe con el tiempo que le queda,
