@@ -37,14 +37,30 @@ class DireccionDelComercioTest extends TestCase
     }
 
     /**
-     * El `<p>` de la direccion en el footer, o null si el footer no tiene ninguno.
-     * Los de nombre, telefono y mail se descartan por contenido conocido.
+     * El HTML del `<footer>`: lo unico donde se publica la direccion. Las aserciones de "no aparece"
+     * se hacen aca y no sobre toda la pagina, que lista categorias y articulos de la base del slot.
+     */
+    protected function footer(array $pagina)
+    {
+        $this->assertSame(1, preg_match('#<footer>(.*?)</footer>#s', $pagina['cuerpo_html'], $m), 'La pagina tiene footer.');
+        return $m[1];
+    }
+
+    /**
+     * Los textos de los `<p>` del footer (nombre, telefono, mail y, si hay, la direccion).
+     *
+     * @return string[]
      */
     protected function parrafosDelFooter(array $pagina)
     {
-        $this->assertSame(1, preg_match('#<footer>(.*?)</footer>#s', $pagina['cuerpo_html'], $m), 'La pagina tiene footer.');
-        preg_match_all('#<p>(.*?)</p>#s', $m[1], $p);
+        preg_match_all('#<p>(.*?)</p>#s', $this->footer($pagina), $p);
         return $p[1];
+    }
+
+    /** El JSON-LD Store completo, serializado: lo unico del JSON-LD donde se publica la direccion. */
+    protected function store(array $pagina)
+    {
+        return json_encode($this->jsonLd($pagina, 'Store'));
     }
 
     public function test_el_nombre_de_la_sucursal_no_se_publica_como_calle_ni_en_el_footer_ni_en_el_json_ld()
@@ -60,7 +76,7 @@ class DireccionDelComercioTest extends TestCase
         $pagina = $this->pagina('/');
 
         $this->assertContains('Av. San Martin 123, Rosario, Santa Fe', $this->parrafosDelFooter($pagina));
-        $this->assertStringNotContainsString('Principal', $pagina['cuerpo_html']);
+        $this->assertStringNotContainsString('Principal', $this->footer($pagina));
 
         $address = $this->jsonLd($pagina, 'Store')['address'];
         $this->assertSame([
@@ -70,7 +86,7 @@ class DireccionDelComercioTest extends TestCase
             'addressLocality' => 'Rosario',
             'addressRegion'   => 'Santa Fe',
         ], $address);
-        $this->assertStringNotContainsString('Principal', json_encode($pagina['json_ld']));
+        $this->assertStringNotContainsString('Principal', $this->store($pagina));
     }
 
     public function test_una_sucursal_sin_domicilio_ni_ciudad_no_publica_direccion_aunque_tenga_nombre_y_provincia()
@@ -83,10 +99,12 @@ class DireccionDelComercioTest extends TestCase
 
         $pagina = $this->pagina('/');
 
-        $this->assertStringNotContainsString('Principal', $pagina['cuerpo_html']);
-        $this->assertStringNotContainsString('Santa Fe', $pagina['cuerpo_html']);
+        $this->assertCount(3, $this->parrafosDelFooter($pagina), 'Solo nombre, telefono y mail.');
+        $this->assertStringNotContainsString('Principal', $this->footer($pagina));
+        $this->assertStringNotContainsString('Santa Fe', $this->footer($pagina));
         $this->assertArrayNotHasKey('address', $this->jsonLd($pagina, 'Store'));
-        $this->assertStringNotContainsString('Principal', json_encode($pagina['json_ld']));
+        $this->assertStringNotContainsString('Principal', $this->store($pagina));
+        $this->assertStringNotContainsString('Santa Fe', $this->store($pagina));
     }
 
     public function test_sin_sucursales_no_se_publica_direccion()
@@ -113,7 +131,8 @@ class DireccionDelComercioTest extends TestCase
         $this->assertArrayNotHasKey('streetAddress', $address);
         $this->assertSame('Rafaela', $address['addressLocality']);
         $this->assertSame('Santa Fe', $address['addressRegion']);
-        $this->assertStringNotContainsString('Salon', $pagina['cuerpo_html']);
+        $this->assertStringNotContainsString('Salon', $this->footer($pagina));
+        $this->assertStringNotContainsString('Salon', $this->store($pagina));
     }
 
     public function test_con_varias_sucursales_manda_la_principal_y_no_la_primera()
@@ -124,7 +143,8 @@ class DireccionDelComercioTest extends TestCase
         $pagina = $this->pagina('/');
 
         $this->assertContains('Bv. Oroño 900, Rosario, Santa Fe', $this->parrafosDelFooter($pagina));
-        $this->assertStringNotContainsString('Calle Vieja', $pagina['cuerpo_html']);
+        $this->assertStringNotContainsString('Calle Vieja', $this->footer($pagina));
+        $this->assertStringNotContainsString('Calle Vieja', $this->store($pagina));
         $this->assertSame('Bv. Oroño 900', $this->jsonLd($pagina, 'Store')['address']['streetAddress']);
     }
 
@@ -144,7 +164,8 @@ class DireccionDelComercioTest extends TestCase
 
         $pagina = $this->pagina('/');
 
-        $this->assertStringNotContainsString('<b>1</b>', $pagina['cuerpo_html']);
-        $this->assertStringContainsString('Calle &lt;b&gt;1&lt;/b&gt;', $pagina['cuerpo_html']);
+        $this->assertStringNotContainsString('<b>1</b>', $this->footer($pagina));
+        $this->assertStringContainsString('Calle &lt;b&gt;1&lt;/b&gt;', $this->footer($pagina));
+        $this->assertSame('Calle <b>1</b>', $this->jsonLd($pagina, 'Store')['address']['streetAddress'], 'En el JSON-LD va el texto tal cual: json_encode lo escapa al serializar.');
     }
 }
