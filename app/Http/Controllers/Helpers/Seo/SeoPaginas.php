@@ -1018,16 +1018,21 @@ class SeoPaginas
         if (is_null($direccion)) {
             return '';
         }
-        $calle = trim(trim((string) $direccion->street).' '.trim((string) $direccion->street_number));
-        $partes = array_filter([$calle, trim((string) $direccion->city), trim((string) $direccion->province)], function ($p) {
+        return implode(', ', array_filter([$direccion['calle'], $direccion['ciudad'], $direccion['provincia']], function ($p) {
             return $p !== '';
-        });
-        return implode(', ', $partes);
+        }));
     }
 
     /**
+     * Las partes publicables de la direccion del comercio, o null si no hay.
+     *
+     * ⚠️ En empresa `street` de una sucursal es su NOMBRE («Principal», «Salon»): el domicilio va
+     * en `street_number`, y despues `city` y `province`. Por eso la calle sale solo de
+     * `street_number` y `street` no se publica nunca. Si la sucursal no tiene domicilio ni
+     * ciudad no se publica direccion: la provincia sola no ubica a nadie.
+     *
      * @param  SeoContexto  $ctx
-     * @return \App\Address|null
+     * @return array|null  ['calle' => string, 'ciudad' => string, 'provincia' => string]
      */
     private static function direccion(SeoContexto $ctx)
     {
@@ -1036,7 +1041,17 @@ class SeoPaginas
             return null;
         }
         $principal = $direcciones->first(function ($d) { return (int) $d->default_address === 1; });
-        return $principal ?? $direcciones->first();
+        $sucursal = $principal ?? $direcciones->first();
+
+        $partes = [
+            'calle'     => trim((string) $sucursal->street_number),
+            'ciudad'    => trim((string) $sucursal->city),
+            'provincia' => trim((string) $sucursal->province),
+        ];
+        if ($partes['calle'] === '' && $partes['ciudad'] === '') {
+            return null;
+        }
+        return $partes;
     }
 
     /**
@@ -1135,19 +1150,16 @@ class SeoPaginas
         $direccion = self::direccion($ctx);
         if (!is_null($direccion)) {
             $postal = ['@type' => 'PostalAddress', 'addressCountry' => 'AR'];
-            $calle = trim(trim((string) $direccion->street).' '.trim((string) $direccion->street_number));
-            if ($calle !== '') {
-                $postal['streetAddress'] = $calle;
+            if ($direccion['calle'] !== '') {
+                $postal['streetAddress'] = $direccion['calle'];
             }
-            if (trim((string) $direccion->city) !== '') {
-                $postal['addressLocality'] = trim((string) $direccion->city);
+            if ($direccion['ciudad'] !== '') {
+                $postal['addressLocality'] = $direccion['ciudad'];
             }
-            if (trim((string) $direccion->province) !== '') {
-                $postal['addressRegion'] = trim((string) $direccion->province);
+            if ($direccion['provincia'] !== '') {
+                $postal['addressRegion'] = $direccion['provincia'];
             }
-            if (count($postal) > 2) {
-                $store['address'] = $postal;
-            }
+            $store['address'] = $postal;
         }
         return $store;
     }
