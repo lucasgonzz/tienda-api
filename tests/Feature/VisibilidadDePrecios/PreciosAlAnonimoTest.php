@@ -7,6 +7,7 @@ use App\Buyer;
 use App\Client;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\OnlinePriceType;
+use App\OnlineConfiguration;
 use App\PriceType;
 use App\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
@@ -73,8 +74,19 @@ class PreciosAlAnonimoTest extends TestCase
            configuraciones distintas. */
         ArticleHelper::olvidar_visibilidad_del_anonimo();
 
-        $this->comercio = User::first();
-        $this->assertNotNull($this->comercio, 'La base del slot tiene que tener al menos un comercio sembrado.');
+        // Un comercio propio evita que listas públicas de la siembra contradigan el caso
+        // "todas ocultas": ese escenario debe depender sólo de las dos listas de esta fixture.
+        $this->comercio = User::create([
+            'name' => 'Comercio Visibilidad Test',
+            'email' => 'visibilidad-'.Str::random(10).'@test.local',
+            'password' => bcrypt('fixture-local'),
+            'status' => 'commerce',
+        ]);
+        OnlineConfiguration::create([
+            'user_id' => $this->comercio->id,
+            'show_articles_without_images' => 1,
+            'show_articles_without_stock' => 1,
+        ]);
 
         $this->lista_alta = $this->lista('Lista Cara Test', 20);
         $this->lista_baja = $this->lista('Lista Barata Test', 10);
