@@ -7,6 +7,7 @@ use App\Events\ArticleViewedEvent;
 use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
+use App\Http\Controllers\Helpers\ContextoDeComercio;
 use App\Http\Controllers\Helpers\HomeHelper;
 use App\Http\Controllers\Helpers\RecomendacionesHelper;
 use App\Http\Controllers\Helpers\TagHelper;
@@ -292,7 +293,7 @@ class ArticleController extends Controller {
     function names($commerce_id) {
         CatalogoPorListaHelper::fijar_el_comercio($commerce_id);
 
-        $commerce = User::find($commerce_id);
+        $commerce = ContextoDeComercio::comercio($commerce_id);
         $names = Article::where('user_id', $commerce_id)
                             ->checkOnline()
                             ->checkStock()

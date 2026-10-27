@@ -72,7 +72,8 @@ class CartHelper {
 
         $has_price_ranges = CommerceHelper::hasExtencion('lista_de_precios_por_rango_de_cantidad_vendida', null, $articles[0]['user_id']);
 
-        $article_groups = ArticlePriceTypeGroup::with('articles')->get();
+        // Los grupos sólo se consultan en la rama de rangos por categoría, nunca en el precio común.
+        $article_groups = $has_price_ranges ? ArticlePriceTypeGroup::with('articles')->get() : collect();
 
         foreach ($articles as $article) {
 

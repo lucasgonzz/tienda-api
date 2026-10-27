@@ -4,6 +4,7 @@ namespace App;
 
 use App\Http\Controllers\Helpers\ArticlePriceRangeHelper;
 use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
+use App\Http\Controllers\Helpers\ContextoDeComercio;
 use App\User;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -64,7 +65,7 @@ class Article extends Model
     }
 
     function scopeCheckOnline($query) {
-        $commerce = User::find(request()->commerce_id);
+        $commerce = ContextoDeComercio::comercio(request()->commerce_id);
         $query->where('status', 'active')
                 ->where('online', 1);
         if (!$commerce->online_configuration->show_articles_without_images) {
@@ -107,7 +108,7 @@ class Article extends Model
         * @param Searchable Columns
     */
     function scopeCheckStock($query) {
-        $commerce = User::find(request()->commerce_id);
+        $commerce = ContextoDeComercio::comercio(request()->commerce_id);
 
         // ignorar_stock hace que TODA la tienda se comporte, para todo articulo, como ya se
         // comporta hoy un articulo con stock null: nunca se filtra por stock, sin importar

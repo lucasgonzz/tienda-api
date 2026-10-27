@@ -215,16 +215,6 @@ class ArticleHelper
     }
 
     /**
-     * Memo por request de anonimo_puede_ver_precios(), por comercio: checkPriceTypes() corre
-     * hasta cuatro veces en una misma respuesta de la home (featured, in_offer, novedades y
-     * last_uploads) y la configuracion no cambia en el medio. Mismo criterio que la memoria
-     * de ClientOfferHelper: cada query de mas se paga en todos los llamadores.
-     *
-     * @var array<int|string, bool>
-     */
-    private static $visibilidad_del_anonimo = [];
-
-    /**
      * ¿La configuracion online del comercio deja ver precios a un visitante sin login?
      *
      * Espejo servidor de puede_ver_precios() de tienda-spa (src/mixins/generals.js) evaluado
@@ -243,37 +233,27 @@ class ArticleHelper
      * @return bool
      */
     static function anonimo_puede_ver_precios($commerce_id) {
-        /* En consola (phpunit, tinker) se relee SIEMPRE, igual que las memorias de
-           ClientOfferHelper: un test que cambie online_configurations sin acordarse del
-           reset no puede quedar leyendo visibilidad vieja. En el request web la memo
-           manda, que es donde las queries repetidas se pagan. */
-        if (!array_key_exists($commerce_id, Self::$visibilidad_del_anonimo) || app()->runningInConsole()) {
+        // Reusar la configuración del Request evita consultas repetidas sin una estática que
+        // sobreviva al siguiente visitante en un worker persistente.
+        $commerce = ContextoDeComercio::comercio($commerce_id);
+        $configuration = is_null($commerce) ? null : $commerce->online_configuration;
 
-            $puede_ver = true;
-
-            $commerce = User::find($commerce_id);
-            $configuration = is_null($commerce) ? null : $commerce->online_configuration;
-
-            if (!is_null($configuration) && $configuration->register_to_buy && !is_null($configuration->online_price_type)) {
-                $puede_ver = !in_array($configuration->online_price_type->slug, [
-                    'only_registered',
-                    'only_buyers_with_comerciocity_client',
-                ]);
-            }
-
-            Self::$visibilidad_del_anonimo[$commerce_id] = $puede_ver;
+        if (!is_null($configuration) && $configuration->register_to_buy && !is_null($configuration->online_price_type)) {
+            return !in_array($configuration->online_price_type->slug, [
+                'only_registered',
+                'only_buyers_with_comerciocity_client',
+            ]);
         }
 
-        return Self::$visibilidad_del_anonimo[$commerce_id];
+        return true;
     }
 
     /**
-     * Los feature tests cambian la configuracion online entre requests del mismo proceso:
-     * la memo de arriba tiene que poder olvidarse (mismo patron que
-     * ClientOfferHelper::olvidarMemoria()).
+     * Compatibilidad con los tests y comandos que cambian configuración antes de releerla
+     * sobre el mismo Request. Entre requests HTTP el contexto se descarta solo.
      */
     static function olvidar_visibilidad_del_anonimo() {
-        Self::$visibilidad_del_anonimo = [];
+        ContextoDeComercio::olvidar();
     }
 
     /**
@@ -315,7 +295,33 @@ class ArticleHelper
 
     static function set_ranges($articles) {
 
+        $modelos = new \Illuminate\Database\Eloquent\Collection();
         foreach ($articles as $article) {
+            $modelos->push($article);
+        }
+
+        // Un lote por relación, conservando qué ramas se serializaban en cada artículo.
+        // Las categorías de respaldo sólo se cargan si la subcategoría no aporta tramos.
+        $modelos->loadMissing('sub_category.category_price_type_ranges');
+        $sin_tramos_de_subcategoria = $modelos->filter(function ($article) {
+            return is_null($article->sub_category) || $article->sub_category->category_price_type_ranges->isEmpty();
+        });
+        $sin_tramos_de_subcategoria->loadMissing('category.category_price_type_ranges');
+
+        foreach ($articles as $article) {
+            // Eager loading comparte instancias relacionadas. Cada artículo necesita su propia
+            // copia porque el precio del tramo se escribe también en la relación serializada.
+            foreach (['sub_category', 'category'] as $relacion) {
+                if ($article->relationLoaded($relacion) && !is_null($article->getRelation($relacion))) {
+                    $categoria = clone $article->getRelation($relacion);
+                    if ($categoria->relationLoaded('category_price_type_ranges')) {
+                        $categoria->setRelation('category_price_type_ranges', $categoria->category_price_type_ranges->map(function ($range) {
+                            return clone $range;
+                        }));
+                    }
+                    $article->setRelation($relacion, $categoria);
+                }
+            }
             $ranges = [];
 
             if (
@@ -509,11 +515,20 @@ class ArticleHelper
     }
 
     static function setArticlesVariants($articles) {
+        $ids = [];
         foreach ($articles as $article) {
             if (isset($article->pivot) && !is_null($article->pivot->variant_id)) {
-                $article->selected_variant = ArticleVariant::where('id', $article->pivot->variant_id)
-                                                            ->with('article_property_values.article_property_type')
-                                                            ->first();
+                $ids[] = $article->pivot->variant_id;
+            }
+        }
+        // La selección pertenece al renglón (puede haber dos variantes del mismo artículo).
+        // Resolver por id conserva ese contrato sin una consulta por cada línea del carrito.
+        $variantes = empty($ids) ? collect() : ArticleVariant::whereIn('id', array_unique($ids))
+            ->with('article_property_values.article_property_type')->get()->keyBy('id');
+
+        foreach ($articles as $article) {
+            if (isset($article->pivot) && !is_null($article->pivot->variant_id)) {
+                $article->selected_variant = $variantes->get($article->pivot->variant_id);
             } 
         }
         return $articles;

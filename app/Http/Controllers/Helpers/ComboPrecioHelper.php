@@ -140,7 +140,7 @@ class ComboPrecioHelper
      */
     static function lista_del_comprador($commerce_id) {
 
-        $commerce = User::find($commerce_id);
+        $commerce = ContextoDeComercio::comercio($commerce_id);
 
         if (is_null($commerce)) {
             return null;

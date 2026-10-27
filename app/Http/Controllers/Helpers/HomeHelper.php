@@ -185,7 +185,7 @@ class HomeHelper
      * @return bool
      */
     static function ocultar_combos_agotados($commerce_id) {
-        $commerce = User::find($commerce_id);
+        $commerce = ContextoDeComercio::comercio($commerce_id);
 
         $configuration = is_null($commerce) ? null : $commerce->online_configuration;
 

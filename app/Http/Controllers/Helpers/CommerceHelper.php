@@ -10,7 +10,7 @@ class CommerceHelper
     static function hasExtencion($extencion_slug, $commerce = null, $commerce_id = null) {
         
         if (is_null($commerce)) {
-            $commerce = User::find($commerce_id);
+            $commerce = ContextoDeComercio::comercio($commerce_id);
         }
         
         $has_extencion = false;

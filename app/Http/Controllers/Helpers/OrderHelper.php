@@ -16,7 +16,7 @@ class OrderHelper {
 
     static function getBuyerId($request) {
         $buyer_id = null;
-        $commerce = User::find($request->commerce_id);
+        $commerce = ContextoDeComercio::comercio($request->commerce_id);
         if (!$commerce->online_configuration->register_to_buy) {
             if (!isset($request->buyer['id'])) {
                 $buyer = Buyer::create([
@@ -80,15 +80,18 @@ class OrderHelper {
     }
 
     static function attachArticles($cart, $order, $dolar_blue) {
+        // Se decide por artículo, como antes (no por variante). El conjunto es local a esta
+        // copia y se actualiza tras cada INSERT para respetar duplicados sin releer todo N veces.
+        $cargados = $cart->articles->isEmpty() ? [] : array_fill_keys($order->articles()->pluck('articles.id')->all(), true);
         foreach ($cart->articles as $article) {
             // Log::info('cart pivot price: '.$article->pivot->price);
             $price = $article->pivot->price;
-            $user = User::find($order->user_id);
+            $user = ContextoDeComercio::comercio($order->user_id);
             if (!is_null($user->online_configuration->online_price_surchage)) {
                 $price += $price * (float)$user->online_configuration->online_price_surchage / 100;
             }
 
-            if (!Self::articulo_ya_cargado($order, $article)) {
+            if (!isset($cargados[$article->id])) {
                 $order->articles()->attach([$article->id => [
                                                 'amount'      => $article->pivot->amount,
                                                 'cost'        => $article->pivot->cost,
@@ -96,6 +99,7 @@ class OrderHelper {
                                                 'price'       => $price,
                                                 'variant_id'  => $article->pivot->variant_id,
                                             ]]);
+                $cargados[$article->id] = true;
             }
             // Log::info($article->name.' variant_id: '.$article->pivot->variant_id);
         }
@@ -103,17 +107,19 @@ class OrderHelper {
 
     static function attachPromocionesVinoteca($cart, $order, $dolar_blue) {
 
+        $cargadas = $cart->promociones_vinoteca->isEmpty() ? [] : array_fill_keys($order->promociones_vinoteca()->pluck('promociones_vinoteca.id')->all(), true);
         foreach ($cart->promociones_vinoteca as $promo) {
 
             $price = $promo->pivot->price;
 
-            if (!Self::promo_ya_cargada($order, $promo)) {
+            if (!isset($cargadas[$promo->id])) {
                 $order->promociones_vinoteca()->attach([$promo->id => [
                                                 'amount'      => $promo->pivot->amount,
                                                 'cost'        => $promo->pivot->cost,
                                                 'notes'       => $promo->pivot->notes,
                                                 'price'       => $price,
                                             ]]);
+                $cargadas[$promo->id] = true;
             }
             // Log::info($article->name.' variant_id: '.$article->pivot->variant_id);
         }
@@ -141,9 +147,10 @@ class OrderHelper {
             return;
         }
 
+        $cargados = $cart->combos->isEmpty() ? [] : array_fill_keys($order->combos()->pluck('combos.id')->all(), true);
         foreach ($cart->combos as $combo) {
 
-            if (!Self::combo_ya_cargado($order, $combo)) {
+            if (!isset($cargados[$combo->id])) {
                 $order->combos()->attach([$combo->id => [
                                                 'amount'      => $combo->pivot->amount,
                                                 // Del MODELO y no del pivot, y medido: `Cart::combos()`
@@ -159,6 +166,7 @@ class OrderHelper {
                                                 'notes'       => $combo->pivot->notes,
                                                 'price'       => $combo->pivot->price,
                                             ]]);
+                $cargados[$combo->id] = true;
             }
         }
     }
