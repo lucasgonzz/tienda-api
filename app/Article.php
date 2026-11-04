@@ -19,6 +19,8 @@ class Article extends Model
     
     protected $guarded = [];
 
+    private static ?bool $hay_portada_en_imagenes = null;
+
     /**
      * Eager load de relaciones habituales para listados y detalle de artículos en tienda.
      * Incluye price_types para que checkPriceTypes pueda leer pivot->final_price.
@@ -211,7 +213,23 @@ class Article extends Model
     }
 
     function images() {
-        return $this->morphMany('App\Image', 'imageable');
+        $imagenes = $this->morphMany('App\Image', 'imageable');
+        $conexion = $this->getConnection();
+
+        // El ERP agrega la columna por separado. Una tienda nueva también tiene que leer bases anteriores.
+        if (app()->runningInConsole()) {
+            $hay_portada = $conexion->getSchemaBuilder()->hasColumn('images', 'first');
+        } else {
+            $hay_portada = self::$hay_portada_en_imagenes ??= $conexion->getSchemaBuilder()->hasColumn('images', 'first');
+        }
+
+        if ($hay_portada) {
+            $columna = $conexion->getQueryGrammar()->wrap('images.first');
+            $imagenes->orderByRaw('CASE WHEN ' . $columna . ' = 1 THEN 0 ELSE 1 END');
+        }
+
+        // La ficha, el catálogo y el SEO toman la primera posición como portada.
+        return $imagenes->orderBy('images.id');
     }
 
     public function sub_user() {
