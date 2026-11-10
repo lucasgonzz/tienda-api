@@ -4,6 +4,7 @@ namespace App;
 
 use App\Http\Controllers\Helpers\ArticlePriceRangeHelper;
 use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
+use App\Http\Controllers\Helpers\ConsultaStockHelper;
 use App\Http\Controllers\Helpers\ContextoDeComercio;
 use App\User;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -125,16 +126,19 @@ class Article extends Model
         $stock_null_equal_0 = $commerce->online_configuration->stock_null_equal_0;
 
         if (!$show_without_stock) {
-            if ($stock_null_equal_0) {
-                // Mostrar solo artículos con stock > 0
-                $query->where('stock', '>', 0);
-            } else {
-                // Mostrar artículos con stock > 0 o stock null
-                $query->where(function($sub_query) {
-                    $sub_query->where('stock', '>', 0)
-                              ->orWhereNull('stock');
-                });
-            }
+            $consultas = ConsultaStockHelper::activa($commerce->online_configuration);
+            $query->where(function ($sub_query) use ($stock_null_equal_0, $consultas) {
+                $sub_query->where('stock', '>', 0);
+                if (!$stock_null_equal_0) {
+                    $sub_query->orWhereNull('stock');
+                }
+                if ($consultas) {
+                    $sub_query->orWhere('stock', 0)
+                        ->orWhereHas('article_variants', function ($variantes) {
+                            $variantes->where('article_variants.stock', 0)->where('article_variants.oculta', false);
+                        });
+                }
+            });
         }
         return $query;
     }

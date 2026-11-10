@@ -2,6 +2,10 @@
 	use App\Http\Controllers\Helpers\OrderTotalsHelper;
 @endphp
 
+@if (!empty($totals['stock_a_consultar']))
+	<p>El pedido se envió sin cobro y con la disponibilidad de los artículos marcados pendiente de revisión.</p>
+@endif
+
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:8px; border-collapse:collapse;">
 	<thead>
 		<tr>
@@ -16,6 +20,9 @@
 		<tr>
 			<td align="left" style="padding:12px 8px 12px 0; border-bottom:1px solid #f3f4f6; font-size:14px; line-height:1.5; color:#111827;">
 				{{ $line['name'] }}
+				@if (!empty($line['stock_a_consultar']))
+					<div style="font-size:12px; color:#92400e; margin-top:2px;">Stock a consultar</div>
+				@endif
 				@if (!is_null($line['variant']))
 					<div style="font-size:12px; color:#6b7280; margin-top:2px;">{{ $line['variant'] }}</div>
 				@endif
@@ -61,7 +68,7 @@
 	</tr>
 	@endif
 	<tr>
-		<td align="right" style="padding:14px 0 0 0; border-top:1px solid #e5e7eb; font-size:16px; font-weight:600; color:#111827;">Total</td>
+		<td align="right" style="padding:14px 0 0 0; border-top:1px solid #e5e7eb; font-size:16px; font-weight:600; color:#111827;">{{ !empty($totals['stock_a_consultar']) ? 'Total estimado' : 'Total' }}</td>
 		<td align="right" style="padding:14px 0 0 24px; border-top:1px solid #e5e7eb; font-size:18px; font-weight:700; color:{{ $accent_color }}; white-space:nowrap;">{{ OrderTotalsHelper::money($totals['total']) }}</td>
 	</tr>
 </table>

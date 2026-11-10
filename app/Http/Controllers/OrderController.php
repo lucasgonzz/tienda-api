@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
+use App\Http\Controllers\Helpers\ConsultaStockHelper;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
 use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
@@ -156,18 +157,20 @@ class OrderController extends Controller
      * @return \Illuminate\Http\Response
      */
     function store(Request $request) {
-        if ($this->no_es_denuevo_por_mercadopago($request)) {
-            // $buyer_id = OrderHelper::getBuyerId($request);
+        return ConsultaStockHelper::con_carrito($request->cart_id, fn ($cart) => $this->guardar_pedido($request, $cart));
+    }
 
-            // Log::info('request:');
-            // Log::info($request);
-            $cart = Cart::find($request->cart_id);
-
+    private function guardar_pedido(Request $request, ?Cart $cart) {
+        if ($cart) {
             if (!CartOwnershipHelper::puede($cart)) {
                 Log::warning('OrderController@store: se intento crear un pedido con un carrito ajeno', [
                     'cart_id' => $request->cart_id,
                 ]);
                 return response(null, 403);
+            }
+
+            if (ConsultaStockHelper::pedido_marcado($cart->order_id)) {
+                return response()->json(['order_id' => $cart->order_id], 201);
             }
 
             $buyer_id = $this->resolverBuyerIdDelPedido($request);
@@ -260,6 +263,11 @@ class OrderController extends Controller
              * (el mismo makeOrder), y el PUT previo ya re-pricea igual, asi que una guarda por el
              * pago no protegeria ningun monto cobrado.
              */
+            $configuracion = ConsultaStockHelper::configuracion($cart);
+            $consultas_activas = ConsultaStockHelper::activa($configuracion);
+            $consultas = $this->consultas_del_pedido($request, $cart, $configuracion, $consultas_activas);
+            $a_consultar = !empty($consultas);
+
             $ajustes_de_cliente = AjustesDeClienteHelper::del_comprador($cart->user_id);
 
             if (AjustesDeClienteHelper::tiene_ajustes($ajustes_de_cliente)) {
@@ -353,17 +361,17 @@ class OrderController extends Controller
         		// 'buyer_id'                  => $buyer_id,
         		'user_id'                   => $commerce_id,
                 // 'status'                    => 'unconfirmed',
-                'payment_id'                => $cart->payment_id,
-                'payment_card_info_id'      => $cart->payment_card_info_id,
-                'payment_method_id'         => $cart->payment_method_id,
+                'payment_id'                => $a_consultar ? null : $cart->payment_id,
+                'payment_card_info_id'      => $a_consultar ? null : $cart->payment_card_info_id,
+                'payment_method_id'         => $a_consultar ? null : $cart->payment_method_id,
                 'delivery_zone_id'          => $cart->delivery_zone_id,
                 'cupon_id'                  => $cart->cupon_id,
         		'percentage_card'           => null,
         		'deliver'                   => $cart->deliver,
                 'description'               => $cart->description,
                 'order_status_id'           => $this->getModelBy('order_statuses', 'name', 'Sin confirmar', false, 'id'),
-                'payment_method_discount'   => OrderHelper::getPaymentMethodDiscount($cart),
-                'payment_method_surchage'   => OrderHelper::getPaymentMethodSurchage($cart),
+                'payment_method_discount'   => $a_consultar ? null : OrderHelper::getPaymentMethodDiscount($cart),
+                'payment_method_surchage'   => $a_consultar ? null : OrderHelper::getPaymentMethodSurchage($cart),
                 'address_id'                => 0,
                 'total'                     => $cart->total,
                 'fecha_entrega'             => $cart->fecha_entrega,
@@ -373,7 +381,7 @@ class OrderController extends Controller
         	], EnvioCartHelper::atributos_para_pedido($cart),
         	// Las cuotas de Mercado Pago (mision tienda-cuotas-mercado-pago): `cuotas` y el recargo neto
         	// resuelto de la base, solo con el esquema y si el carrito eligio cuotas (vacio si no).
-        	CuotasMercadoPagoHelper::atributos_para_pedido($cart),
+            $a_consultar ? [] : CuotasMercadoPagoHelper::atributos_para_pedido($cart),
         	// La direccion de entrega (`buyer_address_id` + `envio_direccion`), solo con el esquema y si
         	// el carrito tiene una (vacio si no: el create de siempre no cambia).
         	$atributos_de_direccion));
@@ -389,7 +397,7 @@ class OrderController extends Controller
                 Log::info($article->name.'. Cantidad: '.$article->pivot->amount.'. Notas: '.$article->pivot->notes);
             }
             
-            OrderHelper::attachArticles($cart, $order, $request->dolar_blue);
+            OrderHelper::attachArticles($cart, $order, $request->dolar_blue, $consultas);
             OrderHelper::attachPromocionesVinoteca($cart, $order, $request->dolar_blue);
             // Los combos del carrito viajan al pedido igual que las promos (mision
             // combos-y-rangos-de-precio). Si esta base no tiene `order_combo` el helper no hace
@@ -609,8 +617,37 @@ class OrderController extends Controller
         ];
     }
 
-    function no_es_denuevo_por_mercadopago($request) {
-        $cart_ya_guardado = Cart::find($request->cart_id);
-        return !is_null($cart_ya_guardado);
+    private function consultas_del_pedido(Request $request, Cart $cart, $configuracion, $activa)
+    {
+        $acepta = $request->boolean('aceptar_consulta_stock');
+        $marcado = ConsultaStockHelper::carrito_marcado($cart);
+        if (!$activa && !$marcado && !$acepta) {
+            return [];
+        }
+
+        $lineas = ConsultaStockHelper::lineas_del_carrito($cart);
+        $consultas = ConsultaStockHelper::clasificar($cart, $lineas, $configuracion, $activa);
+        if ($acepta !== !empty($consultas)) {
+            ConsultaStockHelper::fallar('Cambió la disponibilidad de tu pedido. Revisá el carrito antes de enviarlo.');
+        }
+
+        foreach ($lineas as $linea) {
+            $clave = ConsultaStockHelper::clave_linea($linea->article_id, $linea->variant_id);
+            if (isset($consultas[$clave]) !== (bool) ($linea->stock_a_consultar ?? false)) {
+                ConsultaStockHelper::fallar('Cambió la disponibilidad de tu pedido. Volvé a guardar el carrito.');
+            }
+            if (isset($consultas[$clave]) && (float) $linea->price <= 0) {
+                ConsultaStockHelper::fallar('Un artículo a consultar ya no tiene un precio disponible.');
+            }
+        }
+
+        if ($consultas && ($cart->preferencia_online_emitida || $cart->payment_id || $cart->order_id)) {
+            ConsultaStockHelper::fallar(
+                'El carrito tiene un pago iniciado. Volvé a guardar el carrito para enviar el pedido a consultar.',
+                'consulta_stock_carrito_con_pago'
+            );
+        }
+
+        return $consultas;
     }
 }

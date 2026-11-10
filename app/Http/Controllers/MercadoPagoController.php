@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Cart;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
+use App\Http\Controllers\Helpers\ConsultaStockHelper;
+use App\Http\Controllers\Helpers\ContextoDeComercio;
 use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
 use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
@@ -65,23 +67,34 @@ class MercadoPagoController extends Controller
         $this->payment_method = PaymentMethod::find($request->payment_method['id']);
         $this->commerce = User::find($request->payment_method['user_id']);
 
-        $access_token = $this->access_token_para_cobrar(
-            $request->payment_method['user_id'],
-            $this->payment_method
-        );
+        $carrito_de_la_sesion = $this->carrito_del_pago($request);
+        $preparado = ConsultaStockHelper::con_carrito($carrito_de_la_sesion?->id, function ($cart) use ($request) {
+            $this->verificar_stock_para_el_cobro($cart);
+            $access_token = $this->access_token_para_cobrar($request->payment_method['user_id'], $this->payment_method);
+            if (empty($access_token)) {
+                return null;
+            }
 
-        if (empty($access_token)) {
+            $articles = $this->articulos_a_cobrar($request, $this->commerce, $this->payment_method, $cart);
+            $cuotas = $this->cuotas_de_la_preferencia($request, $this->payment_method, $articles, $cart);
+
+            // La preferencia queda vinculada al ID del carrito. Registrarlo bajo el mismo lock
+            // impide convertir ese ID después en un pedido con disponibilidad pendiente.
+            if (!$cuotas['error'] && $cart && ConsultaStockHelper::hay_columna('carts', 'preferencia_online_emitida')) {
+                $cart->preferencia_online_emitida = true;
+                $cart->save();
+            }
+
+            return [$cart, $articles, $cuotas, $access_token];
+        });
+
+        if (!$preparado) {
             Log::error('MercadoPagoController@preference: el comercio '.$request->payment_method['user_id'].' no tiene credencial de Mercado Pago');
             return response()->json([
                 'message' => 'El comercio no tiene una cuenta de Mercado Pago conectada.',
             ], 422);
         }
-
-        // El carrito se resuelve ANTES de armar los items: el envio por correo se cobra con lo que
-        // el servidor dejo en carts.envio_precio, y eso sale del carrito, no del body.
-        $cart = $this->carrito_del_pago($request);
-
-        $articles = $this->articulos_a_cobrar($request, $this->commerce, $this->payment_method, $cart);
+        [$cart, $articles, $cuotas, $access_token] = $preparado;
 
         // Cuotas (mision tienda-cuotas-mercado-pago): `contado` / `cuotas` son OPCIONALES en el body y
         // sin ninguno de los dos —o con un metodo que no ofrece cuotas— `$cuotas` queda vacio y la
@@ -90,8 +103,6 @@ class MercadoPagoController extends Controller
         // Va ANTES de `SDK::setAccessToken()`: esa llamada hace un GET `/users/me` a Mercado Pago, y un
         // 422 por cuotas invalidas no tiene por que gastar un pedido de red. Nada de lo que corre antes
         // depende del SDK (el carrito y los items salen de la base).
-        $cuotas = $this->cuotas_de_la_preferencia($request, $this->payment_method, $articles, $cart);
-
         if (!is_null($cuotas['error'])) {
             return response()->json(['message' => $cuotas['error']], 422);
         }
@@ -163,6 +174,37 @@ class MercadoPagoController extends Controller
         // dia. `sandbox_init_point` viaja para las credenciales de prueba, donde `init_point`
         // apunta al checkout productivo y no sirve.
         return response()->json($this->respuesta_de_preferencia($preference), 201);
+    }
+
+    private function verificar_stock_para_el_cobro(?Cart $cart)
+    {
+        $comercio_del_medio = $this->payment_method?->user_id;
+        $configuracion = $cart ? ConsultaStockHelper::configuracion($cart) : null;
+        $activa = ConsultaStockHelper::activa($configuracion);
+        $solicitado_con_consultas = ConsultaStockHelper::activa($this->commerce?->online_configuration);
+        $medio_con_consultas = (int) $comercio_del_medio === (int) $this->commerce?->id
+            ? $solicitado_con_consultas
+            : ConsultaStockHelper::activa(ContextoDeComercio::comercio($comercio_del_medio)?->online_configuration);
+
+        if ($cart && ConsultaStockHelper::pedido_marcado($cart->order_id)) {
+            ConsultaStockHelper::fallar('El negocio tiene que revisar la disponibilidad antes de cobrar este pedido.');
+        }
+
+        $carrito_marcado = $cart && ConsultaStockHelper::carrito_marcado($cart);
+        if (!$activa && !$medio_con_consultas && !$solicitado_con_consultas && !$carrito_marcado) {
+            return;
+        }
+
+        if (!$cart || !CartOwnershipHelper::puede($cart)
+            || (int) $cart->user_id !== (int) $comercio_del_medio
+            || (int) $cart->user_id !== (int) $this->commerce?->id) {
+            ConsultaStockHelper::fallar('Guardá tu carrito antes de pagar este pedido.');
+        }
+
+        $consultas = ConsultaStockHelper::clasificar($cart, ConsultaStockHelper::lineas_del_carrito($cart), $configuracion, $activa);
+        if ($consultas || $carrito_marcado) {
+            ConsultaStockHelper::fallar('El negocio tiene que revisar la disponibilidad antes de cobrar este pedido.');
+        }
     }
 
     /**
@@ -614,6 +656,12 @@ class MercadoPagoController extends Controller
 
         $cart = $this->carrito_del_pago_notificado(is_array($pago) ? $pago : []);
 
+        return ConsultaStockHelper::con_carrito($cart?->id, fn ($carrito) =>
+            $this->registrar_webhook_en_carrito($carrito, $pago, $commerce_id, $payment_id));
+    }
+
+    private function registrar_webhook_en_carrito(?Cart $cart, $pago, $commerce_id, $payment_id)
+    {
         if (!$cart) {
             Log::warning('MercadoPagoController@webhook: el pago no referencia ningun carrito conocido', [
                 'commerce_id'        => $commerce_id,
@@ -632,6 +680,15 @@ class MercadoPagoController extends Controller
             ]);
 
             return response()->json(['ignorado' => true, 'motivo' => 'carrito de otro comercio'], 200);
+        }
+
+        if (ConsultaStockHelper::pedido_marcado($cart->order_id)) {
+            Log::warning('MercadoPagoController@webhook: pago de una referencia anterior sobre un pedido a consultar', [
+                'cart_id' => $cart->id,
+                'order_id' => $cart->order_id,
+                'payment_id' => $payment_id,
+            ]);
+            return response()->json(['ignorado' => true, 'motivo' => 'pedido a consultar'], 200);
         }
 
         if ($this->ya_tiene_otro_pago_aprobado($cart, $pago)) {

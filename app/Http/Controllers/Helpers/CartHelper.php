@@ -6,6 +6,7 @@ use App\Article;
 use App\ArticlePriceTypeGroup;
 use App\Cart;
 use App\Combo;
+use App\Order;
 use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ClientOfferHelper;
@@ -16,10 +17,13 @@ use Illuminate\Support\Facades\Log;
 class CartHelper {
 
     static function checkPaymentStatus($cart) {
-        if (!is_null($cart->payment_id) && !is_null($cart->order_id)) {
+        if (!is_null($cart->payment_id) && !is_null($cart->order_id)
+            && !ConsultaStockHelper::pedido_marcado($cart->order_id)) {
             $order = Order::find($cart->order_id);
-            $order->payment_id = $cart->payment_id;
-            $order->save();
+            if ($order) {
+                $order->payment_id = $cart->payment_id;
+                $order->save();
+            }
         }
     }
 
@@ -54,7 +58,7 @@ class CartHelper {
      *                                      sincroniza con las lineas que quedan). Null = calcularlas aca.
      * @return array<int, array{id: int, name: string}>  Las lineas descartadas (vacio si ninguna).
      */
-    static function attachArticles($cart, $articles, $no_disponibles = null) {
+    static function attachArticles($cart, $articles, $no_disponibles = null, array $consultas = []) {
 
         if (count($articles) == 0) {
             return [];
@@ -70,7 +74,8 @@ class CartHelper {
             return $no_disponibles;
         }
 
-        $has_price_ranges = CommerceHelper::hasExtencion('lista_de_precios_por_rango_de_cantidad_vendida', null, $articles[0]['user_id']);
+        $comercio_de_los_precios = $consultas ? $cart->user_id : $articles[0]['user_id'];
+        $has_price_ranges = CommerceHelper::hasExtencion('lista_de_precios_por_rango_de_cantidad_vendida', null, $comercio_de_los_precios);
 
         // Los grupos sólo se consultan en la rama de rangos por categoría, nunca en el precio común.
         $article_groups = $has_price_ranges ? ArticlePriceTypeGroup::with('articles')->get() : collect();
@@ -86,18 +91,32 @@ class CartHelper {
                  * elegiria contra que comercio se busca la oferta. `$cart->user_id` lo escribio
                  * el servidor al crear el carrito.
                  */
-                $price = Self::get_price($articles, $article, $has_price_ranges, $article_groups, $cart->user_id);
+                $id = Self::id_de_linea($article);
+                $variante_id = $article['pivot']['variant_id'] ?? null;
+                $atributos = [];
+                $consulta = $consultas[ConsultaStockHelper::clave_linea($id, $variante_id)] ?? null;
+                $linea_para_precio = $consulta
+                    ? $consulta->toArray() + ['pivot' => $article['pivot'], 'amount' => $article['pivot']['amount']]
+                    : $article;
+                $price = Self::get_price($articles, $linea_para_precio, $has_price_ranges, $article_groups, $cart->user_id);
+
+                if ($consulta) {
+                    if ((float) $price <= 0) {
+                        ConsultaStockHelper::fallar('Un artículo a consultar ya no tiene un precio disponible.');
+                    }
+                    $atributos['stock_a_consultar'] = true;
+                }
 
                 Log::info('price para guardar: '.$price);
 
                 /* El id se normaliza con la misma regla con la que se decidio si la linea se ve
                    (`id_de_linea()`): las lineas sin un id entero ya se descartaron arriba. */
-                $cart->articles()->attach(Self::id_de_linea($article), [
+                $cart->articles()->attach($id, $atributos + [
                                             'price'         => $price,
-                                            'cost'          => $article['cost'],
+                                            'cost'          => $consulta ? $consulta->cost : $article['cost'],
                                             'amount'        => $article['pivot']['amount'],
                                             'notes'         => $article['pivot']['notes'],
-                                            'variant_id'    => isset($article['pivot']['variant_id']) ? $article['pivot']['variant_id'] : null,
+                                            'variant_id'    => $variante_id,
                                             // 'color_id'      => $article['pivot']['color_id'],
                                             // 'color_id'   => ArticleHelper::getColorId($article),
                                             // 'size_id'    => ArticleHelper::getSizeId($article),
@@ -1483,13 +1502,16 @@ class CartHelper {
     }
 
     static function check_repetidos($cart) {
+        $distinguir_variantes = ConsultaStockHelper::hay_columna('article_cart', 'stock_a_consultar');
         $articulosAgrupados = $cart->articles
-                ->groupBy('id')
+                ->groupBy(fn ($articulo) => $distinguir_variantes
+                    ? ConsultaStockHelper::clave_linea($articulo->id, $articulo->pivot->variant_id)
+                    : $articulo->id)
                 ->filter(function ($grupo) {
                     return $grupo->count() > 1; // Solo procesar duplicados
                 });
 
-        foreach ($articulosAgrupados as $articuloId => $articulosDuplicados) {
+        foreach ($articulosAgrupados as $articulosDuplicados) {
             
             // Obtener todas las relaciones duplicadas del artículo con este cart
             $relacionesDuplicadas = $articulosDuplicados->pluck('pivot.id');
@@ -1501,7 +1523,7 @@ class CartHelper {
             // Eliminar las relaciones duplicadas restantes
             DB::table('article_cart')
                 ->where('cart_id', $cart->id)
-                ->where('article_id', $articuloId)
+                ->where('article_id', $articulosDuplicados->first()->id)
                 ->whereIn('id', $relacionesDuplicadas)
                 ->delete();
         }

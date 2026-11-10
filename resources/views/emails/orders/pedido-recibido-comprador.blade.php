@@ -1,6 +1,8 @@
 @extends('emails.orders.layout', [
 	'titulo' => 'Recibimos tu pedido',
-	'bajada' => 'Gracias por tu compra, '.$data['buyer_name'].'. Te dejamos el detalle de lo que pediste. Te vamos a avisar cuando lo confirmemos.',
+	'bajada' => !empty($data['totals']['stock_a_consultar'])
+		? 'Recibimos tu pedido, '.$data['buyer_name'].'. Te vamos a avisar cuando revisemos la disponibilidad.'
+		: 'Gracias por tu compra, '.$data['buyer_name'].'. Te dejamos el detalle de lo que pediste. Te vamos a avisar cuando lo confirmemos.',
 	'logo_url' => $data['logo_url'],
 	'company_name' => $data['company_name'],
 ])

@@ -79,10 +79,19 @@ class OrderHelper {
         }
     }
 
-    static function attachArticles($cart, $order, $dolar_blue) {
-        // Se decide por artículo, como antes (no por variante). El conjunto es local a esta
-        // copia y se actualiza tras cada INSERT para respetar duplicados sin releer todo N veces.
-        $cargados = $cart->articles->isEmpty() ? [] : array_fill_keys($order->articles()->pluck('articles.id')->all(), true);
+    static function attachArticles($cart, $order, $dolar_blue, array $consultas = []) {
+        // Con el contrato nuevo dos variantes del mismo artículo son renglones distintos,
+        // incluso si se apagó la opción con ese carrito todavía abierto.
+        $distinguir_variantes = ConsultaStockHelper::hay_columna('article_order', 'stock_a_consultar');
+        $cargados = [];
+        if ($cart->articles->isNotEmpty()) {
+            foreach ($order->articles()->get(['articles.id']) as $existente) {
+                $clave = $distinguir_variantes
+                    ? ConsultaStockHelper::clave_linea($existente->id, $existente->pivot->variant_id)
+                    : $existente->id;
+                $cargados[$clave] = true;
+            }
+        }
         foreach ($cart->articles as $article) {
             // Log::info('cart pivot price: '.$article->pivot->price);
             $price = $article->pivot->price;
@@ -91,15 +100,18 @@ class OrderHelper {
                 $price += $price * (float)$user->online_configuration->online_price_surchage / 100;
             }
 
-            if (!isset($cargados[$article->id])) {
-                $order->articles()->attach([$article->id => [
+            $clave_linea = ConsultaStockHelper::clave_linea($article->id, $article->pivot->variant_id);
+            $clave = $distinguir_variantes ? $clave_linea : $article->id;
+            if (!isset($cargados[$clave])) {
+                $atributos = isset($consultas[$clave_linea]) ? ['stock_a_consultar' => true] : [];
+                $order->articles()->attach([$article->id => $atributos + [
                                                 'amount'      => $article->pivot->amount,
                                                 'cost'        => $article->pivot->cost,
                                                 'notes'       => $article->pivot->notes,
                                                 'price'       => $price,
                                                 'variant_id'  => $article->pivot->variant_id,
                                             ]]);
-                $cargados[$article->id] = true;
+                $cargados[$clave] = true;
             }
             // Log::info($article->name.' variant_id: '.$article->pivot->variant_id);
         }

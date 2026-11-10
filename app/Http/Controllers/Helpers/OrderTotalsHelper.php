@@ -57,6 +57,7 @@ class OrderTotalsHelper
                     'amount'     => (int) $article->pivot->amount,
                     'unit_price' => $unit_price,
                     'line_total' => $unit_price * (float) $article->pivot->amount,
+                    'stock_a_consultar' => (bool) $article->pivot->stock_a_consultar,
                 ];
             }
         }
@@ -243,6 +244,7 @@ class OrderTotalsHelper
 
         return [
             'lines'                 => $lines,
+            'stock_a_consultar'     => collect($lines)->contains('stock_a_consultar', true),
             'subtotal'              => $subtotal,
             'payment_method_label'  => $payment_method_label,
             'payment_method_amount' => $payment_method_amount,

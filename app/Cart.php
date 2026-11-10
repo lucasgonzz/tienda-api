@@ -3,12 +3,14 @@
 namespace App;
 
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
+use App\Http\Controllers\Helpers\ConsultaStockHelper;
 use Illuminate\Database\Eloquent\Model;
 
 class Cart extends Model
 {
 
 	protected $guarded = [];
+    protected $hidden = ['preferencia_online_emitida'];
 
     /**
      * Los tres json del envío por correo (misión zipnova-envios, 14/9/2026). Los escribe esta
@@ -31,6 +33,7 @@ class Cart extends Model
         'envio_opcion'     => 'array',
         'envio_destino'    => 'array',
         'envio_direccion'  => 'array',
+        'preferencia_online_emitida' => 'boolean',
     ];
 
     /**
@@ -48,7 +51,11 @@ class Cart extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Article')->withPivot('price', 'amount', 'variant_id', 'amount_insuficiente', 'notes')->orderBy('name', 'ASC');
+        $relacion = $this->belongsToMany('App\Article')->withPivot('price', 'amount', 'variant_id', 'amount_insuficiente', 'notes')->orderBy('name', 'ASC');
+        if (ConsultaStockHelper::hay_columna('article_cart', 'stock_a_consultar')) {
+            $relacion->withPivot('stock_a_consultar');
+        }
+        return $relacion;
     }
 
     function promociones_vinoteca() {

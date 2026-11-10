@@ -3,6 +3,7 @@
 namespace App;
 
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
+use App\Http\Controllers\Helpers\ConsultaStockHelper;
 use Illuminate\Database\Eloquent\Model;
 
 class Order extends Model
@@ -71,7 +72,11 @@ class Order extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Article')->withPivot('amount', 'price', 'variant_id', 'notes');
+        $relacion = $this->belongsToMany('App\Article')->withPivot('amount', 'price', 'variant_id', 'notes');
+        if (ConsultaStockHelper::hay_columna('article_order', 'stock_a_consultar')) {
+            $relacion->withPivot('stock_a_consultar');
+        }
+        return $relacion;
     }
 
     function cupons() {

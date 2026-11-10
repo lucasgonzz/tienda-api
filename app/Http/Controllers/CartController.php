@@ -9,12 +9,15 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
+use App\Http\Controllers\Helpers\ConsultaStockHelper;
+use App\Http\Controllers\Helpers\ContextoDeComercio;
 use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
 use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Order;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -118,6 +121,14 @@ class CartController extends Controller
     }
 
     function store(Request $request) {
+        $configuracion = ContextoDeComercio::comercio($request->commerce_id)?->online_configuration;
+        if (ConsultaStockHelper::activa($configuracion)) {
+            return DB::transaction(fn () => $this->guardar_carrito_nuevo($request));
+        }
+        return $this->guardar_carrito_nuevo($request);
+    }
+
+    private function guardar_carrito_nuevo(Request $request) {
         if (env('APP_ENV') == 'local') {
             // sleep(3);
         }
@@ -128,6 +139,9 @@ class CartController extends Controller
     		'buyer_id'          => $this->buyerId(),
             'user_id'           => $request->commerce_id,
     	]);
+        if (ConsultaStockHelper::hay_columna('carts', 'preferencia_online_emitida')) {
+            $cart->preferencia_online_emitida = false;
+        }
 
         /* Catalogo por lista (mision catalogo-por-lista-tienda, 5/10/2026): las lineas que el
            comprador no puede ver por su lista de precios se deciden ANTES de sincronizar el envio, y
@@ -143,6 +157,7 @@ class CartController extends Controller
         $no_disponibles = CartHelper::articulos_no_disponibles($cart, $articulos_del_payload);
 
         $articulos_que_quedan = CartHelper::sin_lineas_no_disponibles($articulos_del_payload, $no_disponibles);
+        $consultas = ConsultaStockHelper::clasificar_payload($cart, $articulos_que_quedan);
 
         /* Si la lista descarto TODO lo que se pedia y no hay promociones de vinoteca ni combos, no hay
            ninguna linea que guardar y el carrito no se crea: `200 {cart: null, articulos_no_disponibles}`,
@@ -163,7 +178,7 @@ class CartController extends Controller
         $cart->save();
 
         // Las lineas descartadas ya estan calculadas arriba: attachArticles() no las vuelve a consultar.
-        CartHelper::attachArticles($cart, $articulos_del_payload, $no_disponibles);
+        CartHelper::attachArticles($cart, $articulos_del_payload, $no_disponibles, $consultas);
         CartHelper::attach_promociones_vinoteca($cart, $request->cart['promociones_vinoteca']);
 
         // `combos` es OPCIONAL en el body y su ausencia nunca es un error: un SPA viejo —o uno
@@ -191,17 +206,23 @@ class CartController extends Controller
      * @return \Illuminate\Http\JsonResponse
      */
     function update(Request $request) {
+        return ConsultaStockHelper::con_carrito($request->id, fn ($cart) => $this->actualizar_carrito($request, $cart));
+    }
+
+    private function actualizar_carrito(Request $request, ?Cart $cart) {
         if (env('APP_ENV') == 'local') {
             // sleep(3);
         }
-    	$cart = Cart::find($request->id);
-
         if (is_null($cart)) {
             return response()->json(['cart' => null], 404);
         }
 
         if (!CartOwnershipHelper::puede($cart)) {
             return response()->json(['cart' => null], 403);
+        }
+
+        if (ConsultaStockHelper::pedido_marcado($cart->order_id)) {
+            ConsultaStockHelper::fallar('Este carrito ya se envió como pedido a consultar.');
         }
 
         CartOwnershipHelper::adoptar($cart);
@@ -220,6 +241,7 @@ class CartController extends Controller
             : [];
 
         $articulos = CartHelper::sin_lineas_no_disponibles($request->articles, $no_disponibles);
+        $consultas = ConsultaStockHelper::clasificar_payload($cart, $articulos);
 
         /* El envio se sincroniza con las lineas que de verdad se guardan, no con las del payload
            crudo: si no, una linea descartada entra en la cotizacion de Zipnova y en el items_hash.
@@ -247,7 +269,7 @@ class CartController extends Controller
 
             if (count($articulos) >= 1) {
                 // Ya vienen limpias: se le pasa el resultado de arriba para no volver a consultar.
-                CartHelper::attachArticles($cart, $articulos, []);
+                CartHelper::attachArticles($cart, $articulos, [], $consultas);
             }
 
             if (count($request->promociones_vinoteca) >= 1) {
@@ -316,14 +338,20 @@ class CartController extends Controller
      * @return \Illuminate\Http\JsonResponse
      */
     function update_article_amount(Request $request, $cart_id) {
-        $cart = Cart::find($cart_id);
+        return ConsultaStockHelper::con_carrito($cart_id, fn ($cart) => $this->actualizar_cantidad($request, $cart));
+    }
 
+    private function actualizar_cantidad(Request $request, ?Cart $cart) {
         if (is_null($cart)) {
             return response()->json(['cart' => null], 404);
         }
 
         if (!CartOwnershipHelper::puede($cart)) {
             return response()->json(['cart' => null], 403);
+        }
+
+        if (ConsultaStockHelper::pedido_marcado($cart->order_id)) {
+            ConsultaStockHelper::fallar('Este carrito ya se envió como pedido a consultar.');
         }
 
         // `is_combo` apunta al tercer pivote, igual que `is_promocion_vinoteca` apunta al segundo.
@@ -343,8 +371,10 @@ class CartController extends Controller
                 'amount'    => $request->amount,
             ]);
 
+        } else if (ConsultaStockHelper::activa(ConsultaStockHelper::configuracion($cart))
+            || ConsultaStockHelper::carrito_marcado($cart)) {
+            $this->actualizar_cantidad_con_control_de_stock($request, $cart);
         } else {
-
             $cart->articles()->updateExistingPivot($request->id, [
                 'amount'    => $request->amount,
             ]);
@@ -368,6 +398,36 @@ class CartController extends Controller
         return response()->json(['cart' => $cart], 200);
     }
 
+    private function actualizar_cantidad_con_control_de_stock(Request $request, Cart $cart)
+    {
+        $configuracion = ConsultaStockHelper::configuracion($cart);
+        $clave = ConsultaStockHelper::clave_linea($request->id, $request->variant_id);
+        $lineas = ConsultaStockHelper::lineas_del_carrito($cart);
+        $elegida = $lineas->first(fn ($linea) =>
+            ConsultaStockHelper::clave_linea($linea->article_id, $linea->variant_id) === $clave);
+
+        if (!$elegida && !$request->exists('variant_id')) {
+            // Una pestaña vieja mandaba solo el artículo. Se puede reconocer si hay un solo renglón.
+            $candidatas = $lineas->where('article_id', $request->id);
+            $elegida = $candidatas->count() === 1 ? $candidatas->first() : null;
+        }
+
+        if (!$elegida) {
+            ConsultaStockHelper::fallar('El artículo o la variante ya no está en tu carrito.');
+        }
+
+        $elegida->amount = $request->amount;
+        $consultas = ConsultaStockHelper::clasificar($cart, $lineas, $configuracion, ConsultaStockHelper::activa($configuracion));
+
+        foreach ($lineas as $linea) {
+            $clave_linea = ConsultaStockHelper::clave_linea($linea->article_id, $linea->variant_id);
+            if (isset($consultas[$clave_linea]) !== (bool) ($linea->stock_a_consultar ?? false)) {
+                ConsultaStockHelper::fallar('Cambió la disponibilidad. Volvé a guardar el carrito para actualizar los precios.');
+            }
+        }
+        DB::table('article_cart')->where('id', $elegida->id)->update(['amount' => $elegida->amount]);
+    }
+
     /**
      * 🔴 Este era el peor de los cuatro, porque destruye: Cart::find($cart_id) sin comprobar nada.
      * Medido el 15/8/2026 con curl sin ninguna sesion — se borro el carrito de otro comprador y
@@ -377,7 +437,10 @@ class CartController extends Controller
      * @return \Illuminate\Http\Response
      */
     function delete($cart_id) {
-        $cart = Cart::find($cart_id);
+        return ConsultaStockHelper::con_carrito($cart_id, fn ($cart) => $this->borrar_carrito($cart));
+    }
+
+    private function borrar_carrito(?Cart $cart) {
         if (is_null($cart)) {
             // El carrito ya no existe (ej: carrito de invitado que nunca se
             // persistio, o ya fue borrado antes). No hay nada que hacer.
