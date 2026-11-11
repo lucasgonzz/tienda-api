@@ -68,9 +68,13 @@ Route::get('/seo/sitemap/{commerce_id}', 'SeoController@sitemap')
 Route::get('/articles/names/{commerce_id}',
 	'ArticleController@names'
 );
+// 🔴 `{query}` es texto libre del visitante y puede traer "/" (ej: "nylon/pvc engomado"). Sin el
+// where, cada "/" crea un segmento de más y la ruta no matchea: 404 que Laravel ni loguea. Con
+// '.+' el regex es voraz y retrocede, así que {commerce_id} (siempre el último) sigue resolviendo
+// bien. Sirve con la barra cruda y con %2F (el router decodifica antes de matchear).
 Route::get('/articles/search/{query}/{commerce_id}',
 	'ArticleController@search'
-);
+)->where('query', '.+');
 // /register-token y /buyer/search/{query}/{commerce_id} vivian aca, publicas. Se movieron al
 // grupo auth:buyer del final. La segunda era la peor fuga de esta API — devolvia la base de
 // compradores del comercio con el hash de la contraseña — y estar aca arriba, fuera del bloque
@@ -257,7 +261,8 @@ Route::middleware('auth:buyer')->group(function() {
 	// Buscador de clientes del vendedor. Ademas de auth:buyer, el controller exige seller_id y
 	// resuelve el comercio desde el vendedor y no desde la URL: era la peor fuga de la API y
 	// estaba FUERA del bloque comentado, asi que descomentarlo ni la habria tocado.
-	Route::get('/buyer/search/{query}/{commerce_id}', 'BuyerController@search');
+	// Mismo motivo que articles/search: el texto libre puede traer "/".
+	Route::get('/buyer/search/{query}/{commerce_id}', 'BuyerController@search')->where('query', '.+');
 
 	// Configuration
 	Route::put('/buyer',
