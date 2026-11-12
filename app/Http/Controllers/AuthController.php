@@ -125,9 +125,33 @@ class AuthController extends Controller
             'barrio' => 'nullable|string',
             'ciudad' => 'nullable|string',
             'address' => 'nullable|string|max:128',
+        ], [
+            // La instalación puede conservar las traducciones de Laravel sólo en inglés.
+            // Estos errores llegan directamente al formulario: deben indicar qué corregir.
+            'commerce_id.required' => 'No pudimos identificar la tienda. Volvé a abrirla e intentá de nuevo.',
+            'commerce_id.integer' => 'La tienda no es válida. Volvé a abrirla e intentá de nuevo.',
+            'commerce_id.exists' => 'La tienda no está disponible para registrarte. Contactá al comercio.',
+            'name.required' => 'Ingresá tu nombre y apellido.',
+            'name.string' => 'Revisá tu nombre y apellido: debe ser un texto.',
+            'name.max' => 'El nombre y apellido no pueden superar los 128 caracteres.',
+            'surname.string' => 'Revisá el apellido: debe ser un texto.',
+            'surname.max' => 'El apellido no puede superar los 128 caracteres.',
+            'phone.required' => 'Ingresá tu teléfono.',
+            'phone.string' => 'Revisá el teléfono: debe ser un texto.',
+            'phone.max' => 'El teléfono es demasiado largo. Revisá los datos ingresados.',
+            'email.required' => 'Ingresá tu correo electrónico.',
+            'email.string' => 'Ingresá un correo electrónico válido.',
+            'email.email' => 'Ingresá un correo electrónico válido.',
+            'email.max' => 'El correo electrónico no puede superar los 110 caracteres.',
+            'password.required' => 'Ingresá una contraseña.',
+            'password.string' => 'Revisá la contraseña: debe ser un texto.',
+            'barrio.string' => 'Revisá el barrio: debe ser un texto.',
+            'ciudad.string' => 'Revisá la ciudad: debe ser un texto.',
+            'address.string' => 'Revisá la dirección: debe ser un texto.',
+            'address.max' => 'La dirección no puede superar los 128 caracteres.',
         ]);
         if (strlen($this->getNumber($request->phone)) > 128) {
-            throw ValidationException::withMessages(['phone' => 'El teléfono es demasiado largo.']);
+            throw ValidationException::withMessages(['phone' => 'El teléfono es demasiado largo. Revisá los datos ingresados.']);
         }
         $hash = bcrypt($request->password);
         try {

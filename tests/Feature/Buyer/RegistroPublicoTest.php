@@ -39,7 +39,11 @@ class RegistroPublicoTest extends TestCase
     {
         $comercio = $this->comercio();
         $datos = $this->datos($comercio); $datos['email'] = 'correo-invalido';
-        $this->postJson('/register', $datos)->assertStatus(422)->assertJsonValidationErrors('email');
+        $respuesta = $this->postJson('/register', $datos)
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('email')
+            ->assertJsonPath('errors.email.0', 'Ingresá un correo electrónico válido.');
+        $this->assertStringNotContainsString('Server Error', $respuesta->getContent());
         $this->assertSame(0, Buyer::where('user_id', $comercio->id)->count());
         $this->assertGuest('buyer');
     }
