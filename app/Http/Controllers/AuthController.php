@@ -12,6 +12,9 @@ use App\User;
 use Carbon\Carbon;
 use Illuminate\Auth\Events\Registered;
 use Illuminate\Http\Request;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Facades\Auth;
 use Twilio\Rest\Client;
 
@@ -111,31 +114,55 @@ class AuthController extends Controller
     }
 
     function register(Request $request) {
-        // return response()->json(['asd' => $this->isBuyerRegistered($request)], 200);
-        if (!$this->isBuyerRegistered($request)) {
-            $this->deleteIfExist($request->phone);
-            // TwilioHelper::sendVerificationCode($this->getNumber($request->phone));        
-            $code = rand(100000, 999999);
-        	$buyer = Buyer::create([
-                'num'               => $this->num('buyers', $request->commerce_id),
-        		'name'	            => ucwords(strtolower($request->name)),
-                'surname'           => ucwords(strtolower($request->surname)),
-                'barrio'            => ucwords(strtolower($request->barrio)),
-                'ciudad'            => ucwords(strtolower($request->ciudad)),
-        		'address'            => ucwords(strtolower($request->address)),
-                'phone'             => $this->getNumber($request->phone),
-        		'email'             => $request->email,
-        		'password'          => bcrypt($request->password),
-                'verification_code' => null,
-                // 'verification_code' => $code,
-        		'user_id'           => isset($request->commerce_id) ? $request->commerce_id : null,
-        	]);
-            $commerce = User::find($request->commerce_id);
-            // $buyer->notify(new VerificationCode($code, $commerce));
-            Auth::guard('buyer')->login($buyer);
-            return response()->json(['buyer' => $buyer], 201);
+        $request->merge(['email' => is_string($request->email) ? strtolower(trim($request->email)) : $request->email]);
+        $request->validate([
+            'commerce_id' => 'required|integer|exists:users,id',
+            'name' => 'required|string|max:128',
+            'surname' => 'nullable|string|max:128',
+            'phone' => 'required|string|max:128',
+            'email' => 'required|string|email|max:110',
+            'password' => 'required|string',
+            'barrio' => 'nullable|string',
+            'ciudad' => 'nullable|string',
+            'address' => 'nullable|string|max:128',
+        ]);
+        if (strlen($this->getNumber($request->phone)) > 128) {
+            throw ValidationException::withMessages(['phone' => 'El teléfono es demasiado largo.']);
         }
-    	return response(null, 200);
+        $hash = bcrypt($request->password);
+        try {
+            $buyer = DB::transaction(function () use ($request, $hash) {
+                // El login identifica por correo y comercio. El teléfono puede ser compartido:
+                // nunca permite borrar o apropiarse de una cuenta, aunque su verificación esté pendiente.
+                // El dueño serializa dos altas con el mismo correo sin exigir un índice nuevo a la base.
+                DB::table('users')->where('id', $request->commerce_id)->lockForUpdate()->first(['id']);
+                if (Buyer::where('user_id', $request->commerce_id)->where('email', $request->email)->exists()) {
+                    throw ValidationException::withMessages(['email' => 'Ya hay una cuenta con este correo. Iniciá sesión o recuperá tu contraseña.']);
+                }
+                return Buyer::create([
+                    'num' => $this->num('buyers', $request->commerce_id),
+                    'name' => ucwords(strtolower($request->name)),
+                    'surname' => ucwords(strtolower($request->surname ?? '')),
+                    'barrio' => ucwords(strtolower($request->barrio ?? '')),
+                    'ciudad' => ucwords(strtolower($request->ciudad ?? '')),
+                    'address' => ucwords(strtolower($request->address ?? '')),
+                    'phone' => $this->getNumber($request->phone),
+                    'email' => $request->email,
+                    'password' => $hash,
+                    'verification_code' => null,
+                    'user_id' => $request->commerce_id,
+                ]);
+            });
+        } catch (QueryException $exception) {
+            // Algunas instalaciones conservan el índice global antiguo hasta actualizar empresa.
+            // No lo esquivamos borrando otra cuenta ni devolvemos un 500 que invite a reintentar.
+            if ((int) ($exception->errorInfo[1] ?? 0) === 1062 && strpos($exception->getMessage(), 'buyers_phone_unique') !== false) {
+                throw ValidationException::withMessages(['phone' => 'No pudimos registrar este teléfono por una restricción de la tienda. Contactá al comercio.']);
+            }
+            throw $exception;
+        }
+        Auth::guard('buyer')->login($buyer);
+        return response()->json(['buyer' => $buyer], 201);
     }
 
     function verifyCode(Request $request) {
@@ -155,25 +182,6 @@ class AuthController extends Controller
         $buyer->notify(new VerificationCode($buyer->verification_code, $commerce));
         // TwilioHelper::sendVerificationCode($this->getNumber($request->phone));  
         return response(null, 200);      
-    }
-
-    function isBuyerRegistered($request) {
-        $buyer = Buyer::where('phone', $this->getNumber($request->phone))
-                        ->whereNull('verification_code');
-        if (isset($request->commerce_id)) {
-            $buyer = $buyer->where('user_id', $request->commerce_id);
-        }
-        $buyer = $buyer->first();
-        // return $buyer;
-        return !is_null($buyer);
-    }
-
-    function deleteIfExist($phone) {
-        $buyer = Buyer::where('phone', $this->getNumber($phone))
-                        ->first();
-        if (!is_null($buyer)) {
-            $buyer->delete();
-        }
     }
 
     static function setLastLogin($buyer) {

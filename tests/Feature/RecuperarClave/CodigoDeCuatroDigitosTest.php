@@ -675,18 +675,28 @@ class CodigoDeCuatroDigitosTest extends TestCase
         $this->comprador->phone = '+5491155550000';
         $this->comprador->save();
 
-        $this->pedir_codigo();
+        $codigo = $this->pedir_codigo();
 
-        // Alguien que conoce el teléfono intenta registrarse con él.
-        $this->postJson('/register', [
+        $original = $this->comprador->fresh()->getAttributes();
+
+        // Compartir teléfono no prueba identidad: el correo distinto crea OTRA cuenta.
+        $registro = $this->postJson('/register', [
             'name'        => 'Intruso',
             'email'       => 'intruso-'.Str::random(6).'@test.local',
             'password'    => 'clave-del-intruso',
             'phone'       => '1155550000',
             'commerce_id' => $this->comercio->id,
-        ])->assertStatus(200);
+        ])->assertStatus(201);
 
-        $this->assertNotNull(Buyer::find($this->comprador->id), 'la cuenta sigue existiendo');
-        $this->assertSame($this->comprador->email, Buyer::find($this->comprador->id)->email);
+        $nuevo = Buyer::findOrFail($registro->json('buyer.id'));
+        $this->assertNotSame($this->comprador->id, $nuevo->id);
+        $this->assertSame($original, $this->comprador->fresh()->getAttributes());
+        $this->assertSame(2, Buyer::where('user_id', $this->comercio->id)->count());
+        $this->assertAuthenticatedAs($nuevo, 'buyer');
+        $this->postJson('/password-reset/check-verification-code', [
+            'commerce_id' => $this->comercio->id,
+            'email' => $this->comprador->email,
+            'verification_code' => $codigo,
+        ])->assertStatus(200)->assertJson(['verified' => true]);
     }
 }
