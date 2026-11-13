@@ -571,17 +571,13 @@ class OrderController extends Controller
         }
 
         // Fallbacks defensivos para requests antiguos o reintentos que no traigan address
-        if ($request['selected_buyer']) {
-
-            if (isset($request['selected_buyer']['comercio_city_client'])) {
-                return $request['selected_buyer']['comercio_city_client']['address'];
-            }
-
+        if (isset($request['selected_buyer']['comercio_city_client']['address'])) {
+            return $request['selected_buyer']['comercio_city_client']['address'];
         }
-        if ($request['buyer']['address']) {
+        if (!empty($request['buyer']['address'])) {
             return $request['buyer']['address'];
         }
-        if ($request['buyer']['comercio_city_client']) {
+        if (isset($request['buyer']['comercio_city_client']['address'])) {
             Log::info('retun address del comercio_city_client:');
             Log::info($request['buyer']['comercio_city_client']['address']);
             return $request['buyer']['comercio_city_client']['address'];

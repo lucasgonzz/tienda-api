@@ -8,7 +8,10 @@ use App\DeliveryZone;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
 use App\Order;
+use App\Http\Controllers\OrderController;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
 use Tests\Feature\Envios\ArmaComercioConZipnova;
 use Tests\TestCase;
@@ -60,6 +63,7 @@ class CarritoYPedidoConDireccionTest extends TestCase
 
         // Ningún caso de esta clase sale a Zipnova: no hay conector ni opción de correo.
         Http::fake();
+        Bus::fake();
     }
 
     /**
@@ -386,5 +390,62 @@ class CarritoYPedidoConDireccionTest extends TestCase
         $this->assertNull($order->envio_direccion);
         $this->assertNull($order->buyer_address_id);
         $this->assertSame('San Martin 100', $order->address);
+    }
+
+    public function test_el_invitado_sin_calle_ni_cliente_vinculado_crea_un_pedido_pendiente()
+    {
+        $this->asegurarEstadoSinConfirmar();
+        $invitado = $this->fichaDeInvitado($this->comercio);
+        $this->assertNull($invitado->comercio_city_client);
+        $this->comercio->online_configuration()->update(['register_to_buy' => false]);
+        $cart = Cart::find($this->crearCarrito([], false)->assertCreated()->json('cart.id'));
+
+        $order_id = $this->withSession([
+            'carritos_propios' => [$cart->id],
+            'checkout_buyer_id' => $invitado->id,
+        ])->postJson('/api/orders', [
+            'cart_id' => $cart->id,
+            'commerce_id' => $this->comercio->id,
+            'selected_buyer' => null,
+            'buyer' => ['name' => $invitado->name, 'city' => 'Mendoza', 'address' => ''],
+        ])->assertCreated()->json('order_id');
+
+        $order = Order::findOrFail($order_id);
+        $this->assertSame($invitado->id, (int) $order->buyer_id);
+        $this->assertNull($order->address);
+        $this->assertNull($order->envio_direccion);
+        $this->assertNull($order->envio_opcion);
+        $this->assertNull($order->payment_id);
+        $this->assertSame('Sin confirmar', $order->order_status->name);
+        Http::assertNothingSent();
+    }
+
+    public function test_las_direcciones_anteriores_conservan_su_prioridad_y_admiten_ausencias()
+    {
+        $seleccionado = ['comercio_city_client' => ['address' => 'Cliente seleccionado 10']];
+        $buyer = ['address' => 'Comprador 20', 'comercio_city_client' => ['address' => 'Cliente anterior 30']];
+        $casos = [
+            [['address' => '  Confirmada 1  ', 'selected_buyer' => $seleccionado, 'buyer' => $buyer], 'Confirmada 1'],
+            [['address' => ' ', 'selected_buyer' => $seleccionado, 'buyer' => $buyer], 'Cliente seleccionado 10'],
+            [['selected_buyer' => null, 'buyer' => $buyer], 'Comprador 20'],
+            [['buyer' => ['comercio_city_client' => ['address' => 'Cliente anterior 30']]], 'Cliente anterior 30'],
+            [['selected_buyer' => ['comercio_city_client' => []], 'buyer' => $buyer], 'Comprador 20'],
+            [['buyer' => ['address' => '', 'comercio_city_client' => null]], null],
+            [['selected_buyer' => [], 'buyer' => []], null],
+            [['buyer' => null], null],
+            [[], null],
+        ];
+
+        // Un acceso a claves opcionales no puede emitir ni siquiera un warning.
+        set_error_handler(function ($nivel, $mensaje, $archivo, $linea) {
+            throw new \ErrorException($mensaje, 0, $nivel, $archivo, $linea);
+        });
+        try {
+            foreach ($casos as [$payload, $esperado]) {
+                $this->assertSame($esperado, (new OrderController())->get_address(new Request($payload)));
+            }
+        } finally {
+            restore_error_handler();
+        }
     }
 }
