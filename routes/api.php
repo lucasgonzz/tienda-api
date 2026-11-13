@@ -408,6 +408,9 @@ Route::put('/carts',
 Route::delete('/carts/{cart_id}',
 	'CartController@delete'
 );
+Route::delete('/carts/{cart_id}/items',
+	'CartController@remove_item'
+);
 Route::put('/carts/update-article-amount/{cart_id}',
 	'CartController@update_article_amount'
 );

@@ -465,6 +465,56 @@ class CartController extends Controller
     }
 
     /**
+     * Quitar una línea no vuelve a guardar las demás: un carrito viejo puede tener otra cantidad
+     * en cero o sin stock. El PUT estricto la rechazaba y dejaba al comprador sin poder corregirlo
+     * (ticket 119). La validación de disponibilidad sigue en altas, cantidades y checkout.
+     */
+    function remove_item(Request $request, $cart_id) {
+        $datos = $request->validate([
+            'tipo' => 'required|in:articulo,promocion_vinoteca,combo',
+            'id' => 'required|integer|min:1',
+            'variant_id' => 'nullable|integer|min:1',
+        ]);
+
+        return DB::transaction(function () use ($cart_id, $datos) {
+            // El bloqueo vale también en bases anteriores a la opción de consultar stock.
+            $cart = Cart::lockForUpdate()->find($cart_id);
+            if (is_null($cart)) {
+                return response()->json(['cart' => null], 404);
+            }
+            if (!CartOwnershipHelper::puede($cart)) {
+                return response()->json(['cart' => null], 403);
+            }
+            if (!is_null($cart->order_id)) {
+                ConsultaStockHelper::fallar('Este carrito ya se envió como pedido.');
+            }
+
+            if ($datos['tipo'] === 'articulo') {
+                // El mismo artículo puede tener varias variantes: nunca se usa detach(id), que
+                // las borraría todas. Null identifica únicamente la línea que no tiene variante.
+                DB::table('article_cart')->where('cart_id', $cart->id)
+                    ->where('article_id', $datos['id'])
+                    ->where('variant_id', $datos['variant_id'] ?? null)->delete();
+            } elseif ($datos['tipo'] === 'promocion_vinoteca') {
+                $cart->promociones_vinoteca()->detach($datos['id']);
+            } elseif (ComboEsquemaHelper::disponible()) {
+                $cart->combos()->detach($datos['id']);
+            }
+
+            $tiene_combos = ComboEsquemaHelper::disponible() && $cart->combos()->exists();
+            if (!$cart->articles()->exists() && !$cart->promociones_vinoteca()->exists() && !$tiene_combos) {
+                $cart->delete();
+                return response()->json(['cart' => null], 200);
+            }
+
+            CartHelper::recalcular_tras_quitar($cart);
+            EnvioCartHelper::invalidar_cotizacion($cart);
+
+            return response()->json(['cart' => CartHelper::getFullModel($cart->id, false)], 200);
+        });
+    }
+
+    /**
      * Copia al carrito los campos del paso de checkout (entrega, pago, notas, etc.).
      *
      * Guarda `cuotas` (misión tienda-cuotas-mercado-pago) solo si el método de pago elegido la

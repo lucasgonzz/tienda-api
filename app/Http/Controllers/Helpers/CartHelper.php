@@ -1459,7 +1459,46 @@ class CartHelper {
         // ];
     }
 
-    static function getFullModel($id) {
+    /**
+     * Quitar conserva cantidades y marcas existentes, pero debe actualizar precios: al sacar un
+     * artículo puede cambiar el tramo de TODO su grupo. set_total() no recalcula esos grupos,
+     * porque los guardados completos ya los resolvieron en attachArticles(). Se reutiliza acá
+     * get_price() con un payload reconstruido de la base, sin pasar por validaciones de stock.
+     */
+    static function recalcular_tras_quitar($cart) {
+        if (CommerceHelper::hasExtencion('lista_de_precios_por_rango_de_cantidad_vendida', null, $cart->user_id)) {
+            $modelo = Self::getFullModel($cart->id, false);
+            $modelos_por_linea = $modelo->articles->keyBy(fn ($articulo) =>
+                ConsultaStockHelper::clave_linea($articulo->id, $articulo->pivot->variant_id));
+            $articulos = [];
+            foreach (DB::table('article_cart')->where('cart_id', $cart->id)->orderBy('id')->get() as $pivote) {
+                $articulo = $modelos_por_linea->get(ConsultaStockHelper::clave_linea($pivote->article_id, $pivote->variant_id));
+                if (is_null($articulo)) {
+                    continue;
+                }
+                $linea = $articulo->toArray();
+                $linea['amount'] = $pivote->amount;
+                $linea['pivot'] = (array) $pivote;
+                $articulos[] = $linea;
+            }
+            $grupos = ArticlePriceTypeGroup::with('articles')->get();
+            foreach ($articulos as $linea) {
+                $precio = Self::get_price($articulos, $linea, true, $grupos, $cart->user_id);
+                // Una línea vieja sin precio vendible no bloquea la corrección del carrito ni
+                // se convierte en una venta a cero; el checkout la volverá a validar.
+                if (is_numeric($precio) && (float) $precio > 0) {
+                    // Un carrito heredado puede tener duplicados con cantidades distintas:
+                    // cada pivote conserva su precio, aunque compartan artículo y variante.
+                    DB::table('article_cart')->where('cart_id', $cart->id)
+                        ->where('id', $linea['pivot']['id'])
+                        ->update(['price' => $precio]);
+                }
+            }
+        }
+        Self::set_total($cart);
+    }
+
+    static function getFullModel($id, $depurar_repetidos = true) {
         $model = Cart::where('id', $id)
                         ->withAll()
                         ->with(['articles' => function($query) {
@@ -1496,7 +1535,11 @@ class CartHelper {
            guardado del carrito no le aplique el factor dos veces (ver get_price()). */
         AjustesDeClienteHelper::aplicar_a_precios_fijos($model->promociones_vinoteca, $model->user_id);
 
-        $model = Self::check_repetidos($model);
+        // La operación de quitar una sola línea no puede borrar duplicados remanentes como
+        // efecto de serializar la respuesta. Los demás llamadores conservan la depuración.
+        if ($depurar_repetidos) {
+            $model = Self::check_repetidos($model);
+        }
 
         return $model;
     }
