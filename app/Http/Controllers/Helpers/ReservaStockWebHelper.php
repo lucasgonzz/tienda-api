@@ -22,7 +22,7 @@ class ReservaStockWebHelper
                     return false;
                 }
             }
-            foreach (['reserva_stock_web', 'reserva_stock_web_consumida', 'reserva_stock_web_egreso'] as $columna) {
+            foreach (['reserva_stock_web', 'reserva_stock_web_consumida', 'reserva_stock_web_egreso', 'reserva_stock_web_liberada'] as $columna) {
                 if (!Schema::hasColumn('orders', $columna)) {
                     return false;
                 }
@@ -127,15 +127,43 @@ class ReservaStockWebHelper
         return $disponible;
     }
 
-    public static function stock_articulo($id, $comercio_id, $fisico, $variante = false)
+    /** Solo memoriza pertenencia acreditada por modelos leídos; nunca toma el comercio del payload. */
+    public static function registrar_articulo($articulo)
     {
+        $dueno = $articulo->getRawOriginal('user_id');
+        if ($dueno !== null) {
+            $clave = 'tienda.reserva_stock.dueno.'.$articulo->getConnection()->getDatabaseName().'.'.$articulo->id;
+            request()->attributes->set($clave, $dueno);
+        }
+    }
+
+    private static function configuracion_activa($comercio_id)
+    {
+        $request = request();
+        // GET no cambia opciones: memo de configuración por request, sin cachear disponibilidad.
+        $memo = $request->isMethod('GET') && $request->route();
+        $clave = 'tienda.reserva_stock.activa.'.DB::connection()->getDatabaseName().'.'.$comercio_id;
+        if ($memo && $request->attributes->has($clave)) {
+            return $request->attributes->get($clave);
+        }
+        $activa = self::activa(ContextoDeComercio::comercio($comercio_id)?->online_configuration);
+        if ($memo) {
+            $request->attributes->set($clave, $activa);
+        }
+        return $activa;
+    }
+
+    public static function stock_articulo($id, $comercio_id, $fisico, $variante = false, $articulo_id = null)
+    {
+        if (!$comercio_id && $variante && $articulo_id) {
+            $comercio_id = request()->attributes->get('tienda.reserva_stock.dueno.'.DB::connection()->getDatabaseName().'.'.$articulo_id);
+        }
         if (!$comercio_id) {
             $comercio_id = $variante
                 ? DB::table('article_variants')->join('articles', 'articles.id', '=', 'article_variants.article_id')->where('article_variants.id', $id)->value('articles.user_id')
                 : DB::table('articles')->where('id', $id)->value('user_id');
         }
-        $configuracion = ContextoDeComercio::comercio($comercio_id)?->online_configuration;
-        if (!self::activa($configuracion)) {
+        if (!self::configuracion_activa($comercio_id)) {
             return $fisico;
         }
         $tabla = $variante ? 'article_variants' : 'articles';
@@ -171,10 +199,28 @@ class ReservaStockWebHelper
 
     public static function stock_promocion($id, $comercio_id, $fisico)
     {
-        if (!self::activa(ContextoDeComercio::comercio($comercio_id)?->online_configuration) || $fisico === null) {
+        if (!self::configuracion_activa($comercio_id) || $fisico === null) {
             return $fisico;
         }
         return max(0, (float) $fisico - (float) DB::table(self::TABLA)->where('promocion_vinoteca_id', $id)->sum('amount'));
+    }
+
+    /** article_order.amount es entero: nunca aceptar una reserva sobre una cantidad truncada al copiar. */
+    public static function validar_cantidades_carrito(Cart $carrito, $configuracion)
+    {
+        if (!self::activa($configuracion)) {
+            return;
+        }
+        $lineas = DB::table('article_cart')->where('cart_id', $carrito->id)->orderBy('id')->lockForUpdate()->get();
+        foreach ($lineas as $linea) {
+            if (!is_numeric($linea->amount) || !is_finite((float) $linea->amount)
+                || (float) $linea->amount <= 0 || floor((float) $linea->amount) !== (float) $linea->amount) {
+                ConsultaStockHelper::fallar('Ingresá una cantidad entera y mayor que cero para cada artículo del pedido.');
+            }
+            if ((float) $linea->amount > 2147483647) {
+                ConsultaStockHelper::fallar('La cantidad de un artículo supera el máximo permitido para un pedido.');
+            }
+        }
     }
 
     /** Relee físico y reservas con current reads; un SUM común conservaría un snapshot anterior al lock. */
@@ -285,6 +331,10 @@ class ReservaStockWebHelper
         $campo = $variante ? 'article_variant_id' : 'article_id';
         $id = $variante ? $variante->id : $articulo->id;
         $filas = DB::table($tabla)->where($campo, $id)->orderBy('id')->lockForUpdate()->get();
+        if ($filas->where('address_id', $deposito)->count() > 1) {
+            // El motor físico previo aplica el egreso a cada fila: no reservar sobre ese estado ambiguo.
+            ConsultaStockHelper::fallar('El stock del depósito tiene registros duplicados. Pedí al equipo de soporte que lo revise antes de reservar este artículo.');
+        }
         return ['amount' => $filas->isNotEmpty() ? $filas->where('address_id', $deposito)->sum('amount') : ($variante ? $variante->stock : $articulo->stock),
             'por_deposito' => $filas->isNotEmpty()];
     }

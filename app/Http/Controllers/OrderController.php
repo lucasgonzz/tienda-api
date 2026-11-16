@@ -266,6 +266,7 @@ class OrderController extends Controller
              */
             $configuracion = ConsultaStockHelper::configuracion($cart);
             $consultas_activas = ConsultaStockHelper::activa($configuracion);
+            ReservaStockWebHelper::validar_cantidades_carrito($cart, $configuracion);
             $consultas = $this->consultas_del_pedido($request, $cart, $configuracion, $consultas_activas);
             $a_consultar = !empty($consultas);
 

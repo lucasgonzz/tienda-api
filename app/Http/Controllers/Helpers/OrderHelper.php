@@ -119,6 +119,7 @@ class OrderHelper {
 
     static function attachPromocionesVinoteca($cart, $order, $dolar_blue) {
 
+        // La relación se llama promociones_vinoteca, pero su tabla real es promocion_vinotecas: no inferirla desde la relación.
         $cargadas = $cart->promociones_vinoteca->isEmpty() ? [] : array_fill_keys($order->promociones_vinoteca()->pluck('promocion_vinotecas.id')->all(), true);
         foreach ($cart->promociones_vinoteca as $promo) {
 

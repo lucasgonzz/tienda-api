@@ -195,7 +195,7 @@ class ReservaStockPedidosWebTest extends TestCase
         $this->assertDatabaseMissing('order_stock_reservations', ['order_id' => $pedido, 'article_id' => $sin_control->id]);
     }
 
-    public function test_cantidades_fraccionarias_de_articulo_y_combo_respetan_precision_del_contrato()
+    public function test_combo_fraccionario_y_articulo_entero_respetan_precision_del_contrato()
     {
         $this->activar();
         $articulo = $this->articuloPublicado($this->comercio, ['stock' => 1.3]);
@@ -205,6 +205,32 @@ class ReservaStockPedidosWebTest extends TestCase
         $this->assertSame(201, $respuesta->status(), $respuesta->getContent());
         $pedido = $respuesta->json('order_id');
         $this->assertDatabaseHas('order_stock_reservations', ['order_id' => $pedido, 'article_id' => $articulo->id, 'amount' => 1.3]);
+    }
+
+    public function test_articulo_fraccionario_se_rechaza_antes_de_crear_pedido_o_truncar_reserva_solo_con_opcion_activa()
+    {
+        $this->activar();
+        $articulo = $this->articuloPublicado($this->comercio, ['stock' => 10]);
+        $carrito = $this->carrito([$this->lineaDelPayload($articulo, 1.2)]);
+        $this->enviar($carrito)->assertUnprocessable()->assertJsonPath('codigo', 'consulta_stock')
+            ->assertJsonPath('message', 'Ingresá una cantidad entera y mayor que cero para cada artículo del pedido.');
+        $this->assertDatabaseMissing('orders', ['user_id' => $this->comercio->id]);
+        $this->assertDatabaseMissing('order_stock_reservations', ['user_id' => $this->comercio->id]);
+        $this->assertNull(Cart::find($carrito)->order_id);
+        $this->comercio->online_configuration()->update(['reservar_stock_pedidos_web' => false]);
+        $this->enviar($carrito)->assertCreated();
+        $this->assertDatabaseMissing('order_stock_reservations', ['user_id' => $this->comercio->id]);
+    }
+
+    public function test_cantidad_entera_fuera_del_rango_del_pedido_devuelve_422_sin_escritura_parcial()
+    {
+        $this->activar();
+        $articulo = $this->articuloPublicado($this->comercio, ['stock' => null, 'final_price' => 1]);
+        $carrito = $this->carrito([$this->lineaDelPayload($articulo, 2147483648)]);
+        $this->enviar($carrito)->assertUnprocessable()->assertJsonPath('codigo', 'consulta_stock')
+            ->assertJsonPath('message', 'La cantidad de un artículo supera el máximo permitido para un pedido.');
+        $this->assertDatabaseMissing('orders', ['user_id' => $this->comercio->id]);
+        $this->assertDatabaseMissing('order_stock_reservations', ['user_id' => $this->comercio->id]);
     }
 
     public function test_combo_con_componente_de_variantes_no_envia_un_pedido_que_no_se_puede_confirmar()
@@ -232,6 +258,75 @@ class ReservaStockPedidosWebTest extends TestCase
         $this->getJson('/api/articles/search/Variante/'.$this->comercio->id)->assertOk()->assertDontSee('Variante reservada');
         $this->comercio->online_configuration()->update(['permitir_pedidos_sin_stock' => true]);
         $this->getJson('/api/articles/search/Variante/'.$this->comercio->id)->assertOk()->assertSee('Variante reservada');
+    }
+
+    public function test_apagar_y_reactivar_no_borra_la_identidad_del_pedido_ni_duplica_al_reintentar_checkout()
+    {
+        $this->activar();
+        $articulo = $this->articuloPublicado($this->comercio, ['stock' => 10]);
+        $carrito = $this->carrito([$this->lineaDelPayload($articulo, 6)]);
+        $pedido = $this->enviar($carrito)->assertCreated()->json('order_id');
+        // Es el contrato compartido del apagado en Empresa: libera participación, conserva origen inmutable.
+        $this->comercio->online_configuration()->update(['reservar_stock_pedidos_web' => false]);
+        DB::table('order_stock_reservations')->where('order_id', $pedido)->delete();
+        DB::table('orders')->where('id', $pedido)->update(['reserva_stock_web_liberada' => true]);
+        $this->enviar($carrito)->assertCreated()->assertJsonPath('order_id', $pedido);
+        $this->activar();
+        $this->enviar($carrito)->assertCreated()->assertJsonPath('order_id', $pedido);
+        $this->assertSame(1, DB::table('orders')->where('user_id', $this->comercio->id)->count());
+        $this->assertDatabaseHas('orders', ['id' => $pedido, 'reserva_stock_web' => true, 'reserva_stock_web_liberada' => true]);
+        $this->assertDatabaseMissing('order_stock_reservations', ['order_id' => $pedido]);
+        $this->assertSame(10, (int) DB::table('articles')->where('id', $articulo->id)->value('stock'));
+    }
+
+    public function test_configuracion_duplicada_no_duplica_componentes_ni_queries_con_opcion_apagada()
+    {
+        $articulo = $this->articuloPublicado($this->comercio, ['stock' => 10]);
+        $combo = $this->combo($this->comercio);
+        $combo->articles()->attach($articulo->id, ['amount' => 2]);
+        \App\OnlineConfiguration::create(['user_id' => $this->comercio->id]);
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+        $stocks = \App\Http\Controllers\Helpers\ComboStockHelper::para([$combo->id]);
+        $consultas = DB::getQueryLog();
+        DB::disableQueryLog();
+        $this->assertSame(5, $stocks[$combo->id]);
+        $this->assertCount(1, $consultas);
+    }
+
+    public function test_ficha_con_cinco_variantes_no_agrega_consultas_por_variante_con_opcion_apagada()
+    {
+        $articulo = $this->articuloPublicado($this->comercio, ['stock' => 10]);
+        for ($i = 0; $i < 5; $i++) {
+            DB::table('article_variants')->insert(['article_id' => $articulo->id, 'stock' => 2]);
+        }
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+        $this->getJson('/api/articles/'.$articulo->slug.'/'.$this->comercio->id)->assertOk()->assertJsonCount(5, 'article.article_variants');
+        $consultas = DB::getQueryLog();
+        DB::disableQueryLog();
+        $busquedas_dueno = array_filter($consultas, function ($consulta) {
+            return strpos($consulta['query'], 'join `articles` on `articles`.`id` = `article_variants`.`article_id`') !== false;
+        });
+        $this->assertCount(0, $busquedas_dueno, 'La pertenencia ya viene de los artículos leídos; no consultar una vez por variante con la opción apagada.');
+    }
+
+    public function test_pivotes_duplicados_del_deposito_no_producen_una_reserva_que_duplique_el_egreso()
+    {
+        $this->activar();
+        $deposito = DB::table('addresses')->insertGetId(['user_id' => $this->comercio->id, 'street' => 'Principal duplicado', 'default_address' => true]);
+        $articulo = $this->articuloPublicado($this->comercio, ['stock' => 10]);
+        DB::table('address_article')->insert([
+            ['address_id' => $deposito, 'article_id' => $articulo->id, 'amount' => 4],
+            ['address_id' => $deposito, 'article_id' => $articulo->id, 'amount' => 6],
+        ]);
+        $carrito = $this->carrito([$this->lineaDelPayload($articulo, 6)]);
+        $this->enviar($carrito)->assertUnprocessable()->assertJsonPath('codigo', 'consulta_stock')
+            ->assertJsonPath('message', 'El stock del depósito tiene registros duplicados. Pedí al equipo de soporte que lo revise antes de reservar este artículo.');
+        $this->assertDatabaseMissing('orders', ['user_id' => $this->comercio->id]);
+        $this->assertDatabaseMissing('order_stock_reservations', ['user_id' => $this->comercio->id]);
+        $this->assertSame(10.0, (float) DB::table('address_article')->where('article_id', $articulo->id)->sum('amount'));
+        $this->assertSame(10, (int) DB::table('articles')->where('id', $articulo->id)->value('stock'));
     }
 
     public function test_promocion_reserva_stock_propio_y_sin_stock_no_se_confirma()

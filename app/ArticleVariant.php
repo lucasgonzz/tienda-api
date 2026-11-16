@@ -8,7 +8,7 @@ class ArticleVariant extends Model
 {
     public function getStockAttribute($stock)
     {
-        return \App\Http\Controllers\Helpers\ReservaStockWebHelper::stock_articulo($this->id, null, $stock, true);
+        return \App\Http\Controllers\Helpers\ReservaStockWebHelper::stock_articulo($this->id, null, $stock, true, $this->article_id);
     }
 
     function article_property_values() {

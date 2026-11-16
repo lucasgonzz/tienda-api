@@ -56,7 +56,11 @@ class ComboStockHelper
            Con INNER JOIN esa linea desapareceria y el combo parecería armable. */
         $filas = DB::table('article_combo as ac')
                     ->leftJoin('articles as a', 'a.id', '=', 'ac.article_id')
-                    ->leftJoin('online_configurations as oc', 'oc.user_id', '=', 'a.user_id')
+                    ->leftJoin('online_configurations as oc', function ($join) {
+                        // hasOne elige la primera fila: una configuración duplicada no duplica la receta.
+                        $join->on('oc.user_id', '=', 'a.user_id')
+                            ->whereRaw('oc.id = (SELECT MIN(oc_primera.id) FROM online_configurations oc_primera WHERE oc_primera.user_id = a.user_id)');
+                    })
                     ->whereIn('ac.combo_id', $combo_ids)
                     // oc.* permite leer también bases anteriores sin nombrar columnas nuevas que todavía no existen.
                     // La configuración nunca sale de este helper: la respuesta pública se arma campo por campo.

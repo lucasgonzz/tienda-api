@@ -23,6 +23,14 @@ class Article extends Model
 
     private static ?bool $hay_portada_en_imagenes = null;
 
+    protected static function booted()
+    {
+        static::retrieved(function ($articulo) {
+            ReservaStockWebHelper::registrar_articulo($articulo);
+        });
+    }
+
+
     /**
      * Eager load de relaciones habituales para listados y detalle de artículos en tienda.
      * Incluye price_types para que checkPriceTypes pueda leer pivot->final_price.
