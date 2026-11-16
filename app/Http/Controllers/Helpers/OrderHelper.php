@@ -119,7 +119,7 @@ class OrderHelper {
 
     static function attachPromocionesVinoteca($cart, $order, $dolar_blue) {
 
-        $cargadas = $cart->promociones_vinoteca->isEmpty() ? [] : array_fill_keys($order->promociones_vinoteca()->pluck('promociones_vinoteca.id')->all(), true);
+        $cargadas = $cart->promociones_vinoteca->isEmpty() ? [] : array_fill_keys($order->promociones_vinoteca()->pluck('promocion_vinotecas.id')->all(), true);
         foreach ($cart->promociones_vinoteca as $promo) {
 
             $price = $promo->pivot->price;

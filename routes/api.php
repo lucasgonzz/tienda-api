@@ -31,6 +31,7 @@ Route::get('/platelets/{commerce_id}',
 );
 
 // Commerce
+Route::get('/commerce/reserva-stock-capability/{commerce_id}', 'CommerceController@reservaStockCapability')->where('commerce_id', '[0-9]+');
 Route::get('/commerce/{commerce_id}',
 	'CommerceController@commerce'
 );

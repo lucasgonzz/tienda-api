@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\ConsultaStockHelper;
+use App\Http\Controllers\Helpers\ReservaStockWebHelper;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
 use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
@@ -157,7 +158,7 @@ class OrderController extends Controller
      * @return \Illuminate\Http\Response
      */
     function store(Request $request) {
-        return ConsultaStockHelper::con_carrito($request->cart_id, fn ($cart) => $this->guardar_pedido($request, $cart));
+        return ReservaStockWebHelper::con_carrito($request->cart_id, fn ($cart) => $this->guardar_pedido($request, $cart));
     }
 
     private function guardar_pedido(Request $request, ?Cart $cart) {
@@ -169,7 +170,7 @@ class OrderController extends Controller
                 return response(null, 403);
             }
 
-            if (ConsultaStockHelper::pedido_marcado($cart->order_id)) {
+            if (ConsultaStockHelper::pedido_marcado($cart->order_id) || ReservaStockWebHelper::pedido_marcado($cart->order_id)) {
                 return response()->json(['order_id' => $cart->order_id], 201);
             }
 
@@ -372,7 +373,7 @@ class OrderController extends Controller
                 'order_status_id'           => $this->getModelBy('order_statuses', 'name', 'Sin confirmar', false, 'id'),
                 'payment_method_discount'   => $a_consultar ? null : OrderHelper::getPaymentMethodDiscount($cart),
                 'payment_method_surchage'   => $a_consultar ? null : OrderHelper::getPaymentMethodSurchage($cart),
-                'address_id'                => 0,
+                'address_id'                => ReservaStockWebHelper::activa($configuracion) ? ReservaStockWebHelper::deposito_principal($commerce_id) : 0,
                 'total'                     => $cart->total,
                 'fecha_entrega'             => $cart->fecha_entrega,
                 'address'                   => $address,
@@ -403,6 +404,8 @@ class OrderController extends Controller
             // combos-y-rangos-de-precio). Si esta base no tiene `order_combo` el helper no hace
             // nada y el pedido se crea como siempre.
             OrderHelper::attachCombos($cart, $order);
+
+            ReservaStockWebHelper::reservar_pedido($order);
 
             // Los ajustes del cliente con su porcentaje de hoy (la foto), para que el ERP los
             // muestre en el pedido y se los pase a la venta al confirmarlo. Sin ajustes o sin las

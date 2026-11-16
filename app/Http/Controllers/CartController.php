@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\ConsultaStockHelper;
+use App\Http\Controllers\Helpers\ReservaStockWebHelper;
 use App\Http\Controllers\Helpers\ContextoDeComercio;
 use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
 use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
@@ -224,6 +225,9 @@ class CartController extends Controller
         if (ConsultaStockHelper::pedido_marcado($cart->order_id)) {
             ConsultaStockHelper::fallar('Este carrito ya se envió como pedido a consultar.');
         }
+        if (ReservaStockWebHelper::pedido_marcado($cart->order_id)) {
+            ConsultaStockHelper::fallar('Este carrito ya se envió como pedido. Para cambiarlo, contactá al negocio.');
+        }
 
         CartOwnershipHelper::adoptar($cart);
 
@@ -352,6 +356,9 @@ class CartController extends Controller
 
         if (ConsultaStockHelper::pedido_marcado($cart->order_id)) {
             ConsultaStockHelper::fallar('Este carrito ya se envió como pedido a consultar.');
+        }
+        if (ReservaStockWebHelper::pedido_marcado($cart->order_id)) {
+            ConsultaStockHelper::fallar('Este carrito ya se envió como pedido. Para cambiarlo, contactá al negocio.');
         }
 
         // `is_combo` apunta al tercer pivote, igual que `is_promocion_vinoteca` apunta al segundo.

@@ -56,10 +56,14 @@ class ComboStockHelper
            Con INNER JOIN esa linea desapareceria y el combo parecería armable. */
         $filas = DB::table('article_combo as ac')
                     ->leftJoin('articles as a', 'a.id', '=', 'ac.article_id')
+                    ->leftJoin('online_configurations as oc', 'oc.user_id', '=', 'a.user_id')
                     ->whereIn('ac.combo_id', $combo_ids)
-                    ->select('ac.combo_id', 'ac.article_id', 'ac.amount', 'a.id as articulo_existente', 'a.stock', 'a.deleted_at')
+                    // oc.* permite leer también bases anteriores sin nombrar columnas nuevas que todavía no existen.
+                    // La configuración nunca sale de este helper: la respuesta pública se arma campo por campo.
+                    ->select('oc.*', 'ac.combo_id', 'ac.article_id', 'ac.amount', 'a.id as articulo_existente', 'a.user_id as comercio_id', 'a.stock', 'a.deleted_at')
                     ->get();
 
+        $disponibles = ReservaStockWebHelper::stocks_de_componentes($filas);
         $por_combo = [];
 
         foreach ($combo_ids as $combo_id) {
@@ -74,7 +78,7 @@ class ComboStockHelper
                    en 0, agrupado o no. */
                 'article_id' => $fila->article_id,
                 'amount'     => $fila->amount,
-                'stock'      => $fila->stock,
+                'stock'      => array_key_exists($fila->article_id, $disponibles) ? $disponibles[$fila->article_id] : $fila->stock,
                 'borrado'    => is_null($fila->articulo_existente) || !is_null($fila->deleted_at),
             ];
         }

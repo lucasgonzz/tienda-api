@@ -77,6 +77,16 @@ class CommerceController extends Controller
         'online_configuration',
     ];
 
+    /** La comprobación operativa es viva: una tabla o una bandera antigua no acreditan la API instalada. */
+    function reservaStockCapability($commerce_id)
+    {
+        $comercio = User::find($commerce_id);
+        $protocolo = $comercio && \App\Http\Controllers\Helpers\ReservaStockWebHelper::disponible()
+            && (int) $comercio->online_configuration?->reserva_stock_erp_protocolo === 1 ? 1 : 0;
+        return response()->json(['contract' => $protocolo, 'commerce_id' => (int) $commerce_id])
+            ->header('Cache-Control', 'no-store, no-cache, must-revalidate');
+    }
+
     function commerce($commerce_id) {
         $commerce = User::where('id', $commerce_id)
                         ->with('addresses')

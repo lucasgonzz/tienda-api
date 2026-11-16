@@ -62,7 +62,7 @@ class ConsultaStockHelper
         $configuracion = self::configuracion($cart);
         $activa = self::activa($configuracion);
 
-        return $activa || self::carrito_marcado($cart)
+        return $activa || ReservaStockWebHelper::activa($configuracion) || self::carrito_marcado($cart)
             ? self::clasificar($cart, self::lineas_del_payload($articulos), $configuracion, $activa)
             : [];
     }

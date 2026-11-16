@@ -11,6 +11,11 @@ class PromocionVinoteca extends Model
     
     protected $guarded = [];
 
+    public function getStockAttribute($stock)
+    {
+        return \App\Http\Controllers\Helpers\ReservaStockWebHelper::stock_promocion($this->id, $this->user_id, $stock);
+    }
+
     function scopeWithAll($q) {
         $q->with('images');
     }

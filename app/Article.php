@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\ArticlePriceRangeHelper;
 use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\ConsultaStockHelper;
 use App\Http\Controllers\Helpers\ContextoDeComercio;
+use App\Http\Controllers\Helpers\ReservaStockWebHelper;
 use App\User;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -59,12 +60,12 @@ class Article extends Model
                 ->first();
 
             if ($article_address) {
-                return (float)$article_address->pivot->amount;
+                return ReservaStockWebHelper::stock_articulo($this->id, $this->attributes['user_id'] ?? null, (float) $article_address->pivot->amount);
             }
 
         } 
 
-        return $this->attributes['stock'];
+        return ReservaStockWebHelper::stock_articulo($this->id, $this->attributes['user_id'] ?? null, $this->attributes['stock'] ?? null);
     }
 
     function scopeCheckOnline($query) {
@@ -127,15 +128,19 @@ class Article extends Model
 
         if (!$show_without_stock) {
             $consultas = ConsultaStockHelper::activa($commerce->online_configuration);
-            $query->where(function ($sub_query) use ($stock_null_equal_0, $consultas) {
-                $sub_query->where('stock', '>', 0);
+            $stock = ReservaStockWebHelper::activa($commerce->online_configuration)
+                ? ReservaStockWebHelper::expresion_articulo('articles', $commerce->id) : 'stock';
+            $stock_variante = ReservaStockWebHelper::activa($commerce->online_configuration)
+                ? ReservaStockWebHelper::expresion_articulo('article_variants', $commerce->id, true) : 'article_variants.stock';
+            $query->where(function ($sub_query) use ($stock_null_equal_0, $consultas, $stock, $stock_variante) {
+                $sub_query->whereRaw('('.$stock.') > 0');
                 if (!$stock_null_equal_0) {
-                    $sub_query->orWhereNull('stock');
+                    $sub_query->orWhereRaw('('.$stock.') IS NULL');
                 }
                 if ($consultas) {
-                    $sub_query->orWhere('stock', 0)
-                        ->orWhereHas('article_variants', function ($variantes) {
-                            $variantes->where('article_variants.stock', 0)->where('article_variants.oculta', false);
+                    $sub_query->orWhereRaw('('.$stock.') = 0')
+                        ->orWhereHas('article_variants', function ($variantes) use ($stock_variante) {
+                            $variantes->whereRaw('('.$stock_variante.') = 0')->where('article_variants.oculta', false);
                         });
                 }
             });

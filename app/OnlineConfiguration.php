@@ -53,6 +53,9 @@ class OnlineConfiguration extends Model
         'zippin_access_token',
         'zippin_refresh_token',
         'zippin_account_id',
+        'reserva_stock_tienda_url',
+        'reserva_stock_tienda_protocolo',
+        'reserva_stock_erp_protocolo',
     ];
 
     protected $casts = [
@@ -74,6 +77,7 @@ class OnlineConfiguration extends Model
         // la columna la agrega empresa-api, este repo solo la lee.
         'ignorar_stock' => 'boolean',
         'permitir_pedidos_sin_stock' => 'boolean',
+        'reservar_stock_pedidos_web' => 'boolean',
         // Si la tienda muestra la seccion "Novedades" del home y el item "Marca" de la barra de
         // navegacion. Prendidos de fabrica (default 1). Las columnas las agrega empresa-api en su
         // migracion de online_configurations: este repo solo las lee. Cast boolean para que
