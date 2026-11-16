@@ -44,7 +44,11 @@ class EnvioController extends Controller
      * ── Request ───────────────────────────────────────────────────────────────────────────────
      *
      * `{commerce_id, zipcode, city?, state?, cart_id?, articles?: [{id, amount}],
-     *   articles_extra?: [{id, amount}]}`
+     *   articles_extra?: [{id, amount}], promociones_vinoteca?: [{id, amount}],
+     *   combos?: [{id, amount}], promociones_vinoteca_extra?: [{id, amount}], combos_extra?: [{id, amount}]}`
+     *
+     * Las colecciones nuevas son opcionales y separadas: una API vieja las ignora sin confundir
+     * el id de una promoción o combo con el de un artículo. Cada unidad representa un paquete.
      *
      * La BASE es lo que el comprador ya tiene: con `cart_id`, el carrito guardado (líneas y
      * subtotal del servidor); sin él, la lista `articles`. Si vienen los dos, manda el carrito.
@@ -129,10 +133,24 @@ class EnvioController extends Controller
             'articles'                => 'nullable|array|max:' . ZipnovaCotizadorService::MAX_LINEAS,
             'articles.*.id'           => 'required|integer',
             'articles.*.amount'       => 'nullable|numeric|min:1',
+            'articles.*.type'         => 'nullable|in:article',
             // Mismas reglas que `articles`: es la misma lista de líneas, del otro lado de la resta.
             'articles_extra'          => 'nullable|array|max:' . ZipnovaCotizadorService::MAX_LINEAS,
             'articles_extra.*.id'     => 'required|integer',
             'articles_extra.*.amount' => 'nullable|numeric|min:1',
+            'articles_extra.*.type'   => 'nullable|in:article',
+            'promociones_vinoteca' => 'nullable|array|max:50',
+            'promociones_vinoteca.*.id' => 'required|integer',
+            'promociones_vinoteca.*.amount' => 'nullable|numeric|min:1',
+            'combos' => 'nullable|array|max:50',
+            'combos.*.id' => 'required|integer',
+            'combos.*.amount' => 'nullable|numeric|min:1',
+            'promociones_vinoteca_extra' => 'nullable|array|max:50',
+            'promociones_vinoteca_extra.*.id' => 'required|integer',
+            'promociones_vinoteca_extra.*.amount' => 'nullable|numeric|min:1',
+            'combos_extra' => 'nullable|array|max:50',
+            'combos_extra.*.id' => 'required|integer',
+            'combos_extra.*.amount' => 'nullable|numeric|min:1',
         ]);
 
         if ($validator->fails()) {
@@ -156,7 +174,9 @@ class EnvioController extends Controller
 
         $articles_extra = $request->input('articles_extra');
         $articles_extra = is_array($articles_extra) ? $articles_extra : [];
-        $hay_extra = count($articles_extra) > 0;
+        $promociones_extra = (array) $request->input('promociones_vinoteca_extra', []);
+        $combos_extra = (array) $request->input('combos_extra', []);
+        $hay_extra = count($articles_extra) + count($promociones_extra) + count($combos_extra) > 0;
 
         $cart_id = $request->input('cart_id');
         $cart = null;
@@ -188,7 +208,8 @@ class EnvioController extends Controller
             $armado = ZipnovaCotizadorService::lineas_desde_carrito($cart);
         } else {
             $articles = $request->input('articles');
-            $armado = ZipnovaCotizadorService::lineas_desde_articulos($commerce_id, is_array($articles) ? $articles : []);
+            $armado = ZipnovaCotizadorService::lineas_desde_productos($commerce_id, is_array($articles) ? $articles : [],
+                (array) $request->input('promociones_vinoteca', []), (array) $request->input('combos', []));
         }
 
         $cotizacion_base = null;
@@ -216,7 +237,7 @@ class EnvioController extends Controller
                     $cotizacion_base = null;
                 }
 
-                $armado = ZipnovaCotizadorService::lineas_con_extra($armado, $commerce_id, $articles_extra);
+                $armado = ZipnovaCotizadorService::lineas_con_extra($armado, $commerce_id, $articles_extra, $promociones_extra, $combos_extra);
             }
 
             $cotizacion = ZipnovaCotizadorService::cotizar(

@@ -238,12 +238,10 @@ class EnvioPorListaTest extends TestCase
     }
 
     /**
-     * Lo mismo, pero con una promocion de vinoteca en el payload: el carrito sobrevive (le queda la promo) y
-     * lo que se VE es que el envio quedo limpio —sin cotizacion, opcion ni precio— y que no se volvio a
-     * llamar a Zipnova. Es la forma observable de "limpia el envio" del caso de arriba, donde el carrito se
-     * borra.
+     * Si la lista descarta el artículo pero queda una promoción, se cotiza su paquete completo.
+     * El artículo descartado no participa ni en el peso, ni en el subtotal ni en la firma.
      */
-    public function test_un_put_con_todo_descartado_y_una_promo_deja_el_envio_limpio_sin_cotizar()
+    public function test_un_put_con_articulos_descartados_cotiza_solo_el_paquete_de_la_promo_que_queda()
     {
         $promo = PromocionVinoteca::create([
             'name'        => 'Promo Envio Catalogo Test',
@@ -287,11 +285,16 @@ class EnvioPorListaTest extends TestCase
         $cart = $cart->fresh();
 
         $this->assertNotNull($cart, 'el carrito sigue vivo: tiene la promo');
-        $this->assertNull($cart->envio_opcion, 'sin lineas de articulo no hay envio por correo que cotizar');
-        $this->assertNull($cart->envio_cotizacion);
-        $this->assertNull($cart->envio_precio);
-
-        Http::assertSentCount(1);
+        $this->assertSame(self::KEY_DOMICILIO_CORREO_ARG, $cart->envio_opcion['key']);
+        $this->assertSame(EnvioCartHelper::hash_del_carrito($cart), $cart->envio_cotizacion['items_hash']);
+        $this->assertSame(self::PRECIO_DOMICILIO_CORREO_ARG, (float) $cart->envio_precio);
+        Http::assertSentCount(2);
+        Http::assertSent(function ($request) {
+            $data = $request->data();
+            return (float) $data['declared_value'] === 700.0
+                && count($data['items']) === 1
+                && $data['items'][0]['description'] === 'Promo Envio Catalogo Test';
+        });
     }
 
     /**

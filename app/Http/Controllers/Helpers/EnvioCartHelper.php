@@ -4,7 +4,6 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Cart;
 use App\Envio;
-use App\PromocionVinoteca;
 use App\Services\Zipnova\EnvioDestinoHelper;
 use App\Services\Zipnova\SinArticulosException;
 use App\Services\Zipnova\SinZipnovaException;
@@ -123,7 +122,7 @@ class EnvioCartHelper
         $lineas_request = self::lineas_del_request($data);
 
         // Un carrito que se está vaciando no tiene nada que cotizar (el controller lo borra).
-        if (count($lineas_request) === 0) {
+        if (count($lineas_request) + count(self::promociones_del_request($data)) + count(self::combos_del_request($data)) === 0) {
             self::limpiar($cart);
 
             return;
@@ -151,7 +150,7 @@ class EnvioCartHelper
             self::fallar('opcion_envio', 'La dirección elegida es de otro código postal ('.$cp_de_la_direccion.'): volvé a cotizar el envío para esa dirección.');
         }
 
-        $items_hash = self::hash_de_partes(self::partes_del_request($data));
+        $items_hash = self::hash_de_partes(self::partes_del_request($data, (int) $cart->user_id));
 
         $opcion = is_array($cart->envio_opcion) ? $cart->envio_opcion : null;
         $cotizacion = is_array($cart->envio_cotizacion) ? $cart->envio_cotizacion : null;
@@ -235,7 +234,7 @@ class EnvioCartHelper
      * Por qué el pedido NO puede crearse con la cotización guardada, o null si está bien.
      *
      * Es la última guarda antes del `Order::create`: el snapshot tiene que corresponder a las
-     * líneas REALES del carrito (hash de `article_cart` + `cart_promocion_vinoteca`) y no haber
+     * líneas REALES del carrito (hash de `article_cart` + `cart_promocion_vinoteca` + `cart_combo`) y no haber
      * vencido. No se re-cotiza acá: en el flujo de Mercado Pago la preferencia ya viajó con el
      * precio, así que lo único honesto es cortar y que el comprador vuelva a elegir.
      *
@@ -391,7 +390,7 @@ class EnvioCartHelper
     }
 
     /**
-     * Hash de las líneas REALES del carrito (pivots de artículos y de promociones), en el mismo
+     * Hash de las líneas REALES del carrito (pivots de artículos, promociones y combos), en el mismo
      * formato que el del payload, para compararlo con `envio_cotizacion.items_hash`.
      *
      * @param Cart $cart
@@ -419,6 +418,15 @@ class EnvioCartHelper
                 continue;
             }
             $partes[] = self::parte_de_promocion((int) $promo->id, $amount);
+        }
+
+        if (ComboEsquemaHelper::disponible()) {
+            foreach ($cart->combos()->get() as $combo) {
+                $amount = self::cantidad($combo->pivot->amount);
+                if ($amount > 0) {
+                    $partes[] = 'combo:' . (int) $combo->id . '|' . $amount;
+                }
+            }
         }
 
         return self::hash_de_partes($partes);
@@ -464,14 +472,14 @@ class EnvioCartHelper
      */
     protected static function cotizar(Cart $cart, array $lineas_request, array $data, $zipcode, array $envio)
     {
-        $armado = ZipnovaCotizadorService::lineas_desde_articulos((int) $cart->user_id, $lineas_request);
-        $subtotal = $armado['subtotal'] + self::subtotal_de_promociones((int) $cart->user_id, $data);
+        $armado = ZipnovaCotizadorService::lineas_desde_productos((int) $cart->user_id, $lineas_request,
+            self::promociones_del_request($data), self::combos_del_request($data), false);
 
         try {
             return ZipnovaCotizadorService::cotizar(
                 (int) $cart->user_id,
                 $armado['lineas'],
-                $subtotal,
+                $armado['subtotal'],
                 $zipcode,
                 isset($envio['city']) && is_string($envio['city']) ? $envio['city'] : null,
                 isset($envio['state']) && is_string($envio['state']) ? $envio['state'] : null
@@ -661,8 +669,8 @@ class EnvioCartHelper
     }
 
     /**
-     * Las líneas de artículos del payload: id, variante y cantidad (las promociones de vinoteca
-     * no viajan como ítems, no tienen peso ni medidas).
+     * Las líneas de artículos del payload: id, variante y cantidad. Las promociones y combos
+     * se leen de sus propias colecciones y cada unidad representa un paquete completo.
      *
      * @param array $data
      * @return array `[['id' => int, 'variant_id' => int|null, 'amount' => int], ...]`
@@ -676,7 +684,7 @@ class EnvioCartHelper
         }
 
         foreach ($data['articles'] as $article) {
-            if (!is_array($article) || isset($article['is_promocion_vinoteca']) || !isset($article['id']) || !is_numeric($article['id'])) {
+            if (!is_array($article) || isset($article['is_promocion_vinoteca']) || isset($article['is_combo']) || !isset($article['id']) || !is_numeric($article['id'])) {
                 continue;
             }
             $pivot = isset($article['pivot']) && is_array($article['pivot']) ? $article['pivot'] : [];
@@ -722,14 +730,40 @@ class EnvioCartHelper
         return $promos;
     }
 
+    /** Los combos usan su propio espacio de ids, incluso si coinciden con un artículo o promo. */
+    protected static function combos_del_request(array $data)
+    {
+        if (!ComboEsquemaHelper::disponible()) {
+            return [];
+        }
+        $combos = isset($data['combos']) && is_array($data['combos']) ? $data['combos'] : [];
+        $lineas = [];
+        $vistos = [];
+        foreach ($combos as $combo) {
+            if (!is_array($combo) || !isset($combo['id']) || !is_numeric($combo['id'])) {
+                continue;
+            }
+            $id = (int) $combo['id'];
+            $amount = self::cantidad(isset($combo['pivot']['amount']) ? $combo['pivot']['amount'] : 1);
+            if (isset($vistos[$id])) {
+                continue;
+            }
+            $vistos[$id] = true;
+            if ($amount > 0) {
+                $lineas[] = ['id' => $id, 'amount' => $amount];
+            }
+        }
+        return $lineas;
+    }
+
     /**
-     * Las partes del hash a partir del payload: artículos y promociones, mismo formato que
+     * Las partes del hash a partir del payload: artículos, promociones y combos, mismo formato que
      * `hash_del_carrito()`.
      *
      * @param array $data
      * @return array
      */
-    protected static function partes_del_request(array $data)
+    protected static function partes_del_request(array $data, $commerce_id)
     {
         $partes = [];
 
@@ -739,52 +773,12 @@ class EnvioCartHelper
         foreach (self::promociones_del_request($data) as $promo) {
             $partes[] = self::parte_de_promocion($promo['id'], $promo['amount']);
         }
+        $combos = ZipnovaCotizadorService::lineas_desde_productos($commerce_id, [], [], self::combos_del_request($data));
+        foreach ($combos['lineas'] as $combo) {
+            $partes[] = 'combo:' . $combo['article']->id . '|' . $combo['amount'];
+        }
 
         return $partes;
-    }
-
-    /**
-     * Lo que suman las promociones de vinoteca: son ítems pagos del carrito y cuentan para el
-     * valor declarado y el envío gratis, aunque no viajen como bultos. El precio sale de la BASE
-     * (`promocion_vinotecas.final_price`, por el comercio del carrito), no del payload: con el
-     * precio del navegador cualquiera llegaba al umbral de envío gratis inflando una promo.
-     *
-     * Con los descuentos y recargos del cliente del comprador aplicados (misión
-     * descuentos-recargos-por-cliente): los artículos de `lineas_desde_articulos()` ya suman el
-     * precio ajustado (sale de `checkPriceTypes()`), así que las promos también, para que el umbral
-     * y el valor declarado se midan con lo que paga el comprador y no con dos escalas mezcladas.
-     * Sin ajustes, `ajustar()` devuelve el precio intacto.
-     *
-     * @param int $commerce_id
-     * @param array $data
-     * @return float
-     */
-    protected static function subtotal_de_promociones($commerce_id, array $data)
-    {
-        $promos = self::promociones_del_request($data);
-
-        if (count($promos) === 0) {
-            return 0.0;
-        }
-
-        $cantidades = [];
-        foreach ($promos as $promo) {
-            $cantidades[$promo['id']] = (isset($cantidades[$promo['id']]) ? $cantidades[$promo['id']] : 0) + $promo['amount'];
-        }
-
-        $suma = 0.0;
-        $ajustes = AjustesDeClienteHelper::del_comprador((int) $commerce_id);
-        $de_la_base = PromocionVinoteca::where('user_id', (int) $commerce_id)
-            ->whereIn('id', array_keys($cantidades))
-            ->get(['id', 'final_price']);
-
-        foreach ($de_la_base as $promo) {
-            if (is_numeric($promo->final_price)) {
-                $suma += (float) AjustesDeClienteHelper::ajustar($promo->final_price, $ajustes) * $cantidades[(int) $promo->id];
-            }
-        }
-
-        return round($suma, 2);
     }
 
     /**
@@ -805,7 +799,8 @@ class EnvioCartHelper
      */
     protected static function parte_de_promocion($id, $amount)
     {
-        return 'promo:' . $id . '|' . $amount;
+        // La cotización anterior no incluía el paquete de la promo: se vuelve a elegir el envío.
+        return 'promo-paquete:' . $id . '|' . $amount;
     }
 
     /**

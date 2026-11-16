@@ -8,6 +8,9 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class PromocionVinoteca extends Model
 {
     use SoftDeletes;
+    use \App\Models\Concerns\TieneMedidasDeEnvio;
+
+    protected $hidden = ['medidas_envio'];
     
     protected $guarded = [];
 

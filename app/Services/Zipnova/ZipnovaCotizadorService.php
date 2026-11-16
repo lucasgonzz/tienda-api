@@ -4,6 +4,11 @@ namespace App\Services\Zipnova;
 
 use App\Article;
 use App\Cart;
+use App\Combo;
+use App\PromocionVinoteca;
+use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
+use App\Http\Controllers\Helpers\ComboEsquemaHelper;
+use App\Http\Controllers\Helpers\ComboPrecioHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
 use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
@@ -11,6 +16,7 @@ use App\Http\Controllers\Helpers\ZipnovaEsquemaHelper;
 use App\OnlineConfiguration;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Cotiza el envío de un conjunto de artículos con la cuenta de Zipnova del comercio
@@ -449,6 +455,14 @@ class ZipnovaCotizadorService
     {
         $lineas = [];
         $suma_pivot = 0.0;
+        $hay_medidas = Schema::hasTable('medidas_envio_paquetes');
+        if ($hay_medidas) {
+            $relaciones = ['promociones_vinoteca.medidas_envio'];
+            if (ComboEsquemaHelper::disponible()) {
+                $relaciones[] = 'combos.medidas_envio';
+            }
+            $cart->loadMissing($relaciones);
+        }
 
         foreach ($cart->articles as $articulo) {
             $amount = isset($articulo->pivot->amount) ? (int) ceil((float) $articulo->pivot->amount) : 1;
@@ -458,6 +472,25 @@ class ZipnovaCotizadorService
             $lineas[] = ['article' => $articulo, 'amount' => $amount];
             if (isset($articulo->pivot->price) && is_numeric($articulo->pivot->price)) {
                 $suma_pivot += (float) $articulo->pivot->price * $amount;
+            }
+        }
+
+        $colecciones = [$cart->promociones_vinoteca];
+        if (ComboEsquemaHelper::disponible()) {
+            $colecciones[] = $cart->combos;
+        }
+        foreach ($colecciones as $productos) {
+            foreach ($productos as $producto) {
+                $amount = isset($producto->pivot->amount) ? (int) ceil((float) $producto->pivot->amount) : 1;
+                if ($amount < 1) {
+                    continue;
+                }
+                // Cada unidad es el paquete completo: no se vuelven a sumar sus componentes.
+                if (!$hay_medidas) {
+                    $producto->setRelation('medidas_envio', null);
+                }
+                $lineas[] = ['article' => $producto, 'amount' => $amount];
+                $suma_pivot += (float) $producto->pivot->price * $amount;
             }
         }
 
@@ -488,9 +521,9 @@ class ZipnovaCotizadorService
      * @param array $items_extra `[['id' => int, 'amount' => int], ...]`
      * @return array{lineas: array, subtotal: float}
      */
-    public static function lineas_con_extra(array $armado_base, $commerce_id, array $items_extra)
+    public static function lineas_con_extra(array $armado_base, $commerce_id, array $items_extra, array $promociones_extra = [], array $combos_extra = [])
     {
-        $armado_extra = self::lineas_desde_articulos($commerce_id, $items_extra);
+        $armado_extra = self::lineas_desde_productos($commerce_id, $items_extra, $promociones_extra, $combos_extra);
 
         if (count($armado_extra['lineas']) === 0) {
             return $armado_base;
@@ -506,7 +539,7 @@ class ZipnovaCotizadorService
                 if (!isset($linea['article']) || !is_object($linea['article'])) {
                     continue;
                 }
-                if ((int) $linea['article']->id !== $id) {
+                if (get_class($linea['article']) !== get_class($extra['article']) || (int) $linea['article']->id !== $id) {
                     continue;
                 }
                 $lineas[$i]['amount'] = (int) $linea['amount'] + (int) $extra['amount'];
@@ -523,6 +556,73 @@ class ZipnovaCotizadorService
             'lineas'   => $lineas,
             'subtotal' => round((float) $armado_base['subtotal'] + (float) $armado_extra['subtotal'], 2),
         ];
+    }
+
+    /**
+     * Todos los productos comprables, consultados por comercio. Las medidas viven en una tabla
+     * lateral para no cambiar el SELECT * de una versión vieja del ERP. Si todavía no existe,
+     * los accessors devuelven null y se usa el bulto por defecto, igual que para un artículo.
+     * Los precios y las medidas del navegador nunca se usan.
+     */
+    public static function lineas_desde_productos($commerce_id, array $articulos, array $promociones = [], array $combos = [], $solo_publicadas = true)
+    {
+        $armado = self::lineas_desde_articulos($commerce_id, $articulos);
+        if (!$promociones && !$combos) {
+            return $armado;
+        }
+        $hay_medidas = Schema::hasTable('medidas_envio_paquetes');
+        $ajustes = AjustesDeClienteHelper::del_comprador((int) $commerce_id);
+        foreach (['promocion' => $promociones, 'combo' => $combos] as $tipo => $items) {
+            if ($tipo === 'combo' && !ComboEsquemaHelper::disponible()) {
+                continue;
+            }
+            $cantidades = [];
+            foreach (array_slice($items, 0, self::MAX_LINEAS) as $item) {
+                if (!is_array($item) || !isset($item['id']) || !is_numeric($item['id'])) {
+                    continue;
+                }
+                $id = (int) $item['id'];
+                $cantidad = isset($item['amount']) && is_numeric($item['amount']) ? (int) ceil((float) $item['amount']) : 1;
+                if ($cantidad > 0) {
+                    if ($tipo === 'promocion') {
+                        $cantidades[$id] = ($cantidades[$id] ?? 0) + $cantidad;
+                    } elseif (!isset($cantidades[$id])) {
+                        // El carrito conserva la primera entrada de un combo repetido.
+                        $cantidades[$id] = $cantidad;
+                    }
+                }
+            }
+            if (!$cantidades) {
+                continue;
+            }
+            $clase = $tipo === 'combo' ? Combo::class : PromocionVinoteca::class;
+            $consulta = $clase::where('user_id', (int) $commerce_id)->whereIn('id', array_keys($cantidades));
+            if ($tipo === 'combo' || $solo_publicadas) {
+                $consulta->where('online', 1);
+            }
+            if ($hay_medidas) {
+                $consulta->with('medidas_envio');
+            }
+            $productos = $consulta->get();
+            $precios = $tipo === 'combo' ? ComboPrecioHelper::precios_base($productos, $commerce_id) : [];
+            foreach ($productos as $producto) {
+                if (!$hay_medidas) {
+                    $producto->setRelation('medidas_envio', null);
+                }
+                $precio = $tipo === 'combo' ? $precios[$producto->id] : $producto->final_price;
+                if ($tipo === 'combo' && !ComboPrecioHelper::es_vendible($precio)) {
+                    continue;
+                }
+                $cantidad = $cantidades[(int) $producto->id];
+                $armado['lineas'][] = ['article' => $producto, 'amount' => $cantidad];
+                if (is_numeric($precio)) {
+                    $armado['subtotal'] += (float) AjustesDeClienteHelper::ajustar($precio, $ajustes) * $cantidad;
+                }
+            }
+        }
+        $armado['subtotal'] = round($armado['subtotal'], 2);
+
+        return $armado;
     }
 
     /**

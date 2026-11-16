@@ -38,6 +38,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 class Combo extends Model
 {
     use SoftDeletes;
+    use \App\Models\Concerns\TieneMedidasDeEnvio;
 
     protected $guarded = [];
 
@@ -62,7 +63,7 @@ class Combo extends Model
      *
      * @var array<int, string>
      */
-    protected $hidden = ['cost', 'calcular_desde_articulos', 'descuento_tipo', 'descuento_valor'];
+    protected $hidden = ['cost', 'calcular_desde_articulos', 'descuento_tipo', 'descuento_valor', 'medidas_envio'];
 
     /**
      * Las columnas de los componentes que VIAJAN al navegador.
