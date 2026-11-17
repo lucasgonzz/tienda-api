@@ -27,6 +27,7 @@ use Tests\TestCase;
 class CambioDeClaveTest extends TestCase
 {
     use DatabaseTransactions;
+    use \Tests\Concerns\ConCachePersistenteDeRecuperacion;
 
     /** @var \App\User */
     private $comercio;
@@ -37,6 +38,7 @@ class CambioDeClaveTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->preparar_cache_recuperacion();
 
         $this->comercio = User::create([
             'name'         => 'Comercio Cambio Clave Test',

@@ -20,6 +20,9 @@ return [
 
     'default' => env('CACHE_DRIVER', 'file'),
 
+    // La recuperación y sus topes deben sobrevivir a PHP-FPM aunque la caché general sea array.
+    'password_reset_store' => env('PASSWORD_RESET_CACHE_STORE', 'password_reset'),
+
     /*
     |--------------------------------------------------------------------------
     | Cache Stores
@@ -32,6 +35,11 @@ return [
     */
 
     'stores' => [
+
+        'password_reset' => [
+            'driver' => 'file',
+            'path' => storage_path('framework/cache/password-reset'),
+        ],
 
         'apc' => [
             'driver' => 'apc',

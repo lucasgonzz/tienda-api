@@ -27,12 +27,13 @@ use Tests\TestCase;
  *     en el resto del sistema) no se pisan;
  *   - el camino completo: pedir, verificar, cambiar la clave y entrar con la clave nueva.
  *
- * El caché de los tests es el de `.env.testing` (array): se reinicia con cada test, así que ningún
- * contador de un test le llega al siguiente. Igual, `setUp` lo vacía a mano por si alguien cambia el driver.
+ * El almacenamiento de recuperación usa archivos aislados por test: ningún
+ * contador de un test le llega al siguiente, aunque la caché general siga en array.
  */
 class CodigoDeCuatroDigitosTest extends TestCase
 {
     use DatabaseTransactions;
+    use \Tests\Concerns\ConCachePersistenteDeRecuperacion;
 
     const ENVIAR = '/password-reset/send-verification-code';
     const VERIFICAR = '/password-reset/check-verification-code';
@@ -47,8 +48,9 @@ class CodigoDeCuatroDigitosTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->preparar_cache_recuperacion();
 
-        Cache::flush();
+        Cache::store('password_reset')->flush();
 
         $this->comercio = $this->crear_comercio('Comercio Cuatro Digitos');
 
@@ -189,7 +191,7 @@ class CodigoDeCuatroDigitosTest extends TestCase
     public function test_cualquier_otro_valor_de_longitud_del_codigo_da_seis_digitos()
     {
         foreach ([2, 3, 5, 8, 'abc', '', [4], 0, null] as $valor) {
-            Cache::flush();
+            Cache::store('password_reset')->flush();
             Mail::fake();
 
             $this->postJson(self::ENVIAR, $this->pedido($this->comprador, ['longitud_del_codigo' => $valor]))
@@ -347,7 +349,7 @@ class CodigoDeCuatroDigitosTest extends TestCase
         Mail::fake();
 
         foreach (range(1, 8) as $lugar) {
-            Cache::flush();
+            Cache::store('password_reset')->flush();
             $codigo = $this->pedir_codigo();
 
             foreach (range(1, $lugar - 1) as $i) {
@@ -366,7 +368,7 @@ class CodigoDeCuatroDigitosTest extends TestCase
     {
         // Throttle por IP (mision throttle-recuperar-clave-por-ip): este test hace muchos pedidos desde
         // 127.0.0.1 y lo que prueba es el tope POR CUENTA; la capa por IP se prueba en ThrottlePorIpTest.
-        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+        $this->withoutMiddleware(\App\Http\Middleware\ThrottlePasswordReset::class);
 
         Mail::fake();
 
@@ -393,7 +395,7 @@ class CodigoDeCuatroDigitosTest extends TestCase
     {
         // Throttle por IP (mision throttle-recuperar-clave-por-ip): este test hace muchos pedidos desde
         // 127.0.0.1 y lo que prueba es el tope POR CUENTA; la capa por IP se prueba en ThrottlePorIpTest.
-        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+        $this->withoutMiddleware(\App\Http\Middleware\ThrottlePasswordReset::class);
 
         Mail::fake();
 
@@ -432,7 +434,7 @@ class CodigoDeCuatroDigitosTest extends TestCase
     {
         // Throttle por IP (mision throttle-recuperar-clave-por-ip): este test hace muchos pedidos desde
         // 127.0.0.1 y lo que prueba es el tope POR CUENTA; la capa por IP se prueba en ThrottlePorIpTest.
-        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+        $this->withoutMiddleware(\App\Http\Middleware\ThrottlePasswordReset::class);
 
         Mail::fake();
 
@@ -451,7 +453,7 @@ class CodigoDeCuatroDigitosTest extends TestCase
     {
         // Throttle por IP (mision throttle-recuperar-clave-por-ip): este test hace muchos pedidos desde
         // 127.0.0.1 y lo que prueba es el tope POR CUENTA; la capa por IP se prueba en ThrottlePorIpTest.
-        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+        $this->withoutMiddleware(\App\Http\Middleware\ThrottlePasswordReset::class);
 
         Mail::fake();
 
@@ -470,7 +472,7 @@ class CodigoDeCuatroDigitosTest extends TestCase
     {
         // Throttle por IP (mision throttle-recuperar-clave-por-ip): este test hace muchos pedidos desde
         // 127.0.0.1 y lo que prueba es el tope POR CUENTA; la capa por IP se prueba en ThrottlePorIpTest.
-        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+        $this->withoutMiddleware(\App\Http\Middleware\ThrottlePasswordReset::class);
 
         Mail::shouldReceive('to')->andReturnSelf();
         Mail::shouldReceive('send')->times(6)->andThrow(
@@ -552,7 +554,7 @@ class CodigoDeCuatroDigitosTest extends TestCase
     {
         // Throttle por IP (mision throttle-recuperar-clave-por-ip): este test hace muchos pedidos desde
         // 127.0.0.1 y lo que prueba es el tope POR CUENTA; la capa por IP se prueba en ThrottlePorIpTest.
-        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+        $this->withoutMiddleware(\App\Http\Middleware\ThrottlePasswordReset::class);
 
         Mail::fake();
 

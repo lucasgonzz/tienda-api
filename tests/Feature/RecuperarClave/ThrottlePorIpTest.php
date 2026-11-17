@@ -24,7 +24,7 @@ use Tests\TestCase;
  *   - los tres pasos tienen cubos independientes entre sí;
  *   - otra IP no se ve afectada;
  *   - el cuerpo y los headers del 429, y que NO revela si el correo existe;
- *   - pasado el tiempo (el reloj de Carbon mueve el caché de los tests, que es `array`) se libera.
+ *   - pasado el tiempo (el reloj de Carbon mueve el almacenamiento persistente de los tests) se libera.
  *
  * Los pedidos de relleno usan un correo que no existe (no mandan mail) o una clave corta (422 sin tocar
  * nada): lo que cuenta para el throttle es el pedido, no lo que responda el controlador.
@@ -32,6 +32,7 @@ use Tests\TestCase;
 class ThrottlePorIpTest extends TestCase
 {
     use DatabaseTransactions;
+    use \Tests\Concerns\ConCachePersistenteDeRecuperacion;
 
     const ENVIAR = '/password-reset/send-verification-code';
     const VERIFICAR = '/password-reset/check-verification-code';
@@ -49,9 +50,10 @@ class ThrottlePorIpTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->preparar_cache_recuperacion();
 
-        // El RateLimiter usa el caché por defecto (`array` en los tests, ver phpunit.xml): se vacía por las dudas.
-        Cache::flush();
+        // Los límites usan el mismo almacenamiento persistente aislado que el código.
+        Cache::store('password_reset')->flush();
 
         // Reloj congelado: así la hora no corre sola entre pedidos y el test avanza el tiempo a mano.
         Carbon::setTestNow(Carbon::now());
@@ -91,7 +93,7 @@ class ThrottlePorIpTest extends TestCase
         $this->withServerVariables(['REMOTE_ADDR' => $ip]);
     }
 
-    /** Adelanta el reloj (y con él, el caché `array` del RateLimiter). */
+    /** Adelanta el reloj (y con él, el almacenamiento persistente del RateLimiter). */
     private function adelantar_segundos($segundos)
     {
         Carbon::setTestNow(Carbon::now()->addSeconds($segundos));

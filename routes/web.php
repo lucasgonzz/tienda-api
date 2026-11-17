@@ -42,12 +42,12 @@ Route::post('/logout', 'AuthController@logout');
 // minuto y hora, cubo propio por paso). Al pasarse responden 429. Los topes por cuenta siguen en el controlador.
 Route::post('/password-reset/send-verification-code',
 	'PasswordResetController@sendVerificationCode'
-)->middleware('throttle:recuperar-clave-pedir');
+)->middleware(\App\Http\Middleware\ThrottlePasswordReset::class.':recuperar-clave-pedir');
 Route::post('/password-reset/check-verification-code',
 	'PasswordResetController@checkVerificationCode'
-)->middleware('throttle:recuperar-clave-verificar');
+)->middleware(\App\Http\Middleware\ThrottlePasswordReset::class.':recuperar-clave-verificar');
 Route::post('/password-reset/update-password',
 	'PasswordResetController@updatePassword'
-)->middleware('throttle:recuperar-clave-cambiar');
+)->middleware(\App\Http\Middleware\ThrottlePasswordReset::class.':recuperar-clave-cambiar');
 
 Route::post('/payment-notification', 'PaymentController@notification');

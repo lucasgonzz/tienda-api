@@ -35,6 +35,7 @@ use Tests\TestCase;
 class EnvioDelCodigoTest extends TestCase
 {
     use DatabaseTransactions;
+    use \Tests\Concerns\ConCachePersistenteDeRecuperacion;
 
     const RUTA = '/password-reset/send-verification-code';
 
@@ -47,6 +48,7 @@ class EnvioDelCodigoTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->preparar_cache_recuperacion();
 
         $this->comercio = User::create([
             'name'         => 'Comercio Clave Test',

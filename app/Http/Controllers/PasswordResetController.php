@@ -3,12 +3,14 @@
 namespace App\Http\Controllers;
 
 use App\Buyer;
+use App\Exceptions\PasswordResetStorageException;
 use App\Mail\PasswordReset;
+use App\Services\PasswordResetCache;
 use App\User;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
@@ -65,6 +67,12 @@ use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
  */
 class PasswordResetController extends Controller
 {
+    private $almacenamiento;
+
+    private function cache()
+    {
+        return $this->almacenamiento ?? ($this->almacenamiento = app(PasswordResetCache::class));
+    }
 
     /** Lo que ve el comprador cuando el servidor de correo no acepta el envio del codigo. */
     const MENSAJE_ENVIO_FALLIDO = 'No pudimos enviarte el código a ese correo. Revisá la dirección o probá más tarde.';
@@ -122,8 +130,7 @@ class PasswordResetController extends Controller
      * error real queda en el log (warning, con el comercio, el comprador y la excepcion).
      *
      * El codigo que no salio se descarta: el pedido no cuenta para el tope por hora y el codigo que
-     * el comprador ya tenia (si tenia uno) sigue sirviendo, porque el nuevo no se guarda hasta que el
-     * mail salio.
+     * el comprador ya tenia (si tenia uno) se restaura bajo el mismo candado.
      *
      * Pasado el tope de CODIGOS_POR_DIA_MAXIMOS (o el de CODIGOS_POR_HORA_MAXIMOS) NO se genera codigo ni se
      * manda mail ni se toca el codigo pendiente: 422 con `message` (la pantalla —la de hoy y la vieja—
@@ -142,8 +149,19 @@ class PasswordResetController extends Controller
 
         try {
             return $this->con_candado($buyer, function () use ($request, $buyer) {
-                return $this->emitir_codigo($request, $buyer);
+                return DB::transaction(function () use ($request, $buyer) {
+                    // El SMTP puede tardar más que el lease de caché. Esta fila serializa la
+                    // emisión completa con los otros pasos para que un rollback de correo viejo
+                    // jamás borre el código que otra solicitud ya envió (ticket #141).
+                    $cuenta = Buyer::whereKey($buyer->id)->where('user_id', $buyer->user_id)->lockForUpdate()->first();
+                    if (!$cuenta) {
+                        return response()->json(['email_send' => false], 200);
+                    }
+                    return $this->emitir_codigo($request, $cuenta);
+                });
             });
+        } catch (PasswordResetStorageException $e) {
+            return $e->respuesta($request);
         } catch (LockTimeoutException $e) {
             // Otro pedido del mismo comprador esta en curso y no termino a tiempo: se le pide reintentar.
             return response()->json([
@@ -165,11 +183,15 @@ class PasswordResetController extends Controller
     function checkVerificationCode(Request $request) {
         $buyer = $this->comprador_del_pedido($request);
 
-        if (is_null($buyer) || !$this->codigo_valido_con_candado($buyer, $request->input('verification_code'))) {
-            return response()->json(['verified' => false], 200);
-        }
+        try {
+            if (is_null($buyer) || !$this->codigo_valido_con_candado($buyer, $request->input('verification_code'))) {
+                return response()->json(['verified' => false], 200);
+            }
 
-        return response()->json(['verified' => true], 200);
+            return response()->json(['verified' => true], 200);
+        } catch (PasswordResetStorageException $e) {
+            return $e->respuesta($request);
+        }
     }
 
     /**
@@ -204,22 +226,39 @@ class PasswordResetController extends Controller
 
         $buyer = $this->comprador_del_pedido($request);
 
-        if (is_null($buyer) || !$this->codigo_valido_con_candado($buyer, $request->input('verification_code'))) {
+        try {
+            $actualizada = !is_null($buyer) && $this->con_candado($buyer, function () use ($buyer, $request, $contrasena) {
+                // La validación y el consumo comparten el candado: dos solicitudes no pueden
+                // aprobar el mismo código antes de que alguna lo borre (ticket #141).
+                return DB::transaction(function () use ($buyer, $request, $contrasena) {
+                    // Una espera de DB puede exceder el TTL del candado de caché. La fila serializa
+                    // también ese caso: el código se vuelve a leer DESPUÉS de adquirirla.
+                    $cuenta = Buyer::whereKey($buyer->id)->where('user_id', $buyer->user_id)->lockForUpdate()->first();
+                    if (!$cuenta || !$this->codigo_valido($cuenta, $request->input('verification_code'))) {
+                        return false;
+                    }
+                    $cuenta->password = bcrypt($contrasena);
+                    $cuenta->save();
+                    // Si no se confirma el consumo, la transacción no cambia la contraseña.
+                    $this->cache()->forget($this->clave_del_codigo($buyer));
+                    return true;
+                });
+            });
+        } catch (PasswordResetStorageException $e) {
+            return $e->respuesta($request);
+        } catch (LockTimeoutException $e) {
+            $actualizada = false;
+        }
+
+        if (!$actualizada) {
             return response()->json([
                 'password_updated' => false,
                 'message'          => self::MENSAJE_CODIGO_INVALIDO,
             ], 422);
         }
 
-        // Un codigo sirve una sola vez: se borra antes de cambiar nada. `verification_code` (columna del
-        // registro del comprador) NO se toca: ver el docblock de la clase.
-        Cache::forget($this->clave_del_codigo($buyer));
-
-        $buyer->password = bcrypt($contrasena);
-        $buyer->save();
-
         // Deja al comprador logueado, como siempre. Si por algo no entra, la contraseña igual quedo cambiada.
-        Auth::guard('buyer')->attempt(['email' => $request->input('email'), 'user_id' => $request->input('commerce_id'), 'password' => $contrasena], false);
+        Auth::guard('buyer')->attempt(['email' => $buyer->email, 'user_id' => $buyer->user_id, 'password' => $contrasena], false);
 
         return response()->json(['password_updated' => true], 200);
     }
@@ -228,9 +267,8 @@ class PasswordResetController extends Controller
      * Genera, guarda y manda el codigo. Se llama con el candado del comprador tomado.
      *
      * El orden importa: primero se mira el tope (el del dia y despues el de la hora), despues se cuenta el
-     * pedido en las dos ventanas (para que pedidos en paralelo no se cuelen), despues sale el mail, y
-     * recien cuando salio se guarda el codigo. Si el mail falla, se devuelve el pedido a las dos ventanas
-     * y el codigo anterior queda como estaba.
+     * pedido en las dos ventanas y se confirma el código persistido antes del mail. Si falla el correo
+     * o alguna escritura, se restaura el estado anterior bajo el mismo candado.
      *
      * @param  Request  $request
      * @param  \App\Buyer  $buyer
@@ -250,9 +288,17 @@ class PasswordResetController extends Controller
         $code = $this->generar_codigo($request);
         $commerce = User::find($request->input('commerce_id'));
 
-        $this->contar_codigo_emitido($buyer);
+        $anterior = $this->cache()->get($this->clave_del_codigo($buyer));
+        $contadores = [];
+        foreach ($this->ventanas_de_pedidos($buyer) as $ventana) {
+            $contadores[] = [$ventana, $this->pedidos_de_la_ventana($ventana)];
+        }
 
         try {
+            $this->contar_codigo_emitido($buyer);
+            // Persistir ANTES del SMTP: no mandamos un secreto que el proceso siguiente no puede
+            // verificar. Ante rechazo del correo se restaura el pendiente previo bajo el mismo lock.
+            $this->guardar_codigo($buyer, $code);
             Mail::to($buyer)->send(new PasswordReset($code, $commerce));
         } catch (TransportExceptionInterface $e) {
             Log::warning('Recuperar clave: el servidor de correo rechazo el envio del codigo', [
@@ -262,7 +308,7 @@ class PasswordResetController extends Controller
                 'mensaje'     => $e->getMessage(),
             ]);
 
-            $this->devolver_codigo_emitido($buyer);
+            $this->restaurar_emision($buyer, $anterior, $contadores);
 
             return response()->json([
                 'email_send' => false,
@@ -271,12 +317,10 @@ class PasswordResetController extends Controller
         } catch (\Throwable $e) {
             // Cualquier otro error al armar o mandar el mail (una vista rota, por ejemplo) tampoco
             // le gasta al comprador un codigo de la hora ni del dia: se devuelve y el error sigue su camino.
-            $this->devolver_codigo_emitido($buyer);
+            $this->restaurar_emision($buyer, $anterior, $contadores);
 
             throw $e;
         }
-
-        $this->guardar_codigo($buyer, $code);
 
         return response()->json(['email_send' => true], 200);
     }
@@ -318,7 +362,7 @@ class PasswordResetController extends Controller
             return null;
         }
 
-        return Buyer::where('email', $email)
+        return Buyer::where('email', trim($email))
                     ->where('user_id', $commerce_id)
                     ->first();
     }
@@ -335,8 +379,8 @@ class PasswordResetController extends Controller
      */
     private function con_candado(Buyer $buyer, callable $accion)
     {
-        return Cache::lock($this->clave_del_codigo($buyer).':candado', self::SEGUNDOS_DEL_CANDADO)
-                    ->block(self::SEGUNDOS_DE_ESPERA_DEL_CANDADO, $accion);
+        return $this->cache()->con_candado($this->clave_del_codigo($buyer).':candado', self::SEGUNDOS_DEL_CANDADO,
+            self::SEGUNDOS_DE_ESPERA_DEL_CANDADO, $accion);
     }
 
     /**
@@ -350,7 +394,10 @@ class PasswordResetController extends Controller
     {
         try {
             return $this->con_candado($buyer, function () use ($buyer, $codigo) {
-                return $this->codigo_valido($buyer, $codigo);
+                return DB::transaction(function () use ($buyer, $codigo) {
+                    $cuenta = Buyer::whereKey($buyer->id)->where('user_id', $buyer->user_id)->lockForUpdate()->first();
+                    return $cuenta && $this->codigo_valido($cuenta, $codigo);
+                });
             });
         } catch (LockTimeoutException $e) {
             return false;
@@ -443,7 +490,7 @@ class PasswordResetController extends Controller
      */
     private function pedidos_de_la_ventana(array $ventana)
     {
-        $pedidos = Cache::get($ventana['clave']);
+        $pedidos = $this->cache()->get($ventana['clave']);
 
         if (!is_array($pedidos) || !isset($pedidos['desde'], $pedidos['cantidad'])) {
             return null;
@@ -501,28 +548,6 @@ class PasswordResetController extends Controller
     }
 
     /**
-     * Le saca a las dos ventanas un pedido que no llego a salir (el servidor de correo lo rechazo): un
-     * problema del correo no tiene que gastarle al comprador sus codigos de la hora ni del dia.
-     *
-     * @param  \App\Buyer  $buyer
-     * @return void
-     */
-    private function devolver_codigo_emitido(Buyer $buyer)
-    {
-        foreach ($this->ventanas_de_pedidos($buyer) as $ventana) {
-            $pedidos = $this->pedidos_de_la_ventana($ventana);
-
-            if (is_null($pedidos)) {
-                continue;
-            }
-
-            $pedidos['cantidad'] = max(0, (int) $pedidos['cantidad'] - 1);
-
-            $this->guardar_pedidos($ventana, $pedidos);
-        }
-    }
-
-    /**
      * Escribe el contador de una ventana con el tiempo que le queda (no con una ventana entera nueva).
      *
      * @param  array  $ventana  Una de `ventanas_de_pedidos()`.
@@ -533,7 +558,7 @@ class PasswordResetController extends Controller
     {
         $segundos_que_le_quedan = (int) $pedidos['desde'] + $ventana['minutos'] * 60 - now()->getTimestamp();
 
-        Cache::put($ventana['clave'], $pedidos, max(1, $segundos_que_le_quedan));
+        $this->cache()->put($ventana['clave'], $pedidos, max(1, $segundos_que_le_quedan));
     }
     /**
      * Guarda el codigo pendiente: su huella, los intentos fallidos y cuando vence. El vencimiento va
@@ -548,11 +573,30 @@ class PasswordResetController extends Controller
     {
         $segundos = self::MINUTOS_DE_VIDA_DEL_CODIGO * 60;
 
-        Cache::put($this->clave_del_codigo($buyer), [
+        $this->cache()->put($this->clave_del_codigo($buyer), [
             'huella'   => $this->huella_del_codigo($buyer, $codigo),
             'intentos' => 0,
             'vence'    => now()->getTimestamp() + $segundos,
         ], $segundos);
+    }
+
+    private function restaurar_emision(Buyer $buyer, $anterior, array $contadores)
+    {
+        // También devuelve una escritura parcial de contadores: si falla la segunda ventana,
+        // no debe quedar consumida la primera aunque todavía no haya salido ningún correo.
+        foreach ($contadores as [$ventana, $pedidos]) {
+            if (is_null($pedidos)) {
+                $this->cache()->forget($ventana['clave']);
+            } else {
+                $this->guardar_pedidos($ventana, $pedidos);
+            }
+        }
+        $segundos = is_array($anterior) ? (int) ($anterior['vence'] ?? 0) - now()->getTimestamp() : 0;
+        if ($segundos > 0) {
+            $this->cache()->put($this->clave_del_codigo($buyer), $anterior, $segundos);
+        } else {
+            $this->cache()->forget($this->clave_del_codigo($buyer));
+        }
     }
 
     /**
@@ -569,7 +613,7 @@ class PasswordResetController extends Controller
     private function codigo_valido(Buyer $buyer, $codigo)
     {
         $clave = $this->clave_del_codigo($buyer);
-        $pendiente = Cache::get($clave);
+        $pendiente = $this->cache()->get($clave);
 
         if (!is_array($pendiente) || !isset($pendiente['huella'], $pendiente['intentos'], $pendiente['vence'])) {
             return false;
@@ -579,7 +623,7 @@ class PasswordResetController extends Controller
         $ahora = now()->getTimestamp();
 
         if ((int) $pendiente['vence'] <= $ahora) {
-            Cache::forget($clave);
+            $this->cache()->forget($clave);
 
             return false;
         }
@@ -593,9 +637,9 @@ class PasswordResetController extends Controller
         $pendiente['intentos'] = (int) $pendiente['intentos'] + 1;
 
         if ($pendiente['intentos'] >= self::INTENTOS_FALLIDOS_MAXIMOS) {
-            Cache::forget($clave);
+            $this->cache()->forget($clave);
         } else {
-            Cache::put($clave, $pendiente, (int) $pendiente['vence'] - $ahora);
+            $this->cache()->put($clave, $pendiente, (int) $pendiente['vence'] - $ahora);
         }
 
         return false;

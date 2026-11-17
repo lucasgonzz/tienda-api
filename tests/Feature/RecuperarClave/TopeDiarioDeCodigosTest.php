@@ -7,7 +7,7 @@ use App\Http\Controllers\PasswordResetController;
 use App\Mail\PasswordReset;
 use App\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
-use Illuminate\Routing\Middleware\ThrottleRequests;
+use App\Http\Middleware\ThrottlePasswordReset as ThrottleRequests;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
@@ -38,13 +38,14 @@ use Tests\TestCase;
  *   (j) el tope vale con y sin `longitud_del_codigo`, y cuentan juntos;
  *   (k) es por comercio + comprador: el mismo correo en otro comercio no se ve afectado.
  *
- * El caché de los tests es `array` y `Carbon::setTestNow` lo mueve: el reloj está congelado en `setUp`
+ * El almacenamiento usa archivos reales y `Carbon::setTestNow` mueve su reloj: el reloj está congelado en `setUp`
  * y cada test lo adelanta a mano. Para emitir 10 códigos sin chocar con el tope de la hora (5), los
  * tests los reparten en dos tandas de 5 separadas por más de una hora.
  */
 class TopeDiarioDeCodigosTest extends TestCase
 {
     use DatabaseTransactions;
+    use \Tests\Concerns\ConCachePersistenteDeRecuperacion;
 
     const ENVIAR = '/password-reset/send-verification-code';
     const VERIFICAR = '/password-reset/check-verification-code';
@@ -65,12 +66,13 @@ class TopeDiarioDeCodigosTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->preparar_cache_recuperacion();
 
         // Throttle por IP (mision throttle-recuperar-clave-por-ip): estos tests hacen muchos pedidos desde
         // 127.0.0.1 y lo que prueban es el tope POR CUENTA; la capa por IP se prueba en ThrottlePorIpTest.
         $this->withoutMiddleware(ThrottleRequests::class);
 
-        Cache::flush();
+        Cache::store('password_reset')->flush();
 
         // Reloj congelado: el tiempo solo corre cuando el test lo adelanta.
         $this->inicio = Carbon::now();
@@ -341,7 +343,7 @@ class TopeDiarioDeCodigosTest extends TestCase
         $this->pedir_codigo();
 
         // ... y ese pedido NO movió el arranque de la ventana: sigue siendo el del primer código.
-        $pedidos = Cache::get('tienda_password_reset_pedidos_dia:'.$this->comprador->user_id.':'.$this->comprador->id);
+        $pedidos = Cache::store('password_reset')->get('tienda_password_reset_pedidos_dia:'.$this->comprador->user_id.':'.$this->comprador->id);
         $this->assertSame($this->inicio->getTimestamp(), (int) $pedidos['desde'], 'la ventana arranca con el primer pedido');
         $this->assertSame(10, (int) $pedidos['cantidad']);
 
@@ -353,7 +355,7 @@ class TopeDiarioDeCodigosTest extends TestCase
         Carbon::setTestNow($this->inicio->copy()->addMinutes(1441));
         $this->pedir_codigo();
 
-        $pedidos = Cache::get('tienda_password_reset_pedidos_dia:'.$this->comprador->user_id.':'.$this->comprador->id);
+        $pedidos = Cache::store('password_reset')->get('tienda_password_reset_pedidos_dia:'.$this->comprador->user_id.':'.$this->comprador->id);
         $this->assertSame(1, (int) $pedidos['cantidad'], 'ventana nueva, contador en 1');
     }
 
@@ -378,8 +380,8 @@ class TopeDiarioDeCodigosTest extends TestCase
         }
 
         // Los dos contadores quedaron en cero.
-        $dia = Cache::get('tienda_password_reset_pedidos_dia:'.$this->comprador->user_id.':'.$this->comprador->id);
-        $hora = Cache::get('tienda_password_reset_pedidos:'.$this->comprador->user_id.':'.$this->comprador->id);
+        $dia = Cache::store('password_reset')->get('tienda_password_reset_pedidos_dia:'.$this->comprador->user_id.':'.$this->comprador->id);
+        $hora = Cache::store('password_reset')->get('tienda_password_reset_pedidos:'.$this->comprador->user_id.':'.$this->comprador->id);
         $this->assertSame(0, (int) ($dia['cantidad'] ?? 0), 'el día no se gastó');
         $this->assertSame(0, (int) ($hora['cantidad'] ?? 0), 'la hora no se gastó');
 
@@ -401,8 +403,8 @@ class TopeDiarioDeCodigosTest extends TestCase
         Mail::shouldReceive('send')->once()->andThrow(new TransportException('sin conexión'));
         $this->intentar_pedir()->assertStatus(422)->assertJson(['message' => PasswordResetController::MENSAJE_ENVIO_FALLIDO]);
 
-        $dia = Cache::get('tienda_password_reset_pedidos_dia:'.$this->comprador->user_id.':'.$this->comprador->id);
-        $hora = Cache::get('tienda_password_reset_pedidos:'.$this->comprador->user_id.':'.$this->comprador->id);
+        $dia = Cache::store('password_reset')->get('tienda_password_reset_pedidos_dia:'.$this->comprador->user_id.':'.$this->comprador->id);
+        $hora = Cache::store('password_reset')->get('tienda_password_reset_pedidos:'.$this->comprador->user_id.':'.$this->comprador->id);
         $this->assertSame(3, (int) $dia['cantidad']);
         $this->assertSame(3, (int) $hora['cantidad']);
     }
