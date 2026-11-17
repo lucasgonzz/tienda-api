@@ -193,6 +193,30 @@ class EnvioDelCodigoTest extends TestCase
         });
     }
 
+    /** El SMTP puede rechazar un remitente distinto de la casilla configurada (ticket 141). */
+    public function test_el_codigo_sale_con_el_remitente_configurado_al_comprador_correcto()
+    {
+        config([
+            'mail.default'      => 'array',
+            'mail.from.address' => 'sistema@correo-de-prueba.local',
+            'mail.from.name'    => 'Correo de la tienda',
+        ]);
+        Mail::purge('array');
+
+        $this->pedirCodigo($this->comprador->email)
+            ->assertStatus(200)
+            ->assertExactJson(['email_send' => true]);
+
+        $mensajes = Mail::mailer('array')->getSymfonyTransport()->messages();
+        $this->assertCount(1, $mensajes);
+        $mensaje = $mensajes->first()->getOriginalMessage();
+        $this->assertCount(1, $mensaje->getFrom());
+        $this->assertSame('sistema@correo-de-prueba.local', $mensaje->getFrom()[0]->getAddress());
+        $this->assertSame('Correo de la tienda', $mensaje->getFrom()[0]->getName());
+        $this->assertCount(1, $mensaje->getTo());
+        $this->assertSame($this->comprador->email, $mensaje->getTo()[0]->getAddress());
+    }
+
     /** Un email que no es de un comprador de la tienda tampoco cambia: 200 y `email_send` false, sin mandar nada. */
     public function test_un_email_desconocido_responde_igual_que_siempre()
     {

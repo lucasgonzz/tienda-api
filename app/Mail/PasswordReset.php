@@ -63,7 +63,6 @@ class PasswordReset extends Mailable
         $accent_color = $this->color_de_acento_seguro(OrderMailDataHelper::accentColor($configuration));
 
         return $this->subject('Tu código para recuperar la contraseña - '.$company_name)
-                    ->from('contacto@comerciocity.com', 'comerciocity.com')
                     ->view('emails.password-reset', [
                         'code'         => $this->code,
                         'commerce'     => $this->commerce,
