@@ -30,11 +30,19 @@ class ImagenParaMailLocalTest extends TestCase
     }
     /**
      * Borra el árbol de prueba y su raíz.
+     *
+     * Un enlace simbólico se borra como enlace y NUNCA se le hace chmod: chmod sigue el enlace, y uno de los casos
+     * apunta al directorio public (otro, al sandbox entero), que quedaba sin permiso de traversal y hacía fallar el
+     * unlink de los hermanos con Permission denied. No simplificar a un chmod previo sobre todo el árbol.
      */
     protected function limpiar_arbol($raiz)
     {
         $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($raiz, \FilesystemIterator::SKIP_DOTS), \RecursiveIteratorIterator::CHILD_FIRST);
-        foreach ($it as $p) { if ($p->isDir() && !$p->isLink()) rmdir($p->getPathname()); else { @chmod($p->getPathname(),0600); unlink($p->getPathname()); } }
+        foreach ($it as $p) {
+            if ($p->isLink()) unlink($p->getPathname());
+            elseif ($p->isDir()) rmdir($p->getPathname());
+            else { @chmod($p->getPathname(),0600); unlink($p->getPathname()); }
+        }
         rmdir($raiz);
     }
     protected function prepare($source)
