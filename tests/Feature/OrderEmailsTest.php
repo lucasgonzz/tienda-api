@@ -14,6 +14,7 @@ use Illuminate\Mail\Events\MessageSending;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Symfony\Component\Mailer\Exception\UnexpectedResponseException;
+use Tests\Fakes\EntornoSinCredenciales;
 use Tests\TestCase;
 
 /** DB sintética compartida con ERP; no DatabaseTransactions: hay que observar commits reales. */
@@ -168,6 +169,9 @@ class OrderEmailsTest extends OrderMailFixture
         $this->assertTrue(function_exists('proc_open'), 'Se requiere runner con procesos reales');
         // Dos intérpretes PHP, dos conexiones reales; barrera stdin antes del claim.
         $processes = [];
+        // Entorno armado a mano: el del proceso de prueba más las credenciales de mentira, para que el hijo
+        // no lea las reales del .env.testing (proc_open descarta los valores vacíos de un entorno propio).
+        $child_env = array_merge(getenv(), EntornoSinCredenciales::para_procesos_hijos());
         $code = 'require "vendor/autoload.php"; $app=require "bootstrap/app.php";'
             .'$app->make(Illuminate\\Contracts\\Console\\Kernel::class)->bootstrap();'
             .'fread(STDIN,1); $order=App\\Order::findOrFail('.(int) $order->id.');'
@@ -177,7 +181,7 @@ class OrderEmailsTest extends OrderMailFixture
         try {
             for ($i = 0; $i < 2; $i++) {
                 $process = proc_open([PHP_BINARY, '-r', $code], [0 => ['pipe', 'r'],
-                    1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, base_path());
+                    1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, base_path(), $child_env);
                 $this->assertIsResource($process);
                 $processes[] = [$process, $pipes];
             }
