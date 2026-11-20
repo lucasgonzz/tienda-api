@@ -25,10 +25,17 @@ class ImagenParaMailLocalTest extends TestCase
     {
         try {
             config(['filesystems.disks.public'=>$this->original]);
-            $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($this->sandbox, \FilesystemIterator::SKIP_DOTS), \RecursiveIteratorIterator::CHILD_FIRST);
-            foreach ($it as $p) { if ($p->isDir() && !$p->isLink()) rmdir($p->getPathname()); else { @chmod($p->getPathname(),0600); unlink($p->getPathname()); } }
-            rmdir($this->sandbox);
+            $this->limpiar_arbol($this->sandbox);
         } finally { parent::tearDown(); }
+    }
+    /**
+     * Borra el árbol de prueba y su raíz.
+     */
+    protected function limpiar_arbol($raiz)
+    {
+        $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($raiz, \FilesystemIterator::SKIP_DOTS), \RecursiveIteratorIterator::CHILD_FIRST);
+        foreach ($it as $p) { if ($p->isDir() && !$p->isLink()) rmdir($p->getPathname()); else { @chmod($p->getPathname(),0600); unlink($p->getPathname()); } }
+        rmdir($raiz);
     }
     protected function prepare($source)
     {
@@ -190,6 +197,34 @@ class ImagenParaMailLocalTest extends TestCase
         }
     }
 
+    /**
+     * El cleanup no puede seguir los enlaces: el destino (un archivo y un directorio que están fuera del árbol borrado)
+     * conserva sus permisos y sigue siendo recorrible, y el árbol desaparece igual.
+     */
+    public function test_cleanup_no_sigue_symlinks_ni_pierde_traversal_de_los_destinos()
+    {
+        $caso = $this->sandbox.'/cleanup-caso';
+        mkdir($caso.'/destino_dir', 0755, true);
+        mkdir($caso.'/arbol', 0755);
+        file_put_contents($caso.'/destino.png', 'x');
+        chmod($caso.'/destino.png', 0644);
+        file_put_contents($caso.'/destino_dir/dentro.txt', 'x');
+        symlink($caso.'/destino.png', $caso.'/arbol/enlace_archivo');
+        symlink($caso.'/destino_dir', $caso.'/arbol/enlace_directorio');
+        file_put_contents($caso.'/arbol/propio.txt', 'x');
+        try {
+            $this->limpiar_arbol($caso.'/arbol');
+            clearstatcache();
+            $this->assertDirectoryDoesNotExist($caso.'/arbol');
+            $this->assertSame('0644', substr(sprintf('%o', fileperms($caso.'/destino.png')), -4), 'El cleanup cambió los permisos del archivo al que apuntaba un enlace');
+            $this->assertSame('0755', substr(sprintf('%o', fileperms($caso.'/destino_dir')), -4), 'El cleanup cambió los permisos del directorio al que apuntaba un enlace');
+            $this->assertFileExists($caso.'/destino_dir/dentro.txt', 'El directorio destino dejó de ser recorrible');
+        } finally {
+            // Si el cleanup rompió los destinos, se restauran para no dejar basura sin poder borrar.
+            @chmod($caso.'/destino_dir', 0755);
+            @chmod($caso.'/destino.png', 0644);
+        }
+    }
     public function test_symlinks_archivos_y_directorios_no_se_leen()
     {
         foreach (['internal'=>'public/good.jpg','external'=>'outside.png','dir'=>'public/sub','externaldir'=>'.','broken'=>'missing','loop'=>'public/loop'] as $name=>$target) {
