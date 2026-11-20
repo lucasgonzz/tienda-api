@@ -15,7 +15,10 @@
 				<!-- Logo -->
 				<tr>
 					<td align="center" style="padding:32px 32px 8px 32px;">
-						@if (!is_null($logo_url))
+						@if (isset($logo_image) && isset($message))
+							<img src="{{ $message->embedData($logo_image['bytes'], $logo_image['name'], $logo_image['mime']) }}" alt="{{ $company_name }}" style="max-height:52px; max-width:220px; display:block; border:0;">
+						@elseif (!array_key_exists('logo_image', get_defined_vars()) && !empty($logo_url))
+							{{-- Compatibilidad del mail de recuperación, fuera del contrato CID de pedidos. --}}
 							<img src="{{ $logo_url }}" alt="{{ $company_name }}" style="max-height:52px; max-width:220px; display:block; border:0;">
 						@else
 							<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; font-size:20px; font-weight:600; color:#111827;">{{ $company_name }}</div>

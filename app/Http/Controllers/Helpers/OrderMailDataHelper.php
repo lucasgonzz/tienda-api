@@ -23,14 +23,16 @@ class OrderMailDataHelper
         $user = $order->user;
         $configuration = OnlineConfiguration::where('user_id', $order->user_id)->first();
 
+        $palette = ColorDeMailHelper::palette($configuration->primary_color ?? null);
         return [
             'order'         => $order,
             'user'          => $user,
-            'company_name'  => is_null($user) ? 'La tienda' : $user->company_name,
-            'logo_url'      => Self::logoUrl($user, $configuration),
-            'accent_color'  => Self::accentColor($configuration),
-            'store_url'     => (!is_null($user) && !empty($user->online)) ? $user->online : null,
-            'erp_orders_url'=> (!is_null($user) && !empty($user->default_version)) ? $user->default_version.'/online/pedidos' : null,
+            'company_name'  => empty($user->company_name) ? 'La tienda' : $user->company_name,
+            'logo_image'    => Self::logoImage($user, $configuration),
+            'accent_color'  => $palette['background'],
+            'cta_text_color'=> $palette['foreground'],
+            'store_url'     => ImagenParaMailHelper::publicUrl($user->online ?? null),
+            'erp_orders_url'=> ImagenParaMailHelper::publicUrl(!empty($user->default_version) ? rtrim($user->default_version, '/').'/online/pedidos' : null),
             'buyer_name'    => Self::buyerName($order),
             'buyer_email'   => (!is_null($order->buyer) && !empty($order->buyer->email)) ? $order->buyer->email : null,
             'buyer_phone'   => (!is_null($order->buyer) && !empty($order->buyer->phone)) ? $order->buyer->phone : null,
@@ -58,6 +60,20 @@ class OrderMailDataHelper
             return $user->image_url;
         }
 
+        return null;
+    }
+
+    /** Imagen acotada exclusiva de los pedidos; conserva API de recuperación de clave. */
+    static function logoImage($user, $configuration) {
+        $origin = config('app.url');
+        $hosts = (array) config('mail.image_allowed_hosts', []);
+        foreach ([$origin, config('filesystems.disks.public.url'), config('filesystems.disks.s3.url')] as $url) {
+            if (ImagenParaMailHelper::publicUrl($url)) $hosts[] = parse_url($url, PHP_URL_HOST);
+        }
+        foreach ([$configuration->logo_url ?? null, $user->image_url ?? null] as $source) {
+            $image = app(ImagenParaMailHelper::class)->prepare($source, $origin, $hosts);
+            if ($image) return $image;
+        }
         return null;
     }
 
