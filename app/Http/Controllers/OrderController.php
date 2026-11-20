@@ -433,12 +433,22 @@ class OrderController extends Controller
             // problema con el correo puede devolver un error al comprador y dejarlo sin saber si su
             // compra entro (bug real: rompia el checkout en tienda-spa).
             try {
-                SendOrderEmails::dispatchAfterResponse($order->id);
-            } catch (\Exception $e) {
-                Log::error('OrderController@store: fallo el despacho de los mails, el pedido igual se creo bien', [
-                    'order_id' => $order->id,
-                    'error'    => $e->getMessage(),
-                ]);
+                // afterResponse solo no alcanza: la reserva puede tener una transacción externa.
+                // Registrar el callback recién al commit evita mails de pedidos revertidos.
+                $dispatchMail = static function () use ($order) {
+                    try {
+                        SendOrderEmails::dispatchAfterResponse($order->id);
+                    } catch (\Throwable $ignored) {
+                        // El pedido ya confirmado no depende del subsistema de correo.
+                    }
+                };
+                if (\Illuminate\Support\Facades\DB::transactionLevel() > 0) {
+                    \Illuminate\Support\Facades\DB::afterCommit($dispatchMail);
+                } else {
+                    $dispatchMail();
+                }
+            } catch (\Throwable $ignored) {
+                // Error auxiliar: no modificar el resultado del pedido persistido.
             }
 
             // Aviso por broadcast al sistema del comercio (empresa-spa) de que entro un pedido
