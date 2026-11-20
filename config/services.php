@@ -14,6 +14,16 @@ return [
     |
     */
 
+    // Desactivado sin claves por defecto. Activado incompleto bloquea pedidos invitados.
+    'turnstile' => [
+        'enabled' => env('TURNSTILE_ENABLED',
+            env('TURNSTILE_SITE_KEY', '') !== '' || env('TURNSTILE_SECRET_KEY', '') !== '' ? null : false),
+        'site_key' => env('TURNSTILE_SITE_KEY', ''),
+        'secret_key' => env('TURNSTILE_SECRET_KEY', ''),
+        'hostname' => env('TURNSTILE_HOSTNAME', ''),
+        'action' => env('TURNSTILE_ACTION', 'checkout'),
+    ],
+
     'mailgun' => [
         'domain' => env('MAILGUN_DOMAIN'),
         'secret' => env('MAILGUN_SECRET'),

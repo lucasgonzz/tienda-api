@@ -174,6 +174,9 @@ class OrderController extends Controller
                 return response()->json(['order_id' => $cart->order_id], 201);
             }
 
+            // Antes de cualquier mutación: incluye fichas que /buyer dejó logueadas.
+            \App\Http\Controllers\Helpers\CaptchaHelper::checkOrder($request);
+
             $buyer_id = $this->resolverBuyerIdDelPedido($request);
 
             // orders.buyer_id es NOT NULL: sin identidad el insert reventaba en 500. Se corta

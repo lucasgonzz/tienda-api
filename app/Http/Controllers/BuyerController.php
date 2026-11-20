@@ -16,6 +16,12 @@ use Illuminate\Support\Facades\Validator;
 
 class BuyerController extends Controller
 {
+    /** Configuración pública del checkout, sin secreto ni verificación anticipada. */
+    function checkoutCaptcha() {
+        return response()->json(['captcha' => \App\Http\Controllers\Helpers\CaptchaHelper::publicConfiguration()])
+            ->header('Cache-Control', 'no-store');
+    }
+
 	function getBuyer() {
 		if (Auth::guard('buyer')->check()) {
 			$buyer = Buyer::where('id', $this->buyerId())
