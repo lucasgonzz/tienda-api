@@ -30,7 +30,7 @@ class CheckoutCaptchaTest extends TestCase
     {
         parent::setUp();
         $this->assertSame('mysql', DB::connection()->getDriverName());
-        $this->assertSame('empresa_testing_tienda_u13_20261120', DB::connection()->getDatabaseName());
+        $this->exigir_base_sintetica_propia();
         $this->owner = User::create(['name' => 'CAPTCHA sintético', 'company_name' => 'Sintético',
             'email' => uniqid('captcha-').'@example.test', 'password' => bcrypt('synthetic'), 'status' => 'commerce']);
         $this->buyer = Buyer::create(['name' => 'Invitado', 'email' => 'captcha@example.test', 'user_id' => $this->owner->id]);
@@ -42,6 +42,22 @@ class CheckoutCaptchaTest extends TestCase
         $this->tokenPrefix = bin2hex(random_bytes(16));
         config(['services.turnstile' => ['enabled' => true, 'site_key' => 'synthetic-public',
             'secret_key' => 'synthetic-secret', 'hostname' => 'shop.example.test', 'action' => 'checkout']]);
+    }
+
+    /**
+     * Resguardo de base: este test crea owner, buyer y carritos reales, así que sólo corre contra una base de testing
+     * propia y local (`tienda_testing_*` / `empresa_testing_*`, p. ej. la `tienda_testing_sNN` que arma cc-db), nunca
+     * contra una base con otro nombre ni contra un servidor remoto. No se ata a un nombre histórico: cada misión
+     * trabaja en su propia base y fijar un nombre hacía fallar los 24 casos en setUp antes de llegar al comportamiento.
+     */
+    private function exigir_base_sintetica_propia()
+    {
+        $config = DB::connection()->getConfig();
+        $this->assertMatchesRegularExpression('/^(tienda|empresa)_testing_[a-z0-9_]+$/', (string) DB::connection()->getDatabaseName(),
+            'CAPTCHA sólo corre contra una base de testing sintética propia');
+        $host = isset($config['host']) ? $config['host'] : '';
+        $this->assertTrue(in_array($host, ['127.0.0.1', 'localhost', '::1', ''], true) || !empty($config['unix_socket']),
+            'CAPTCHA sólo corre contra una base local');
     }
 
     private function newCart()
