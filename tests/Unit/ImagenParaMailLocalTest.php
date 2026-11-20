@@ -132,6 +132,64 @@ class ImagenParaMailLocalTest extends TestCase
         $this->assertSame(['https://example.com/storage-other/good.jpg', 'example.com', '8.8.8.8'], $spy->remote);
     }
 
+    public static function urls_publicas_ambiguas(): array
+    {
+        return [
+            'doble barra absoluta' => ['https://example.com//storage/good.jpg'],
+            'namespace codificado absoluto' => ['https://example.com/%73torage/good.jpg'],
+            'namespace codificado relativo' => ['/%73torage/good.jpg'],
+            'namespace doble codificacion' => ['https://example.com/%2573torage/good.jpg'],
+            'barra inicial codificada' => ['https://example.com/%2fstorage/good.jpg'],
+            'separador codificado' => ['https://example.com/storage%2fgood.jpg'],
+            'triple barra' => ['https://example.com///storage/good.jpg'],
+            'doble barra con query' => ['https://example.com//storage/good.jpg?q=1'],
+            'namespace codificado con fragmento' => ['https://example.com/%73torage/good.jpg#x'],
+            'base exacta doble barra' => ['https://example.com//storage'],
+            'base exacta codificada' => ['https://example.com/%73torage'],
+            'barra interior duplicada' => ['https://example.com/storage//good.jpg'],
+        ];
+    }
+
+    /** @dataProvider urls_publicas_ambiguas */
+    public function test_namespace_publico_ambiguo_no_consulta_mapa_ni_descarga($url)
+    {
+        config(['mail.image_public_addresses' => ['example.com' => ['8.8.8.8']]]);
+        $spy = new class extends Imagen {
+            public $addressCalls = 0;
+            public $downloadCalls = 0;
+            public $remote = [];
+            protected function addresses($host)
+            {
+                $this->addressCalls++;
+                return parent::addresses($host);
+            }
+            protected function download($url, $host, $ip)
+            {
+                $this->downloadCalls++;
+                $this->remote = [$url, $host, $ip];
+                return base64_decode(ImagenParaMailHelperTest::PNG);
+            }
+        };
+        // Hermano nativo disponible; los aliases no se reparan para leer ese archivo.
+        $native = $spy->prepare('/storage/good.jpg', 'https://example.com', ['example.com']);
+        $this->assertNotNull($native);
+        $this->assertSame('image/png', getimagesizefromstring($native['bytes'])['mime']);
+        $this->assertSame(0, $spy->addressCalls);
+        $this->assertSame(0, $spy->downloadCalls);
+        $this->assertNull($spy->prepare($url, 'https://example.com', ['example.com']));
+        $this->assertSame(0, $spy->addressCalls);
+        $this->assertSame(0, $spy->downloadCalls);
+        // Fronteras hermanas genuinas conservan URL, host e IP exactos del remoto.
+        foreach (['/storage-other/good.jpg', '/storages/good.jpg', '/other/storage/good.jpg'] as $i => $path) {
+            $remote = $spy->prepare('https://example.com'.$path, 'https://example.com', ['example.com']);
+            $this->assertNotNull($remote);
+            $this->assertSame('image/png', getimagesizefromstring($remote['bytes'])['mime']);
+            $this->assertSame($i + 1, $spy->addressCalls);
+            $this->assertSame($i + 1, $spy->downloadCalls);
+            $this->assertSame(['https://example.com'.$path, 'example.com', '8.8.8.8'], $spy->remote);
+        }
+    }
+
     public function test_symlinks_archivos_y_directorios_no_se_leen()
     {
         foreach (['internal'=>'public/good.jpg','external'=>'outside.png','dir'=>'public/sub','externaldir'=>'.','broken'=>'missing','loop'=>'public/loop'] as $name=>$target) {

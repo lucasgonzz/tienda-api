@@ -86,7 +86,15 @@ class ImagenParaMailHelper
         $basePath = $b['path'] ?? '';
         $prefix = rtrim($basePath, '/');
         $path = $u['path'] ?? '';
-        if ($path !== $prefix && substr($path, 0, strlen($prefix) + 1) !== $prefix.'/') return null;
+        if ($path !== $prefix && substr($path, 0, strlen($prefix) + 1) !== $prefix.'/') {
+            // Sólo clasificar para rechazo: nunca usar el alias reparado para leer disco.
+            $candidate = $this->namespacePath($path);
+            $namespace = rtrim($this->namespacePath($prefix), '/');
+            if ($candidate === $namespace || substr($candidate, 0, strlen($namespace) + 1) === $namespace.'/') {
+                $local = true;
+            }
+            return null;
+        }
         $local = true;
         if ($path === $prefix) return null; // Namespace local sin archivo: nunca descargar por HTTP.
         if (($disk['driver'] ?? null) !== 'local' || strpos($basePath, '//') !== false || isset($b['query']) || isset($b['fragment'])
@@ -124,6 +132,16 @@ class ImagenParaMailHelper
                 || $after['mtime'] !== $stat['mtime'] || $this->inspectLocal($root, $relative) !== $file) return null;
             return $bytes;
         } finally { fclose($handle); }
+    }
+
+    /** Colapsa representaciones equivalentes únicamente para cerrar el escape a HTTP. */
+    protected function namespacePath($path)
+    {
+        do {
+            $previous = $path;
+            $path = rawurldecode($path);
+        } while ($path !== $previous);
+        return preg_replace('~/+~', '/', $path);
     }
 
     protected function relativePath($raw)
