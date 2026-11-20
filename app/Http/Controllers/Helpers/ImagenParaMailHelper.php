@@ -12,6 +12,7 @@ class ImagenParaMailHelper
     {
         if (!is_string($value) || $value === '' || preg_match('/[\x00-\x20\x7f\\\\]/', $value)) return null;
         if (substr($value, 0, 1) === '/' && substr($value, 0, 2) !== '//' && $origin) {
+            if (!self::publicUrl($origin)) return null;
             $base = parse_url($origin);
             if (!isset($base['scheme'], $base['host'])) return null;
             $value = $base['scheme'].'://'.$base['host'].$value;
@@ -52,11 +53,16 @@ class ImagenParaMailHelper
 
     public function prepare($source, $origin = null, array $allowedHosts = [])
     {
+        if (!is_string($source) || strlen($source) > 4096) return null;
         $url = self::publicUrl($source, $origin);
-        if (!$url || !function_exists('curl_init') || !function_exists('imagecreatefromstring')) return null;
+        if (!$url || !function_exists('imagecreatefromstring')) return null;
         $host = strtolower(parse_url($url, PHP_URL_HOST));
         if (!in_array($host, array_map('strtolower', $allowedHosts), true)) return null;
         try {
+            $local = false;
+            $bytes = $this->localBytes($url, $local);
+            if ($local) return $this->fromBytes($bytes);
+            if (!function_exists('curl_init')) return null;
             $ips = $this->addresses($host);
             if (!$ips) return null;
             foreach ($ips as $ip) if (!self::publicIp($ip)) return null;
@@ -64,6 +70,85 @@ class ImagenParaMailHelper
         } catch (\Throwable $e) {
             return null; // No registrar URL, datos ni errores de transporte.
         }
+    }
+
+    /** Lee únicamente el namespace público configurado; no transforma fallos locales en HTTP. */
+    protected function localBytes($url, &$local)
+    {
+        $disk = config('filesystems.disks.public');
+        if (!is_array($disk)) return null;
+        $base = $disk['url'] ?? null;
+        if (!is_string($base) || strlen($base) > 4096 || !self::publicUrl($base)) return null;
+        $b = parse_url($base);
+        $u = parse_url($url);
+        if (strtolower($b['scheme']) !== strtolower($u['scheme'])
+            || strtolower($b['host']) !== strtolower($u['host'])) return null;
+        $basePath = $b['path'] ?? '';
+        $prefix = rtrim($basePath, '/');
+        $path = $u['path'] ?? '';
+        if (substr($path, 0, strlen($prefix) + 1) !== $prefix.'/') return null;
+        $local = true;
+        if (($disk['driver'] ?? null) !== 'local' || strpos($basePath, '//') !== false || isset($b['query']) || isset($b['fragment'])
+            || isset($u['query']) || isset($u['fragment'])) return null;
+        // La URL base tampoco puede esconder segmentos ambiguos.
+        if ($prefix !== '' && $this->relativePath(substr($prefix, 1)) === null) return null;
+        $relative = $this->relativePath(substr($path, strlen($prefix) + 1));
+        $root = $disk['root'] ?? null;
+        if ($relative === null || !is_string($root) || $root === '' || $root[0] !== '/'
+            || preg_match('/[\x00-\x1f\x7f\\\\]/', $root)) return null;
+        $root = realpath($root);
+        if (!$root || $root === DIRECTORY_SEPARATOR || !is_dir($root)) return null;
+        $file = $this->inspectLocal($root, $relative);
+        if ($file === null) return null;
+        $before = @lstat($file);
+        if (!$before || $before['size'] > self::MAX_BYTES) return null;
+        $handle = @fopen($file, 'rb');
+        if (!$handle) return null;
+        try {
+            $stat = fstat($handle);
+            if (!$stat || ($stat['mode'] & 0170000) !== 0100000 || $stat['size'] > self::MAX_BYTES
+                || $stat['dev'] !== $before['dev'] || $stat['ino'] !== $before['ino']
+                || $this->inspectLocal($root, $relative) !== $file) return null;
+            $bytes = '';
+            while (!feof($handle) && strlen($bytes) <= self::MAX_BYTES) {
+                $chunk = fread($handle, min(8192, self::MAX_BYTES + 1 - strlen($bytes)));
+                if ($chunk === false || ($chunk === '' && !feof($handle))) return null;
+                $bytes .= $chunk;
+            }
+            $after = fstat($handle);
+            clearstatcache(true, $file);
+            $current = @lstat($file);
+            if (strlen($bytes) > self::MAX_BYTES || !$after || !$current
+                || $current['ino'] !== $stat['ino'] || $current['dev'] !== $stat['dev'] || $after['size'] !== $stat['size']
+                || $after['mtime'] !== $stat['mtime'] || $this->inspectLocal($root, $relative) !== $file) return null;
+            return $bytes;
+        } finally { fclose($handle); }
+    }
+
+    protected function relativePath($raw)
+    {
+        if ($raw === '' || strlen($raw) > 4096 || preg_match('/%(?![0-9a-f]{2})|%2f|%5c/i', $raw)) return null;
+        $decoded = rawurldecode($raw);
+        if (preg_match('/[%\x00-\x1f\x7f\\\\:]/', $decoded)) return null;
+        $parts = explode('/', $decoded);
+        if (count($parts) > 64) return null;
+        foreach ($parts as $part) if ($part === '' || $part === '.' || $part === '..') return null;
+        return $decoded;
+    }
+
+    /** No sigue enlaces descendientes, ni siquiera si apuntan al interior del disco. */
+    protected function inspectLocal($root, $relative)
+    {
+        $path = $root;
+        foreach (explode('/', $relative) as $part) {
+            $path .= DIRECTORY_SEPARATOR.$part;
+            clearstatcache(true, $path);
+            $stat = @lstat($path);
+            if (!$stat || ($stat['mode'] & 0170000) === 0120000) return null;
+        }
+        $real = realpath($path);
+        return $real && substr($real, 0, strlen($root) + 1) === $root.DIRECTORY_SEPARATOR
+            && is_file($real) && is_readable($real) ? $real : null;
     }
 
     protected function download($url, $host, $ip)
@@ -92,18 +177,22 @@ class ImagenParaMailHelper
     /** MIME real y recodificación PNG: alpha conservado, nada de SVG/HTML ni extensión inferida. */
     public function fromBytes($bytes)
     {
-        if (!is_string($bytes) || strlen($bytes) > self::MAX_BYTES || !function_exists('imagecreatefromstring')) return null;
+        if (!is_string($bytes) || strlen($bytes) > self::MAX_BYTES || !function_exists('imagecreatefromstring')
+            || !function_exists('getimagesizefromstring') || !function_exists('imagesavealpha')
+            || !function_exists('imagepng') || !function_exists('imagedestroy')) return null;
         $info = @getimagesizefromstring($bytes);
         if (!$info || !in_array($info['mime'], ['image/png', 'image/jpeg', 'image/webp'], true)
             || $info[0] < 1 || $info[1] < 1 || $info[0] > 4096 || $info[1] > 4096
             || $info[0] * $info[1] > self::MAX_PIXELS) return null;
+        if (!function_exists(['image/png'=>'imagecreatefrompng', 'image/jpeg'=>'imagecreatefromjpeg',
+            'image/webp'=>'imagecreatefromwebp'][$info['mime']])) return null;
         $image = @imagecreatefromstring($bytes);
         if (!$image) return null;
         try {
             imagesavealpha($image, true);
             ob_start();
             try { $ok = imagepng($image); $png = ob_get_contents(); } finally { ob_end_clean(); }
-            return $ok && strlen($png) <= self::MAX_BYTES
+            return $ok && is_string($png) && $png !== '' && strlen($png) <= self::MAX_BYTES
                 ? ['bytes' => $png, 'mime' => 'image/png', 'name' => 'logo.png'] : null;
         } finally {
             imagedestroy($image);
