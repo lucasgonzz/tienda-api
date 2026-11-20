@@ -6,8 +6,6 @@ use App\Buyer;
 use App\Cart;
 use App\Http\Controllers\Helpers\OrderMailDeliveryHelper as Deliver;
 use App\Jobs\SendOrderEmails;
-use App\Mail\NuevoPedidoComercio;
-use App\Mail\PedidoRecibidoComprador;
 use App\OnlineConfiguration;
 use App\Order;
 use App\OrderCommunicationDelivery as Delivery;
@@ -35,7 +33,7 @@ class OrderMailSinTablaTest extends TestCase
     protected $owner;
     protected $buyer;
     protected $owners = [];
-    /** Mailables realmente entregados al transporte, en orden: [destinatario, clase]. */
+    /** Correos realmente entregados al transporte, en orden: [destinatario, asunto]. */
     protected $enviados = [];
     protected $tabla_oculta = false;
 
@@ -59,7 +57,7 @@ class OrderMailSinTablaTest extends TestCase
         // El listener NO consulta la tabla de entregas: tiene que funcionar también cuando no existe.
         app('events')->listen(MessageSending::class, function ($event) {
             $this->assertSame(0, DB::transactionLevel());
-            $this->enviados[] = [$event->message->getTo()[0]->getAddress(), $event->data['__laravel_mailable'] ?? null];
+            $this->enviados[] = [$event->message->getTo()[0]->getAddress(), $event->message->getSubject()];
         });
     }
 
@@ -78,6 +76,25 @@ class OrderMailSinTablaTest extends TestCase
         } finally {
             parent::tearDown();
         }
+    }
+
+    /** Tipo del correo según su asunto: el Mailable del comercio y el del comprador tienen asuntos distintos. */
+    protected function tipo_de_correo($asunto): string
+    {
+        if (strpos((string) $asunto, 'Nuevo pedido') === 0) {
+            return 'comercio';
+        }
+        return strpos((string) $asunto, 'Recibimos tu pedido') === 0 ? 'comprador' : 'desconocido';
+    }
+
+    /** [destinatario, tipo] de cada correo entregado al transporte. */
+    protected function tipos_enviados(): array
+    {
+        $tipos = [];
+        foreach ($this->enviados as $enviado) {
+            $tipos[] = [$enviado[0], $this->tipo_de_correo($enviado[1])];
+        }
+        return $tipos;
     }
 
     /** Simula el esquema anterior del ERP: la tabla de entregas no existe. */
@@ -111,11 +128,8 @@ class OrderMailSinTablaTest extends TestCase
         $this->ocultar_tabla();
         $order = $this->checkout();
         $this->assertNotNull(Order::find($order->id), 'El pedido confirmado no depende del correo.');
-        $this->assertSame([
-            ['a@example.test', NuevoPedidoComercio::class],
-            ['b@example.test', NuevoPedidoComercio::class],
-            ['buyer@example.test', PedidoRecibidoComprador::class],
-        ], $this->enviados);
+        $this->assertSame([['a@example.test', 'comercio'], ['b@example.test', 'comercio'],
+            ['buyer@example.test', 'comprador']], $this->tipos_enviados());
         $this->assertFalse(Schema::hasTable(self::TABLA), 'El camino sin tabla no la crea ni la necesita.');
     }
 
@@ -126,8 +140,7 @@ class OrderMailSinTablaTest extends TestCase
         $this->ocultar_tabla();
         (new SendOrderEmails($order->id))->handle();
         $this->assertSame(['a@example.test', 'b@example.test', 'buyer@example.test'], array_column($this->enviados, 0));
-        $this->assertSame([NuevoPedidoComercio::class, NuevoPedidoComercio::class, PedidoRecibidoComprador::class],
-            array_column($this->enviados, 1));
+        $this->assertSame(['comercio', 'comercio', 'comprador'], array_column($this->tipos_enviados(), 1));
     }
 
     public function test_sin_tabla_se_conservan_las_validaciones_de_identidad_y_commit()
@@ -203,14 +216,8 @@ class OrderMailSinTablaTest extends TestCase
         $this->assertSame([], $this->enviados);
     }
 
-    public function test_con_tabla_el_doble_envio_no_duplica_aunque_antes_hubiera_corrido_sin_ella()
+    public function test_con_tabla_el_doble_envio_no_duplica()
     {
-        $this->ocultar_tabla();
-        $this->checkout();
-        $this->assertCount(3, $this->enviados, 'Sin tabla: envío previo.');
-        $this->restaurar_tabla();
-        $this->enviados = [];
-
         $order = $this->checkout();
         $this->assertSame(['a@example.test', 'b@example.test', 'buyer@example.test'], array_column($this->enviados, 0));
         (new SendOrderEmails($order->id))->handle();
@@ -222,5 +229,23 @@ class OrderMailSinTablaTest extends TestCase
             $this->assertSame('transport_accepted', $fila->status);
             $this->assertSame(1, $fila->attempt_count);
         }
+    }
+
+    public function test_al_aparecer_la_tabla_el_registro_se_usa_y_el_doble_envio_queda_bloqueado()
+    {
+        $this->ocultar_tabla();
+        $order = $this->checkout();
+        $this->assertCount(3, $this->enviados, 'Sin tabla: envío previo.');
+        $this->assertSame(0, DB::table(self::RESPALDO)->where('order_id', $order->id)->count());
+        // El release de empresa crea la tabla: no queda memoizado el "no existe".
+        $this->restaurar_tabla();
+        $this->enviados = [];
+        // Lo mandado sin registro no se puede deduplicar (no hay de dónde saberlo): el reproceso manda una vez...
+        (new SendOrderEmails($order->id))->handle();
+        $this->assertCount(3, $this->enviados);
+        $this->assertSame(3, Delivery::where('order_id', $order->id)->where('status', 'transport_accepted')->count());
+        // ...y a partir de ahí el registro durable bloquea el doble envío.
+        (new SendOrderEmails($order->id))->handle();
+        $this->assertCount(3, $this->enviados);
     }
 }
