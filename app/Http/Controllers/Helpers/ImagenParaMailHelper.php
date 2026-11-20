@@ -86,8 +86,9 @@ class ImagenParaMailHelper
         $basePath = $b['path'] ?? '';
         $prefix = rtrim($basePath, '/');
         $path = $u['path'] ?? '';
-        if (substr($path, 0, strlen($prefix) + 1) !== $prefix.'/') return null;
+        if ($path !== $prefix && substr($path, 0, strlen($prefix) + 1) !== $prefix.'/') return null;
         $local = true;
+        if ($path === $prefix) return null; // Namespace local sin archivo: nunca descargar por HTTP.
         if (($disk['driver'] ?? null) !== 'local' || strpos($basePath, '//') !== false || isset($b['query']) || isset($b['fragment'])
             || isset($u['query']) || isset($u['fragment'])) return null;
         // La URL base tampoco puede esconder segmentos ambiguos.

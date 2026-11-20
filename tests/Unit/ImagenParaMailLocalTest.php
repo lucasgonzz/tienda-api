@@ -82,6 +82,56 @@ class ImagenParaMailLocalTest extends TestCase
             $this->control(); $this->assertNull($this->prepare($url),$url);
         }
     }
+    public static function urls_publicas_sin_sufijo(): array
+    {
+        return [
+            'exacta' => ['https://example.com/storage'],
+            'query' => ['https://example.com/storage?q=1'],
+            'fragmento' => ['https://example.com/storage#x'],
+            'relativa exacta' => ['/storage'],
+            'relativa query' => ['/storage?q=1'],
+            'relativa fragmento' => ['/storage#x'],
+        ];
+    }
+
+    /** @dataProvider urls_publicas_sin_sufijo */
+    public function test_namespace_publico_sin_sufijo_no_consulta_mapa_ni_descarga($url)
+    {
+        config(['mail.image_public_addresses' => ['example.com' => ['8.8.8.8']]]);
+        $spy = new class extends Imagen {
+            public $addressCalls = 0;
+            public $downloadCalls = 0;
+            public $remote = [];
+            protected function addresses($host)
+            {
+                $this->addressCalls++;
+                return parent::addresses($host);
+            }
+            protected function download($url, $host, $ip)
+            {
+                $this->downloadCalls++;
+                $this->remote = [$url, $host, $ip];
+                return base64_decode(ImagenParaMailHelperTest::PNG);
+            }
+        };
+        // Hermano nativo disponible aun con mapa válido: no se usa transporte.
+        $native = $spy->prepare('/storage/good.jpg', 'https://example.com', ['example.com']);
+        $this->assertNotNull($native);
+        $this->assertSame('image/png', getimagesizefromstring($native['bytes'])['mime']);
+        $this->assertSame(0, $spy->addressCalls);
+        $this->assertSame(0, $spy->downloadCalls);
+        $this->assertNull($spy->prepare($url, 'https://example.com', ['example.com']));
+        $this->assertSame(0, $spy->addressCalls);
+        $this->assertSame(0, $spy->downloadCalls);
+        // Fuera del namespace sigue habilitado el remoto pinneado, siempre fake.
+        $remote = $spy->prepare('https://example.com/storage-other/good.jpg', 'https://example.com', ['example.com']);
+        $this->assertNotNull($remote);
+        $this->assertSame('image/png', getimagesizefromstring($remote['bytes'])['mime']);
+        $this->assertSame(1, $spy->addressCalls);
+        $this->assertSame(1, $spy->downloadCalls);
+        $this->assertSame(['https://example.com/storage-other/good.jpg', 'example.com', '8.8.8.8'], $spy->remote);
+    }
+
     public function test_symlinks_archivos_y_directorios_no_se_leen()
     {
         foreach (['internal'=>'public/good.jpg','external'=>'outside.png','dir'=>'public/sub','externaldir'=>'.','broken'=>'missing','loop'=>'public/loop'] as $name=>$target) {
