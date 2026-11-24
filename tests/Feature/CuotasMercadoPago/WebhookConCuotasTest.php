@@ -359,15 +359,16 @@ class WebhookConCuotasTest extends TestCase
 
     /*
     |---------------------------------------------------------------------------------------------
-    | Solo se anota cuando la feature aplica al carrito
+    | Se anota todo pago aprobado, aplique o no la feature de cuotas (mision tienda-cobro-tarjeta)
     |---------------------------------------------------------------------------------------------
     */
 
     /**
-     * 🔴 «Sin vinculo = exactamente como hoy»: el pedido de un comercio que no usa la feature NO
-     * gana el medio ni las cuotas cobradas, por mas que el pago este aprobado.
+     * Mision `tienda-cobro-tarjeta` (24/11/2026), regla 8 del pedido: la ficha del pedido muestra con
+     * que medio se pago y en cuantas cuotas para TODO pago aprobado. Antes (15/10) un comercio sin
+     * vinculo de cuotas no ganaba nada; ahora el pedido queda con lo que Mercado Pago cobro.
      */
-    public function test_un_metodo_sin_vinculo_no_anota_nada_aunque_el_pago_este_aprobado()
+    public function test_un_metodo_sin_vinculo_anota_lo_cobrado()
     {
         $sin_vinculo = $this->metodoMercadoPago($this->comercio, null);
 
@@ -377,13 +378,13 @@ class WebhookConCuotasTest extends TestCase
 
         $order->refresh();
 
-        $this->assertNull($order->cuotas_cobradas);
-        $this->assertNull($order->medio_de_pago_cobrado);
+        $this->assertSame(3, (int) $order->cuotas_cobradas);
+        $this->assertSame('credit_card', $order->medio_de_pago_cobrado);
         $this->assertSame(self::PAYMENT_ID, (int) $order->payment_id, 'Lo de siempre se sigue escribiendo.');
         $this->assertSame('approved', $cart->refresh()->payment_status);
     }
 
-    public function test_un_metodo_vinculado_sin_cuotas_cargadas_tampoco_anota()
+    public function test_un_metodo_vinculado_sin_cuotas_cargadas_anota_lo_cobrado()
     {
         $sin_filas = $this->metodoMercadoPago($this->comercio, $this->metodoDeCuentaCorriente('Vinculo sin cuotas'));
 
@@ -393,11 +394,11 @@ class WebhookConCuotasTest extends TestCase
 
         $order->refresh();
 
-        $this->assertNull($order->cuotas_cobradas);
-        $this->assertNull($order->medio_de_pago_cobrado);
+        $this->assertSame(3, (int) $order->cuotas_cobradas);
+        $this->assertSame('credit_card', $order->medio_de_pago_cobrado);
     }
 
-    public function test_un_carrito_sin_metodo_de_pago_no_anota()
+    public function test_un_carrito_sin_metodo_de_pago_anota_lo_cobrado()
     {
         list($cart, $order) = $this->carritoConPedido(['payment_method_id' => null]);
 
@@ -405,8 +406,8 @@ class WebhookConCuotasTest extends TestCase
 
         $order->refresh();
 
-        $this->assertNull($order->cuotas_cobradas);
-        $this->assertNull($order->medio_de_pago_cobrado);
+        $this->assertSame(3, (int) $order->cuotas_cobradas);
+        $this->assertSame('credit_card', $order->medio_de_pago_cobrado);
     }
 
     /**
@@ -427,7 +428,7 @@ class WebhookConCuotasTest extends TestCase
         $this->assertSame('credit_card', $order->medio_de_pago_cobrado);
     }
 
-    public function test_el_metodo_de_otro_comercio_no_hace_que_la_feature_aplique()
+    public function test_el_metodo_de_otro_comercio_anota_lo_cobrado()
     {
         $otro = $this->comercioConTienda();
         $ajeno = $this->metodoMercadoPago($otro, $this->metodo_cc_id);
@@ -439,8 +440,8 @@ class WebhookConCuotasTest extends TestCase
 
         $order->refresh();
 
-        $this->assertNull($order->cuotas_cobradas);
-        $this->assertNull($order->medio_de_pago_cobrado);
+        $this->assertSame(3, (int) $order->cuotas_cobradas);
+        $this->assertSame('credit_card', $order->medio_de_pago_cobrado);
     }
 
     /**
@@ -466,7 +467,7 @@ class WebhookConCuotasTest extends TestCase
     |---------------------------------------------------------------------------------------------
     */
 
-    public function test_si_falla_la_lectura_de_cuotas_el_webhook_responde_igual_y_no_anota()
+    public function test_si_falla_la_lectura_de_cuotas_el_webhook_responde_igual_y_anota_igual()
     {
         Log::spy();
 
@@ -476,18 +477,13 @@ class WebhookConCuotasTest extends TestCase
 
         $this->notificar($this->pago($cart))->assertStatus(200)->assertExactJson(['ok' => true]);
 
-        $this->assertGreaterThanOrEqual(1, $this->lecturas_de_cuotas, 'La falla simulada tiene que haberse disparado.');
-
         $order->refresh();
 
-        $this->assertNull($order->cuotas_cobradas);
-        $this->assertNull($order->medio_de_pago_cobrado);
+        // Mision `tienda-cobro-tarjeta`: anotar lo cobrado ya no lee la tabla `cuotas` (no hay
+        // que decidir si «la feature aplica»), asi que la falla simulada no cambia nada.
+        $this->assertSame(3, (int) $order->cuotas_cobradas);
+        $this->assertSame('credit_card', $order->medio_de_pago_cobrado);
         $this->assertSame(self::PAYMENT_ID, (int) $order->payment_id, 'El pago se registra como siempre.');
         $this->assertSame('approved', $cart->refresh()->payment_status);
-
-        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje, $contexto = []) {
-            return strpos($mensaje, 'no se pudieron leer las cuotas') !== false
-                && (int) $contexto['commerce_id'] === (int) $this->comercio->id;
-        })->once();
     }
 }
