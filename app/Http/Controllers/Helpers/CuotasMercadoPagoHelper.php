@@ -254,6 +254,19 @@ class CuotasMercadoPagoHelper
     }
 
     /**
+     * True si el metodo de pago puede tener un vinculo de cuotas: es de tipo MercadoPago (Checkout
+     * Pro) o de tipo Tarjeta Mercado Pago (cobro adentro de la tienda, mision `tienda-cobro-tarjeta`).
+     * `es_mercado_pago()` NO cambia: la usan la preferencia y la public key, que son solo de Checkout Pro.
+     *
+     * @param \App\PaymentMethod|null $payment_method
+     * @return bool
+     */
+    public static function admite_cuotas($payment_method)
+    {
+        return self::es_mercado_pago($payment_method) || TarjetaMercadoPagoHelper::es_tarjeta($payment_method);
+    }
+
+    /**
      * Las cuotas que la tienda ofrece para un metodo de pago, tal como viajan al SPA.
      *
      * Solo si el metodo es de Mercado Pago, esta vinculado con un metodo de cuenta corriente y la
@@ -419,7 +432,7 @@ class CuotasMercadoPagoHelper
      */
     private static function vinculo_de($payment_method)
     {
-        if (!self::es_mercado_pago($payment_method) || !self::vinculo_disponible()) {
+        if (!self::admite_cuotas($payment_method) || !self::vinculo_disponible()) {
             return null;
         }
 

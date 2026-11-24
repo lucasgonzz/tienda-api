@@ -20,6 +20,7 @@ use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
 use App\Http\Controllers\Helpers\StringHelper;
+use App\Http\Controllers\Helpers\TarjetaMercadoPagoHelper;
 use App\Http\Controllers\Helpers\ZipnovaEsquemaHelper;
 use App\Jobs\BroadcastOrderCreated;
 use App\Jobs\SendOrderEmails;
@@ -161,13 +162,89 @@ class OrderController extends Controller
         return ReservaStockWebHelper::con_carrito($request->cart_id, fn ($cart) => $this->guardar_pedido($request, $cart));
     }
 
-    private function guardar_pedido(Request $request, ?Cart $cart) {
+    /**
+     * Cobra con tarjeta ADENTRO de la tienda y, solo si Mercado Pago aprueba el pago, crea el pedido
+     * (mision `tienda-cobro-tarjeta`, 24/11/2026): `POST /api/mercado-pago/tarjeta/pagar`.
+     *
+     * Es el mismo alta de pedido de `store()` —mismo candado de carrito y de configuracion, misma
+     * transaccion, mismos controles (CAPTCHA, stock, envio, catalogo por lista) y mismos mails y aviso
+     * una sola vez—, con un paso mas: justo antes de `Order::create`, con todos los controles ya
+     * pasados, se cobra (`TarjetaMercadoPagoHelper::cobrar()`). Si el cobro no queda aprobado, se
+     * devuelve el error al comprador y NO se crea pedido, ni lineas, ni reserva, ni mails, ni aviso.
+     *
+     * Si despues de un pago aprobado algo explota (la excepcion se lleva puesta la transaccion y el
+     * pedido no existe), se pide la devolucion del pago y se responde 500 `pedido_no_creado`: nunca
+     * queda plata cobrada sin pedido. Una excepcion ANTES del cobro (CAPTCHA, stock) sube igual que en `store()`.
+     *
+     * @param  \Illuminate\Http\Request  $request Lo mismo que `/orders` mas `payment_method_id`, `cuotas`, `monto_esperado` y `tarjeta` (token del Brick).
+     * @return \Illuminate\Http\JsonResponse 201 `{order_id}`, o el error del cobro.
+     */
+    function pagar_con_tarjeta(Request $request) {
+        // El cobro aprobado, si lo hubo (lo llena el closure de abajo); decide si hay que devolver el pago.
+        $cobro_aprobado = null;
+
+        $cobro = function (Cart $cart) use ($request, &$cobro_aprobado) {
+            $resultado = TarjetaMercadoPagoHelper::cobrar($request, $cart);
+
+            if ($resultado instanceof \Symfony\Component\HttpFoundation\Response) {
+                return $resultado;
+            }
+
+            $cobro_aprobado = $resultado;
+
+            TarjetaMercadoPagoHelper::anotar_en_el_carrito($cart, $resultado);
+
+            return $resultado['pago'];
+        };
+
+        try {
+            return ReservaStockWebHelper::con_carrito($request->cart_id, fn ($cart) => $this->guardar_pedido($request, $cart, $cobro));
+        } catch (\Throwable $e) {
+            if (is_null($cobro_aprobado)) {
+                throw $e;
+            }
+
+            TarjetaMercadoPagoHelper::devolver_pago($cobro_aprobado, $request->cart_id);
+
+            Log::error('OrderController@pagar_con_tarjeta: el pago se aprobo pero el pedido no se pudo crear', [
+                'cart_id'    => $request->cart_id,
+                'payment_id' => isset($cobro_aprobado['pago']['id']) ? $cobro_aprobado['pago']['id'] : null,
+                'excepcion'  => get_class($e),
+            ]);
+
+            return response()->json([
+                'codigo'  => 'pedido_no_creado',
+                'message' => 'No pudimos registrar tu pedido y devolvimos el pago. Probá de nuevo en unos minutos.',
+            ], 500);
+        }
+    }
+
+    /**
+     * Crea el pedido del carrito (el cuerpo de `store()`, compartido con `pagar_con_tarjeta()`).
+     *
+     * @param \Illuminate\Http\Request $request
+     * @param \App\Cart|null $cart El carrito, ya con candado.
+     * @param callable|null $cobro Solo en el cobro con tarjeta: se llama justo antes de crear el pedido y
+     *        devuelve una respuesta (se devuelve tal cual, sin crear nada) o el pago aprobado (`array`).
+     * @return \Illuminate\Http\Response|\Illuminate\Http\JsonResponse
+     */
+    private function guardar_pedido(Request $request, ?Cart $cart, ?callable $cobro = null) {
+        if (!$cart && $cobro) {
+            return response()->json(['codigo' => 'carrito', 'message' => 'No encontramos tu carrito.'], 422);
+        }
+
         if ($cart) {
             if (!CartOwnershipHelper::puede($cart)) {
                 Log::warning('OrderController@store: se intento crear un pedido con un carrito ajeno', [
                     'cart_id' => $request->cart_id,
                 ]);
                 return response(null, 403);
+            }
+
+            // Doble clic o reintento del navegador: el carrito ya tiene su pedido pagado. No se cobra ni se
+            // crea otro (crear otro borraria el anterior: `OrderHelper::deleteOrderCart()`).
+            if ($cobro && ($ya_pagado = TarjetaMercadoPagoHelper::respuesta_si_ya_tiene_pedido_pagado($cart))) {
+                return $ya_pagado;
             }
 
             if (ConsultaStockHelper::pedido_marcado($cart->order_id) || ReservaStockWebHelper::pedido_marcado($cart->order_id)) {
@@ -273,6 +350,21 @@ class OrderController extends Controller
             $consultas = $this->consultas_del_pedido($request, $cart, $configuracion, $consultas_activas);
             $a_consultar = !empty($consultas);
 
+            // Un pedido a consultar no se cobra online: con tarjeta, primero el negocio revisa la disponibilidad.
+            if ($cobro && $a_consultar) {
+                ConsultaStockHelper::fallar('El negocio tiene que revisar la disponibilidad antes de cobrar este pedido.');
+            }
+
+            // 🔴 Ningun pedido de tarjeta nace sin cobro: por el camino de siempre (`POST /orders`, por ejemplo
+            // una SPA vieja contra esta API) un carrito con el metodo de tarjeta se frena ANTES de crear nada.
+            if (!$cobro && !$a_consultar && $cart->payment_method_id
+                && TarjetaMercadoPagoHelper::es_tarjeta($cart->payment_method)) {
+                return response()->json([
+                    'codigo'  => 'pagar_con_tarjeta',
+                    'message' => 'Para pagar con tarjeta completá los datos de la tarjeta.',
+                ], 422);
+            }
+
             $ajustes_de_cliente = AjustesDeClienteHelper::del_comprador($cart->user_id);
 
             if (AjustesDeClienteHelper::tiene_ajustes($ajustes_de_cliente)) {
@@ -358,6 +450,21 @@ class OrderController extends Controller
                 $address = $this->get_address($request);
             }
 
+            // El cobro con tarjeta (solo en `pagar_con_tarjeta`): con todos los controles pasados y antes de
+            // crear nada. Una respuesta corta el alta; el pago aprobado queda anotado en el carrito (que
+            // `Order::create` lee) y sus datos de cobro viajan al pedido.
+            $pago_cobrado = null;
+
+            if ($cobro) {
+                $resultado_del_cobro = $cobro($cart);
+
+                if ($resultado_del_cobro instanceof \Symfony\Component\HttpFoundation\Response) {
+                    return $resultado_del_cobro;
+                }
+
+                $pago_cobrado = is_array($resultado_del_cobro) ? $resultado_del_cobro : null;
+            }
+
             Log::info('Fecha entrega carrito: '.$cart->fecha_entrega);
         	$order = Order::create(array_merge([
                 'num'                       => $this->num('orders', $commerce_id),
@@ -387,6 +494,8 @@ class OrderController extends Controller
         	// Las cuotas de Mercado Pago (mision tienda-cuotas-mercado-pago): `cuotas` y el recargo neto
         	// resuelto de la base, solo con el esquema y si el carrito eligio cuotas (vacio si no).
             $a_consultar ? [] : CuotasMercadoPagoHelper::atributos_para_pedido($cart),
+        	// Lo que Mercado Pago cobro de verdad (cuotas y medio), solo en el cobro con tarjeta.
+        	$pago_cobrado ? CuotasMercadoPagoHelper::atributos_de_cobro($pago_cobrado) : [],
         	// La direccion de entrega (`buyer_address_id` + `envio_direccion`), solo con el esquema y si
         	// el carrito tiene una (vacio si no: el create de siempre no cambia).
         	$atributos_de_direccion));

@@ -1,6 +1,7 @@
 <?php
 
 namespace App\Http\Controllers\Helpers;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use MercadoPago\Customer;
 use MercadoPago\SDK;
@@ -111,6 +112,76 @@ class OnlinePaymentHelper {
             ];
         }
         return $articles;
+    }
+
+    /**
+     * Los items que se le cobran al comprador de un carrito resuelto (articulos, promociones de
+     * vinoteca, combos, cupon y envio), SIEMPRE leidos del carrito y de la base, nunca de un body.
+     *
+     * Es la rama «con carrito» de `MercadoPagoController::articulos_a_cobrar()` movida aca (mision
+     * `tienda-cobro-tarjeta`, 24/11/2026) para que el Checkout Pro y el cobro con tarjeta adentro de
+     * la tienda compartan UNA sola lista de lo que se cobra: la leccion de la «cuarta coleccion» (si
+     * un carrito gana algo comprable y un camino no lo suma, se cobra de menos en silencio). El
+     * controller delega en este metodo, asi que los tests que lo invocan por reflexion siguen
+     * midiendo lo mismo. Ver el docblock de `articulos_a_cobrar()` para el porque de cada punto
+     * (withTrashed, promociones, combos detras de su guarda de esquema, envio de Zipnova o zona).
+     *
+     * @param \App\Cart $cart Carrito ya resuelto (y de la sesion: eso lo verifica quien llama).
+     * @param \App\User $commerce Comercio que cobra (con su `online_configuration`).
+     * @param \App\PaymentMethod $payment_method Metodo de pago elegido (su recargo y descuento se aplican por linea).
+     * @return array<int, array{name: string, amount: mixed, final_price: mixed}>
+     */
+    public static function items_del_carrito($cart, $commerce, $payment_method)
+    {
+        $online_payment_helper = new OnlinePaymentHelper($commerce, $payment_method);
+
+        $envio_precio = EnvioCartHelper::precio_para_cobrar($cart);
+
+        // Una forma propia "a convenir" no se cobra online: no viaja ningun item de envio.
+        $delivery_zone = is_null($envio_precio) && $cart->delivery_zone && !DireccionesEsquemaHelper::zona_a_convenir($cart->delivery_zone)
+            ? ['price' => $cart->delivery_zone->price]
+            : null;
+
+        $cupon = $cart->cupon
+            ? ['amount' => $cart->cupon->amount, 'percentage' => $cart->cupon->percentage]
+            : null;
+
+        $mapear = function ($item) {
+            return [
+                'name'        => $item->name,
+                'amount'      => $item->pivot->amount,
+                'final_price' => $item->pivot->price,
+            ];
+        };
+
+        // withTrashed(): un articulo dado de baja con el carrito abierto no puede esfumarse del cobro.
+        $articles = $cart->articles()->withTrashed()->get()->map($mapear)->all();
+
+        $promociones = $cart->promociones_vinoteca()->withTrashed()->get()->map($mapear)->all();
+
+        // Detras de la guarda de esquema: sin `cart_combo` no hay combos que cobrar.
+        $combos = ComboEsquemaHelper::disponible()
+            ? $cart->combos()->withTrashed()->get()->map($mapear)->all()
+            : [];
+
+        return $online_payment_helper->setPrices($cupon, $delivery_zone, array_merge($articles, $promociones, $combos), $envio_precio);
+    }
+
+    /**
+     * URL publica del webhook de Mercado Pago, armada desde el request y no desde `APP_URL`.
+     *
+     * En el shared hosting Laravel se sirve desde `/public` y `APP_URL` esta cargada sin ese
+     * sufijo; `$request->root()` trae el esquema, el host y el base path REAL con el que llego este
+     * request. Movida desde `MercadoPagoController::url_del_webhook()` (que delega aca) para que el
+     * cobro con tarjeta use la misma formula.
+     *
+     * @param Request $request
+     * @param int $commerce_id
+     * @return string
+     */
+    public static function url_del_webhook(Request $request, $commerce_id)
+    {
+        return rtrim($request->root(), '/').'/api/mercado-pago/webhook?commerce_id='.(int) $commerce_id;
     }
 
     function getArticlePrice($article) {
