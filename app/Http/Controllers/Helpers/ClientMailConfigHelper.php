@@ -18,6 +18,25 @@ use Illuminate\Support\Facades\Log;
  */
 class ClientMailConfigHelper
 {
+    /** Aísla también las instancias cacheadas: un worker puede atender dos comercios seguidos. */
+    public static function isolated($owner, callable $send)
+    {
+        $config = config('mail');
+        $manager = \Illuminate\Support\Facades\Mail::getFacadeRoot();
+        try {
+            if ($manager instanceof \Illuminate\Mail\MailManager) {
+                $local = clone $manager;
+                $local->forgetMailers();
+                \Illuminate\Support\Facades\Mail::swap($local);
+            }
+            self::apply($owner);
+            return $send();
+        } finally {
+            Config::set('mail', $config);
+            \Illuminate\Support\Facades\Mail::swap($manager);
+        }
+    }
+
     /**
      * @param int|null $user_id Id del comercio dueño de la tienda.
      * @return bool true si se aplico la config propia del cliente, false si se usa el .env.
@@ -45,9 +64,8 @@ class ClientMailConfigHelper
             try {
                 $password = $configuration->mail_password;
             } catch (DecryptException $e) {
-                Log::error('ClientMailConfigHelper: NO SE PUDO DESENCRIPTAR mail_password. Casi seguro la APP_KEY de tienda-api no coincide con la de empresa-api. Se usa el .env.', [
+                Log::error('ClientMailConfigHelper: No se pudo desencriptar la configuración de correo. Se usa el transporte del sistema.', [
                     'user_id' => $user_id,
-                    'error'   => $e->getMessage(),
                 ]);
                 return false;
             }
@@ -85,14 +103,12 @@ class ClientMailConfigHelper
 
             Log::info('ClientMailConfigHelper: se aplico la casilla propia del comercio', [
                 'user_id'   => $user_id,
-                'mail_host' => $configuration->mail_host,
             ]);
 
             return true;
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             Log::error('ClientMailConfigHelper: error aplicando la config propia, se usa el .env', [
                 'user_id' => $user_id,
-                'error'   => $e->getMessage(),
             ]);
             return false;
         }

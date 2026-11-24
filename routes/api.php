@@ -85,6 +85,8 @@ Route::get('/articles/search/{query}/{commerce_id}',
 // 🔴 Publica a proposito: es el punto de entrada del checkout de invitado. El controller ya NO
 // abre sesion de cuenta cuando el comprador tiene contraseña (era una toma de cuenta por email):
 // ver el docblock de BuyerController@login.
+Route::get('/buyer/checkout-captcha', 'BuyerController@checkoutCaptcha')->middleware('throttle:20,1');
+
 Route::post('/buyer', 'BuyerController@store')->middleware('throttle:20,1');
 
 // Checkout: prefill de dirección por email (ruta pública, throttled para mitigar email bombing)
@@ -423,7 +425,7 @@ Route::post('/payment-card-info',
 
 Route::post('/orders',
 	'OrderController@store'
-);
+)->middleware('throttle:20,1');
 
 /*
 | Estas tres devuelven 200 con payload vacio cuando no hay comprador, A PROPOSITO, y por eso NO
