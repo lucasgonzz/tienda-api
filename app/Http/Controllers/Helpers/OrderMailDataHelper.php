@@ -23,7 +23,11 @@ class OrderMailDataHelper
         $user = $order->user;
         $configuration = OnlineConfiguration::where('user_id', $order->user_id)->first();
 
-        $palette = ColorDeMailHelper::palette($configuration->primary_color ?? null);
+        // Botón del mail: el primero de primario, botón de carrito y secundario que contraste con el blanco.
+        $palette = ColorDeMailHelper::palette($configuration->primary_color ?? null, [
+            $configuration->add_to_cart_button_color ?? null,
+            $configuration->secondary_color ?? null,
+        ]);
         return [
             'order'         => $order,
             'user'          => $user,

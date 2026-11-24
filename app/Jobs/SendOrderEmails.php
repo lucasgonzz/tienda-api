@@ -51,12 +51,10 @@ class SendOrderEmails implements ShouldQueue
 
             ClientMailConfigHelper::isolated($order->user_id, function () use ($order, $configuration) {
                 if ($configuration->notificar_pedido_al_negocio) {
-                    $emails = OrderMailDeliveryHelper::recipients($configuration->mail_notificacion_pedidos);
-                    // Un valor configurado inválido no habilita otra casilla inesperada.
-                    if (trim((string) $configuration->mail_notificacion_pedidos) === '') {
-                        $emails = OrderMailDeliveryHelper::recipients($order->user ? $order->user->email : null);
-                    }
-                    $this->deliver($order, 'new_order_merchant', $emails);
+                    $this->deliver($order, 'new_order_merchant', $this->merchant_recipients($order, $configuration));
+                } else {
+                    // Aviso apagado por el comercio: queda registrado para poder explicar "no me llegó".
+                    self::diagnostic('merchant_notification_disabled', $order->id);
                 }
                 if ($configuration->notificar_pedido_al_cliente && $order->buyer
                     && (int) $order->buyer->user_id === (int) $order->user_id) {
@@ -67,6 +65,43 @@ class SendOrderEmails implements ShouldQueue
         } catch (\Throwable $e) {
             self::diagnostic('order_mail_job_failed');
         }
+    }
+
+    /**
+     * Destinatarios del aviso al comercio.
+     *
+     * Los correos válidos del campo de configuración; si el campo está vacío o no tiene ninguno válido,
+     * el correo de la cuenta (como hacía la versión anterior), así un error de tipeo no apaga el aviso.
+     * Cada decisión relevante deja un código en el log con el id del pedido (nunca direcciones).
+     *
+     * @param \App\Order $order Pedido con la relación user cargada.
+     * @param \App\OnlineConfiguration $configuration Configuración de la tienda del pedido.
+     * @return array Lista de correos válidos (puede estar vacía).
+     */
+    private function merchant_recipients($order, $configuration): array
+    {
+        $raw = (string) $configuration->mail_notificacion_pedidos;
+        $emails = OrderMailDeliveryHelper::recipients($raw);
+        // Valores escritos en el campo que no son un correo válido (sólo se cuentan, nunca se registran).
+        $discarded = 0;
+        foreach (preg_split('/[,;]+/', $raw) as $part) {
+            if (trim($part) !== '' && OrderMailDeliveryHelper::recipients($part) === []) {
+                $discarded++;
+            }
+        }
+        if ($emails) {
+            if ($discarded > 0) {
+                self::diagnostic('merchant_recipient_discarded', $order->id, ['discarded' => $discarded]);
+            }
+            return $emails;
+        }
+        $account = OrderMailDeliveryHelper::recipients($order->user ? $order->user->email : null);
+        if (trim($raw) !== '') {
+            self::diagnostic($account ? 'merchant_recipients_invalid_using_account' : 'merchant_no_valid_recipient', $order->id);
+        } elseif (!$account) {
+            self::diagnostic('merchant_no_valid_recipient', $order->id);
+        }
+        return $account;
     }
 
     private function deliver($order, $type, array $recipients): void
@@ -85,10 +120,17 @@ class SendOrderEmails implements ShouldQueue
         }
     }
 
-    private static function diagnostic($code): void
+    /**
+     * Registra un código de diagnóstico: sólo código, id del pedido y conteos; nunca direcciones.
+     *
+     * @param string $code Código estable (por ejemplo merchant_notification_disabled).
+     * @param int|null $order_id Pedido al que se refiere.
+     * @param array $counts Conteos adicionales (enteros).
+     */
+    private static function diagnostic($code, $order_id = null, array $counts = []): void
     {
         try {
-            Log::warning('Order mail', ['error_code' => $code]);
+            Log::warning('Order mail', array_merge(['error_code' => $code, 'order_id' => $order_id], $counts));
         } catch (\Throwable $ignored) {
             // Ni un logger roto puede invalidar el pedido.
         }

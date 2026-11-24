@@ -90,6 +90,28 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Imágenes remotas de los mails de pedido
+    |--------------------------------------------------------------------------
+    |
+    | Hosts que se pueden descargar para incrustar logo y fotos como imagen inline.
+    | `image_allowed_hosts`: hosts exactos (MAIL_IMAGE_ALLOWED_HOSTS, separados por coma).
+    | `image_allowed_host_suffixes`: dominios cuyos subdominios también valen, sólo por HTTPS y
+    | sin puerto (MAIL_IMAGE_ALLOWED_HOST_SUFFIXES). Por defecto el dominio de los sistemas de
+    | ComercioCity, donde vive el logo cargado desde empresa-api.
+    | `image_public_addresses`: mapa host => IP públicas fijas; si el host no está acá se resuelve por DNS.
+    |
+    */
+
+    'image_allowed_hosts' => array_values(array_filter(array_map('trim',
+        explode(',', (string) env('MAIL_IMAGE_ALLOWED_HOSTS', ''))))),
+
+    'image_public_addresses' => [],
+
+    'image_allowed_host_suffixes' => array_values(array_filter(array_map('trim',
+        explode(',', (string) env('MAIL_IMAGE_ALLOWED_HOST_SUFFIXES', 'comerciocity.com'))))),
+
+    /*
+    |--------------------------------------------------------------------------
     | Markdown Mail Settings
     |--------------------------------------------------------------------------
     |

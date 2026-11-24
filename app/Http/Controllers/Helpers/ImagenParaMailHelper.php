@@ -6,7 +6,10 @@ namespace App\Http\Controllers\Helpers;
 class ImagenParaMailHelper
 {
     const MAX_BYTES = 1048576;
-    const MAX_PIXELS = 4000000;
+    /** Pixeles máximos aceptados de entrada (4096 x 4096): los logos reales llegan a ~3600 px de lado. */
+    const MAX_PIXELS = 16777216;
+    /** Lado mayor de la imagen que sale en el mail: alcanza para pantallas retina y pesa poco. */
+    const MAX_SIDE = 440;
 
     public static function publicUrl($value, $origin = null)
     {
@@ -44,11 +47,50 @@ class ImagenParaMailHelper
         return true;
     }
 
+    /**
+     * IPs a las que se conecta la descarga: primero el mapa fijo de configuración; si el host no está
+     * ahí (y ya pasó la validación de host habilitado), se resuelve por DNS.
+     *
+     * @param string $host Host en minúscula, ya habilitado por prepare().
+     * @return array Lista de IP (puede estar vacía).
+     */
     protected function addresses($host)
     {
-        // IPs públicas explícitas: evita DNS sin timeout y rebinding. Sin mapa, texto.
         $map = (array) config('mail.image_public_addresses', []);
-        return (array) ($map[$host] ?? []);
+        if (!empty($map[$host])) return (array) $map[$host];
+        return $this->resolveHost($host);
+    }
+
+    /**
+     * Resuelve un host a sus IPv4. En tests nunca sale a la red.
+     *
+     * @param string $host Nombre DNS.
+     * @return array Lista de IP; vacía si no resuelve.
+     */
+    protected function resolveHost($host)
+    {
+        if (app()->environment('testing')) return [];
+        $ips = @gethostbynamel($host);
+        return is_array($ips) ? $ips : [];
+    }
+
+    /**
+     * Indica si un host coincide con alguno de los sufijos habilitados en configuración (el host es el
+     * sufijo o termina en ".sufijo"). Sólo HTTPS; los sufijos tienen que ser nombres DNS completos.
+     *
+     * @param string $host Host en minúscula.
+     * @param string $scheme Esquema de la URL.
+     * @return bool
+     */
+    protected function allowedBySuffix($host, $scheme)
+    {
+        if (strtolower($scheme) !== 'https') return false;
+        foreach ((array) config('mail.image_allowed_host_suffixes', []) as $suffix) {
+            $suffix = is_string($suffix) ? strtolower(trim($suffix)) : '';
+            if (!preg_match('/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/D', $suffix)) continue;
+            if ($host === $suffix || substr($host, -strlen($suffix) - 1) === '.'.$suffix) return true;
+        }
+        return false;
     }
 
     public function prepare($source, $origin = null, array $allowedHosts = [])
@@ -57,7 +99,8 @@ class ImagenParaMailHelper
         $url = self::publicUrl($source, $origin);
         if (!$url || !function_exists('imagecreatefromstring')) return null;
         $host = strtolower(parse_url($url, PHP_URL_HOST));
-        if (!in_array($host, array_map('strtolower', $allowedHosts), true)) return null;
+        if (!in_array($host, array_map('strtolower', $allowedHosts), true)
+            && !$this->allowedBySuffix($host, (string) parse_url($url, PHP_URL_SCHEME))) return null;
         try {
             $local = false;
             $bytes = $this->localBytes($url, $local);
@@ -193,8 +236,58 @@ class ImagenParaMailHelper
         }
     }
 
-    /** MIME real y recodificación PNG: alpha conservado, nada de SVG/HTML ni extensión inferida. */
-    public function fromBytes($bytes)
+    /**
+     * Indica si hay memoria para decodificar una imagen de ese tamaño (estimación: 5 bytes por pixel
+     * más 8 MB de margen contra lo que le queda a memory_limit). Sin límite (-1) siempre hay.
+     *
+     * @param int $width Ancho en pixeles.
+     * @param int $height Alto en pixeles.
+     * @return bool
+     */
+    protected function hasMemoryFor($width, $height)
+    {
+        $limit = ini_parse_quantity((string) ini_get('memory_limit'));
+        if ($limit <= 0) return true;
+        return $width * $height * 5 + 8 * 1048576 <= $limit - memory_get_usage();
+    }
+
+    /**
+     * Reduce proporcionalmente una imagen GD para que su lado mayor no pase de $max_side, conservando el alpha.
+     *
+     * @param \GdImage $image Imagen decodificada (se libera acá si se reemplaza).
+     * @param int $max_side Lado mayor permitido.
+     * @return \GdImage|false La misma imagen si ya entra, la reducida, o false si falla.
+     */
+    protected function shrink($image, $max_side)
+    {
+        $width = imagesx($image);
+        $height = imagesy($image);
+        if (max($width, $height) <= $max_side) return $image;
+        $scale = $max_side / max($width, $height);
+        $new_width = max(1, (int) round($width * $scale));
+        $new_height = max(1, (int) round($height * $scale));
+        if (!imageistruecolor($image)) imagepalettetotruecolor($image);
+        $small = imagecreatetruecolor($new_width, $new_height);
+        if (!$small) { imagedestroy($image); return false; }
+        // Sin mezcla de alpha: se copia el canal alfa tal cual, con fondo transparente.
+        imagealphablending($small, false);
+        imagesavealpha($small, true);
+        imagefill($small, 0, 0, imagecolorallocatealpha($small, 0, 0, 0, 127));
+        $ok = imagecopyresampled($small, $image, 0, 0, 0, 0, $new_width, $new_height, $width, $height);
+        imagedestroy($image);
+        if (!$ok) { imagedestroy($small); return false; }
+        return $small;
+    }
+
+    /**
+     * MIME real y recodificación PNG: alpha conservado, nada de SVG/HTML ni extensión inferida.
+     * Acepta hasta 4096x4096 (si hay memoria) y reduce a $max_side de lado mayor antes de codificar.
+     *
+     * @param string $bytes Contenido de la imagen (máximo MAX_BYTES).
+     * @param int $max_side Lado mayor de la salida.
+     * @return array|null ['bytes', 'mime', 'name'] o null si no sirve.
+     */
+    public function fromBytes($bytes, $max_side = self::MAX_SIDE)
     {
         if (!is_string($bytes) || strlen($bytes) > self::MAX_BYTES || !function_exists('imagecreatefromstring')
             || !function_exists('getimagesizefromstring') || !function_exists('imagesavealpha')
@@ -205,16 +298,21 @@ class ImagenParaMailHelper
             || $info[0] * $info[1] > self::MAX_PIXELS) return null;
         if (!function_exists(['image/png'=>'imagecreatefrompng', 'image/jpeg'=>'imagecreatefromjpeg',
             'image/webp'=>'imagecreatefromwebp'][$info['mime']])) return null;
+        // Antes de decodificar: un 4096x4096 necesita decenas de MB y no puede tirar el job con un fatal.
+        if (!$this->hasMemoryFor($info[0], $info[1])) return null;
         $image = @imagecreatefromstring($bytes);
         if (!$image) return null;
         try {
+            $image = $this->shrink($image, $max_side);
+            if (!$image) return null;
             imagesavealpha($image, true);
             ob_start();
             try { $ok = imagepng($image); $png = ob_get_contents(); } finally { ob_end_clean(); }
             return $ok && is_string($png) && $png !== '' && strlen($png) <= self::MAX_BYTES
                 ? ['bytes' => $png, 'mime' => 'image/png', 'name' => 'logo.png'] : null;
         } finally {
-            imagedestroy($image);
+            // shrink() puede devolver false (ya liberó lo que tenía): sólo se destruye una imagen viva.
+            if ($image) imagedestroy($image);
         }
     }
 }
