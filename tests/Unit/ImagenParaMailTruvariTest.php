@@ -85,8 +85,50 @@ class ImagenParaMailTruvariTest extends OrderMailFixture
         $this->assertSame(['background' => '#250237', 'foreground' => '#ffffff'],
             Color::palette('#E9E7EA', ['#250237', '#250237']));
         $this->assertSame('#c5111d', Color::palette('#c5111d', ['#250237'])['background']);
-        $this->assertSame('#111827', Color::palette('red;position:fixed', [null, '#fe7802'])['background']);
+        // Decisión de Lucas 23/11/2026, adenda B: sólo blancos y grises claros se reemplazan; el naranja de marca queda.
+        $this->assertSame(['background' => '#fe7802', 'foreground' => '#000000'],
+            Color::palette('red;position:fixed', [null, '#fe7802']));
         $this->assertSame('#111827', Color::palette('#E9E7EA')['background']);
+    }
+
+    /** Tabla de la adenda B: [primario, carrito, secundario, fondo esperado, texto esperado]. */
+    public function test_adenda_b_solo_blancos_y_grises_claros_se_reemplazan()
+    {
+        $rows = [
+            ['#E9E7EA', '#250237', '#250237', '#250237', '#ffffff'],
+            ['#FF9800', null, '#fe7802', '#ff9800', '#000000'],
+            ['#4CAF50', null, null, '#4caf50', '#000000'],
+            ['#FFC107', null, null, '#ffc107', '#000000'],
+            ['#03A9F4', null, null, '#03a9f4', '#000000'],
+            ['#fe7802', null, null, '#fe7802', '#000000'],
+            ['#CCCCCC', null, '#250237', '#250237', '#ffffff'],
+            ['#CCCCCC', null, null, '#111827', '#ffffff'],
+            ['#FFF9C4', null, '#fe7802', '#fe7802', '#000000'],
+            ['#777777', null, null, '#777777', '#000000'],
+            ['#c5111d', null, null, '#c5111d', '#ffffff'],
+            ['#fff', null, '#fe7802', '#fe7802', '#000000'],
+        ];
+        foreach ($rows as $i => $row) {
+            $palette = Color::palette($row[0], [$row[1], $row[2]]);
+            $this->assertSame(['background' => $row[3], 'foreground' => $row[4]], $palette, 'fila '.$i);
+        }
+    }
+
+    public function test_color_con_espacios_se_recorta_como_en_empresa_api()
+    {
+        $this->assertSame('#250237', Color::palette("  #250237\n")['background']);
+        $this->assertSame('#250237', Color::palette('#E9E7EA', [' #250237 '])['background']);
+    }
+
+    public function test_esquema_en_mayusculas_fija_el_puerto_443_en_curl_resolve()
+    {
+        $method = new \ReflectionMethod(Imagen::class, 'curlResolveEntry');
+        $method->setAccessible(true);
+        $helper = new Imagen;
+        $this->assertSame('api-truvari.comerciocity.com:443:86.38.190.205',
+            $method->invoke($helper, 'HTTPS://api-truvari.comerciocity.com/a.webp', 'api-truvari.comerciocity.com', '86.38.190.205'));
+        $this->assertSame('example.com:80:93.184.216.34',
+            $method->invoke($helper, 'HTTP://example.com/a.png', 'example.com', '93.184.216.34'));
     }
 
     public function test_ca23_logo_remoto_grande_por_sufijo_sale_como_png_inline_en_el_mail()

@@ -59,7 +59,8 @@ class OrderMailRenderingTest extends OrderMailFixture
         $this->assertNull($data['logo_image']);
         $this->assertNull($data['store_url']);
         $this->assertNull($data['erp_orders_url']);
-        $this->assertSame('#111827', $data['accent_color']);
+        // Decisión de Lucas 23/11/2026, adenda B: sólo blancos y grises claros. Primario inválido: sigue el secundario por defecto #fe7802.
+        $this->assertSame('#fe7802', $data['accent_color']);
         foreach ([new NuevoPedidoComercio($order), new PedidoRecibidoComprador($order)] as $mailable) {
             $html = $mailable->render();
             $this->assertStringContainsString('Sin logo &lt;img onerror=alert(1)&gt;', $html);
