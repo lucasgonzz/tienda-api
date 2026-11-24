@@ -80,6 +80,9 @@ trait ArmaCobroConTarjeta
     /** @var array<int, array> Cola de respuestas de `POST /v1/payments` (la ultima se repite). */
     protected $cola_de_pagos = [];
 
+    /** @var array<int, array> Cola de respuestas de `GET /v1/payments/search` (la ultima se repite). */
+    protected $cola_de_busquedas = [];
+
     /** @var array<int, string> Todo lo que se logueo desde `capturarLogs()` (nivel, mensaje y contexto). */
     protected $logs_capturados = [];
 
@@ -478,6 +481,28 @@ trait ArmaCobroConTarjeta
     }
 
     /**
+     * Respuesta de guion: un fallo de transporte SIN respuesta que NO es `ConnectException` (por
+     * ejemplo cURL 56, «Failure with receiving network data»): Guzzle lo tira como `RequestException`.
+     *
+     * @return array
+     */
+    protected function transporteCortadoDeMp()
+    {
+        return ['request_exception' => true];
+    }
+
+    /**
+     * La respuesta de `GET /v1/payments/search` con esos pagos.
+     *
+     * @param array<int, array> $pagos Pagos tal como los devuelve la API.
+     * @return array Respuesta de guion.
+     */
+    protected function busquedaDeMp(array $pagos = [])
+    {
+        return $this->respuestaDeMp(['results' => $pagos, 'paging' => ['total' => count($pagos), 'limit' => 30, 'offset' => 0]]);
+    }
+
+    /**
      * Instala el guion de Mercado Pago. TODA llamada a `api.mercadopago.com` pasa por aca y queda en
      * `$this->llamadas_a_mp` (metodo, url, headers, body decodificado y crudo) ANTES de contestar, de
      * modo que tambien se ven las que terminan en conexion cortada.
@@ -486,6 +511,7 @@ trait ArmaCobroConTarjeta
      *  - `POST /v1/payments`                       -> cola `pagos` (la ultima respuesta se repite).
      *  - `GET  /v1/payment_methods/installments`   -> `installments`.
      *  - `GET  /v1/payments/{id}`                  -> `consulta`.
+     *  - `GET  /v1/payments/search`                -> cola `busquedas` (la ultima se repite; por defecto sin resultados).
      *  - `PUT  /v1/payments/{id}`                  -> `cancelacion` (el cancelar del pago en proceso).
      *  - `POST /v1/payments/{id}/refunds`          -> `devolucion`.
      * Cualquier otra se frena (y hace fallar al test).
@@ -497,13 +523,15 @@ trait ArmaCobroConTarjeta
     {
         $guion = array_merge([
             'pagos'        => [],
+            'busquedas'    => [$this->busquedaDeMp([])],
             'installments' => $this->respuestaDeMp($this->respuestaDeInstallments()),
             'consulta'     => $this->respuestaDeMp([], 404),
             'cancelacion'  => $this->respuestaDeMp(['id' => 9001, 'status' => 'cancelled']),
             'devolucion'   => $this->respuestaDeMp(['id' => 1, 'status' => 'approved']),
         ], $guion);
 
-        $this->cola_de_pagos = $guion['pagos'];
+        $this->cola_de_pagos     = $guion['pagos'];
+        $this->cola_de_busquedas = $guion['busquedas'];
 
         Http::fake(function ($request) use ($guion) {
             $url    = $request->url();
@@ -525,6 +553,8 @@ trait ArmaCobroConTarjeta
 
             if ($metodo === 'POST' && preg_match('#/v1/payments$#', $camino)) {
                 $respuesta = count($this->cola_de_pagos) > 1 ? array_shift($this->cola_de_pagos) : (isset($this->cola_de_pagos[0]) ? $this->cola_de_pagos[0] : null);
+            } elseif ($metodo === 'GET' && preg_match('#/v1/payments/search$#', $camino)) {
+                $respuesta = count($this->cola_de_busquedas) > 1 ? array_shift($this->cola_de_busquedas) : (isset($this->cola_de_busquedas[0]) ? $this->cola_de_busquedas[0] : null);
             } elseif ($metodo === 'GET' && preg_match('#/v1/payment_methods/installments$#', $camino)) {
                 $respuesta = $guion['installments'];
             } elseif ($metodo === 'GET' && preg_match('#/v1/payments/\d+$#', $camino)) {
@@ -543,6 +573,10 @@ trait ArmaCobroConTarjeta
 
             if (!empty($respuesta['conexion_cortada'])) {
                 throw new ConnectionException('cURL error 28: Operation timed out (falso de test)');
+            }
+
+            if (!empty($respuesta['request_exception'])) {
+                throw new \GuzzleHttp\Exception\RequestException('cURL error 56: Failure with receiving network data (falso de test)', new \GuzzleHttp\Psr7\Request($metodo, $url));
             }
 
             return Http::response($respuesta['body'], $respuesta['status']);
