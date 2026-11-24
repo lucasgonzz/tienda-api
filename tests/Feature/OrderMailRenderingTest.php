@@ -19,7 +19,9 @@ class OrderMailRenderingTest extends OrderMailFixture
         $order = $this->checkout();
         $this->owner->update(['company_name' => 'Comercio <seguro>', 'online' => 'https://example.com/tienda',
             'default_version' => 'https://example.com/sistema']);
-        $this->configuration->update(['logo_url' => '/logo.jpg', 'primary_color' => '#ffff00']);
+        // Colores de Truvari: el primario es casi blanco, así que el botón usa el del carrito (violeta oscuro).
+        $this->configuration->update(['logo_url' => '/logo.jpg', 'primary_color' => '#E9E7EA',
+            'secondary_color' => '#250237', 'add_to_cart_button_color' => '#250237']);
         config(['app.url' => 'https://example.com']);
         app()->instance(Imagen::class, new class extends Imagen {
             protected function addresses($host) { return ['93.184.216.34']; }
@@ -34,7 +36,7 @@ class OrderMailRenderingTest extends OrderMailFixture
             $html = $message->getHtmlBody();
             $this->assertStringContainsString('src="cid:', $html);
             $this->assertStringContainsString('Comercio &lt;seguro&gt;', $html);
-            $this->assertStringContainsString('background-color:#ffff00; color:#000000;', $html);
+            $this->assertStringContainsString('background-color:#250237; color:#ffffff;', $html);
             $this->assertStringContainsString('href="https://example.com/', $html);
             $parts = $message->getAttachments();
             $this->assertCount(1, $parts);
