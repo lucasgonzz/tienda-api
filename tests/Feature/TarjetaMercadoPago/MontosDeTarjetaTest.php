@@ -81,6 +81,10 @@ class MontosDeTarjetaTest extends TestCase
         $cart = $this->carritoDeTarjeta(true);
 
         // Sin `carritos_propios` ni comprador de checkout en la sesion: es el carrito de otro.
+        // El armado del carrito (`POST /api/carts`) deja su id en `carritos_propios` y la sesion del test
+        // persiste entre pedidos: sin vaciarla, este carrito seria «propio» y no el de otro.
+        $this->flushSession();
+
         $this->postJson('/api/mercado-pago/tarjeta/montos', [
             'cart_id'           => $cart->id,
             'payment_method_id' => $this->metodo_tarjeta->id,
