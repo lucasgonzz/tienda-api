@@ -628,9 +628,12 @@ class MercadoPagoController extends Controller
             return response()->json(['ignorado' => true, 'motivo' => 'no es una notificacion de pago completa'], 200);
         }
 
-        $access_token = MercadoPagoCredentialsHelper::access_token($commerce_id);
+        // Las credenciales con las que se pudo haber cobrado: la del comercio (conector o fila MercadoPago) y
+        // la propia de cada fila de tipo Tarjeta Mercado Pago (mision `tienda-cobro-tarjeta`). Se prueban en
+        // orden hasta que una conozca el pago (un 404 es «ese pago es de otra cuenta»).
+        $tokens = $this->tokens_para_consultar_pagos($commerce_id);
 
-        if (empty($access_token)) {
+        if (empty($tokens)) {
             // warning y no error: la ruta es publica y cualquiera puede mandar un commerce_id inventado.
             Log::warning('MercadoPagoController@webhook: llego un pago para un comercio sin credencial de Mercado Pago', [
                 'commerce_id' => $commerce_id,
@@ -640,10 +643,16 @@ class MercadoPagoController extends Controller
             return response()->json(['ignorado' => true, 'motivo' => 'el comercio no tiene credencial'], 200);
         }
 
-        $respuesta = Http::withToken($access_token)
-            ->acceptJson()
-            ->timeout(20)
-            ->get(self::API_PAGOS.$payment_id);
+        foreach ($tokens as $access_token) {
+            $respuesta = Http::withToken($access_token)
+                ->acceptJson()
+                ->timeout(20)
+                ->get(self::API_PAGOS.$payment_id);
+
+            if ($respuesta->status() !== 404) {
+                break;
+            }
+        }
 
         if ($respuesta->status() === 404) {
             Log::warning('MercadoPagoController@webhook: Mercado Pago no conoce ese pago para este comercio', [
@@ -670,6 +679,36 @@ class MercadoPagoController extends Controller
 
         return ConsultaStockHelper::con_carrito($cart?->id, fn ($carrito) =>
             $this->registrar_webhook_en_carrito($carrito, $pago, $commerce_id, $payment_id));
+    }
+
+    /**
+     * Los access token con los que se puede consultar un pago del comercio, sin repetir y sin vacios: el de
+     * `MercadoPagoCredentialsHelper::credentials()` primero (como siempre) y despues el propio de cada fila de
+     * tipo Tarjeta Mercado Pago, que es con el que `TarjetaMercadoPagoHelper::cobrar()` cobra cuando la fila
+     * tiene credencial propia y no hay conector.
+     *
+     * @param int $commerce_id
+     * @return array<int, string>
+     */
+    protected function tokens_para_consultar_pagos($commerce_id)
+    {
+        $tokens = [];
+
+        $del_comercio = MercadoPagoCredentialsHelper::access_token($commerce_id);
+
+        if (!empty($del_comercio)) {
+            $tokens[] = $del_comercio;
+        }
+
+        $filas = PaymentMethod::where('user_id', $commerce_id)->with('type')->get();
+
+        foreach ($filas as $fila) {
+            if (TarjetaMercadoPagoHelper::es_tarjeta($fila) && !empty($fila->access_token) && !in_array($fila->access_token, $tokens, true)) {
+                $tokens[] = $fila->access_token;
+            }
+        }
+
+        return $tokens;
     }
 
     private function registrar_webhook_en_carrito(?Cart $cart, $pago, $commerce_id, $payment_id)
@@ -713,6 +752,20 @@ class MercadoPagoController extends Controller
             ]);
 
             return response()->json(['ignorado' => true, 'motivo' => 'ya hay un pago aprobado'], 200);
+        }
+
+        // Dos pagos APROBADOS para el mismo pedido (por ejemplo, un cobro con tarjeta que se repitio tras un
+        // corte de red): no se pisa el del pedido, y queda la alarma con los dos ids para devolver uno.
+        if ($this->es_pago_aprobado_duplicado($cart, $pago)) {
+            Log::error('MercadoPagoController@webhook: pago aprobado duplicado para un pedido que ya tiene otro pago aprobado, no se pisa (devolver uno)', [
+                'commerce_id'       => $commerce_id,
+                'cart_id'           => $cart->id,
+                'order_id'          => $cart->order_id,
+                'payment_id_pedido' => $cart->payment_id,
+                'payment_id_nuevo'  => isset($pago['id']) ? $pago['id'] : $payment_id,
+            ]);
+
+            return response()->json(['ignorado' => true, 'motivo' => 'pago aprobado duplicado'], 200);
         }
 
         $cart->payment_id     = isset($pago['id']) ? $pago['id'] : $payment_id;
@@ -816,6 +869,26 @@ class MercadoPagoController extends Controller
             'cuotas_cobradas' => isset($pago['installments']) ? $pago['installments'] : null,
             'medio_cobrado'   => isset($pago['payment_type_id']) ? $pago['payment_type_id'] : null,
         ]);
+    }
+
+    /**
+     * True si el carrito ya tiene un PEDIDO con un pago aprobado y llega la notificacion de OTRO pago, tambien
+     * aprobado (un cobro duplicado). Para el mismo pago las notificaciones siguen siendo idempotentes.
+     *
+     * @param \App\Cart $cart
+     * @param array $pago El pago tal como lo devuelve la API de Mercado Pago.
+     * @return bool
+     */
+    protected function es_pago_aprobado_duplicado(Cart $cart, array $pago)
+    {
+        if (empty($cart->order_id) || $cart->payment_status !== 'approved' || empty($cart->payment_id)) {
+            return false;
+        }
+
+        $es_el_mismo_pago = isset($pago['id']) && (string) $pago['id'] === (string) $cart->payment_id;
+        $viene_aprobado   = isset($pago['status']) && $pago['status'] === 'approved';
+
+        return !$es_el_mismo_pago && $viene_aprobado;
     }
 
     /**

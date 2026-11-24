@@ -41,7 +41,7 @@ class PaymentMethodController extends Controller
     /**
      * Prepara las filas de tipo "Tarjeta Mercado Pago" (cobro con tarjeta adentro de la tienda, mision
      * `tienda-cobro-tarjeta`, 24/11/2026): les pone la `public_key` de la cuenta con la que de verdad se
-     * cobra (la del conector o la de `payment_methods`, la misma que usa el cobro) para que el Brick tokenice
+     * cobra (`credentials_for_payment_method()` de ESA fila, la misma que usa el cobro) para que el Brick tokenice
      * contra esa cuenta, y SACA la fila si el comercio no tiene access_token: una opcion muerta en el
      * checkout es peor que ninguna. Nunca viaja un token. Las demas filas no cambian.
      *
@@ -57,21 +57,23 @@ class PaymentMethodController extends Controller
             return $payment_methods;
         }
 
-        $credentials = MercadoPagoCredentialsHelper::credentials($commerce_id);
-
-        if (empty($credentials['access_token'])) {
-            return $payment_methods->reject(function ($payment_method) {
-                return TarjetaMercadoPagoHelper::es_tarjeta($payment_method);
-            })->values();
-        }
-
-        foreach ($payment_methods as $payment_method) {
-            if (TarjetaMercadoPagoHelper::es_tarjeta($payment_method)) {
-                $payment_method->public_key = $credentials['public_key'];
+        // La credencial de CADA fila es la misma con la que `TarjetaMercadoPagoHelper::cobrar()` cobra:
+        // la del conector si esta conectado; si no, la propia de la fila; si no, la del comercio.
+        return $payment_methods->filter(function ($payment_method) use ($commerce_id) {
+            if (!TarjetaMercadoPagoHelper::es_tarjeta($payment_method)) {
+                return true;
             }
-        }
 
-        return $payment_methods;
+            $credentials = MercadoPagoCredentialsHelper::credentials_for_payment_method($commerce_id, $payment_method);
+
+            if (empty($credentials['access_token'])) {
+                return false;
+            }
+
+            $payment_method->public_key = $credentials['public_key'];
+
+            return true;
+        })->values();
     }
 
     /**

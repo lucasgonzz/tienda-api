@@ -5,7 +5,9 @@ namespace App\Http\Controllers\Helpers;
 use App\Cart;
 use App\Order;
 use App\PaymentMethod;
+use GuzzleHttp\Exception\TransferException;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -177,16 +179,19 @@ class TarjetaMercadoPagoHelper
      *  c. las cuotas tienen que estar entre las opciones del servidor (422 `cuotas_invalidas`);
      *  d. `monto_esperado` contra el total de esa opcion (409 `monto_cambio` con las opciones de hoy);
      *  e. carrito ya cobrado sin pedido: se reusa ese pago SIN volver a cobrar;
+     *  e2. conciliacion: se buscan en Mercado Pago los pagos de este carrito (`conciliar()`); uno aprobado por este
+     *      monto se reusa, uno en proceso frena, y si la busqueda falla no se cobra a ciegas;
      *  f. con N > 1 cuotas, Mercado Pago tiene que ofrecerlas sin interes para el comprador (422 `cuotas_con_interes`);
      *  g. `POST /v1/payments`;
      *  h. se interpreta la respuesta (aprobado / rechazado / en proceso / sin respuesta).
      *
      * @param Request $request `payment_method_id`, `cuotas`, `monto_esperado`, `tarjeta{token, payment_method_id, issuer_id, payer}`, `device_id`.
      * @param \App\Cart $cart El carrito, ya con candado.
+     * @param string|null $email_de_respaldo Email del comprador del pedido, si el Brick no manda el del pagador.
      * @return array|\Illuminate\Http\JsonResponse El pago aprobado como `['pago' => [...], 'cuotas' => N, 'metodo' => PaymentMethod, 'access_token' => ...]`,
      *         o la respuesta de error lista para devolver (no se crea pedido).
      */
-    public static function cobrar(Request $request, Cart $cart)
+    public static function cobrar(Request $request, Cart $cart, $email_de_respaldo = null)
     {
         // a. El metodo sale de la base y tiene que ser de tarjeta y de ESTE comercio.
         $payment_method = is_numeric($request->input('payment_method_id'))
@@ -261,6 +266,23 @@ class TarjetaMercadoPagoHelper
             }
         }
 
+        // e2. Conciliacion: la SPA pide un token NUEVO en cada Pagar, asi que la clave de idempotencia no alcanza
+        // para el reintento despues de un corte: un pago anterior pudo quedar aprobado sin que nos enteremos.
+        $conciliado = self::conciliar($cart, $access_token, $opcion['total']);
+
+        if ($conciliado instanceof \Symfony\Component\HttpFoundation\Response) {
+            return $conciliado;
+        }
+
+        if (is_array($conciliado)) {
+            Log::warning('TarjetaMercadoPagoHelper: el carrito ya tenia un pago aprobado en Mercado Pago, se reusa sin volver a cobrar', [
+                'cart_id'    => $cart->id,
+                'payment_id' => isset($conciliado['id']) ? $conciliado['id'] : null,
+            ]);
+
+            return ['pago' => $conciliado, 'cuotas' => $cuotas, 'metodo' => $payment_method, 'access_token' => $access_token];
+        }
+
         // f. En cuotas, Mercado Pago no le puede sumar SU interes al comprador.
         if ($cuotas > 1) {
             $sin_interes = self::cuotas_sin_interes($request, $access_token, $opcion['total'], $cuotas);
@@ -276,7 +298,7 @@ class TarjetaMercadoPagoHelper
             'token'              => $token,
             'installments'       => $cuotas,
             'payment_method_id'  => (string) $request->input('tarjeta.payment_method_id'),
-            'payer'              => ['email' => (string) $request->input('tarjeta.payer.email')],
+            'payer'              => ['email' => self::email_del_pagador($request, $email_de_respaldo)],
             'binary_mode'        => true,
             'external_reference' => (string) $cart->id,
             'description'        => 'Compra en '.($commerce ? $commerce->name : 'la tienda'),
@@ -311,7 +333,7 @@ class TarjetaMercadoPagoHelper
 
         try {
             $respuesta = self::http($access_token)->withHeaders($cabeceras)->post(self::API.'/v1/payments', $cuerpo);
-        } catch (ConnectionException $e) {
+        } catch (ConnectionException | RequestException | TransferException $e) {
             Log::warning('TarjetaMercadoPagoHelper: Mercado Pago no contesto al cobrar', ['cart_id' => $cart->id]);
 
             return self::sin_respuesta();
@@ -372,16 +394,19 @@ class TarjetaMercadoPagoHelper
     /**
      * Pide la devolucion de un pago aprobado cuando el pedido no se pudo crear. Nunca tira.
      *
+     * Si Mercado Pago no la acepta (4xx/5xx) o no contesta, queda un `Log::error` con el pago para devolverlo
+     * a mano, y el comprador NO debe leer que se devolvio (devuelve false).
+     *
      * @param array $cobro Lo que devolvio `cobrar()` (`pago`, `access_token`).
      * @param int $cart_id Solo para el log.
-     * @return void
+     * @return bool True si Mercado Pago acepto la devolucion.
      */
     public static function devolver_pago(array $cobro, $cart_id)
     {
         $payment_id = isset($cobro['pago']['id']) ? $cobro['pago']['id'] : null;
 
         if (empty($payment_id)) {
-            return;
+            return false;
         }
 
         try {
@@ -389,9 +414,18 @@ class TarjetaMercadoPagoHelper
                 ->withHeaders(['X-Idempotency-Key' => 'cc-devolucion-'.$payment_id])
                 ->post(self::API.'/v1/payments/'.$payment_id.'/refunds', []);
 
-            Log::error('TarjetaMercadoPagoHelper: se cobro pero el pedido no se pudo crear; se pidio la devolucion', [
-                'cart_id'    => $cart_id,
-                'payment_id' => $payment_id,
+            if ($respuesta->successful()) {
+                Log::error('TarjetaMercadoPagoHelper: se cobro pero el pedido no se pudo crear; se devolvio el pago', [
+                    'cart_id'    => $cart_id,
+                    'payment_id' => $payment_id,
+                ]);
+
+                return true;
+            }
+
+            Log::error('TarjetaMercadoPagoHelper: se cobro, el pedido no se pudo crear Y Mercado Pago no acepto la devolucion: devolver a mano', [
+                'cart_id'         => $cart_id,
+                'payment_id'      => $payment_id,
                 'devolucion_http' => $respuesta->status(),
             ]);
         } catch (\Throwable $e) {
@@ -400,6 +434,8 @@ class TarjetaMercadoPagoHelper
                 'payment_id' => $payment_id,
             ]);
         }
+
+        return false;
     }
 
     /**
@@ -425,6 +461,85 @@ class TarjetaMercadoPagoHelper
 
         $cart->unsetRelation('payment_method');
         $cart->save();
+    }
+
+    /**
+     * El email del pagador: el que manda el Brick; si viene vacio o invalido, el del comprador del pedido.
+     *
+     * @param Request $request
+     * @param string|null $email_de_respaldo
+     * @return string
+     */
+    private static function email_del_pagador(Request $request, $email_de_respaldo)
+    {
+        $del_brick = trim((string) $request->input('tarjeta.payer.email'));
+
+        if ($del_brick !== '' && filter_var($del_brick, FILTER_VALIDATE_EMAIL)) {
+            return $del_brick;
+        }
+
+        return (string) $email_de_respaldo;
+    }
+
+    /**
+     * Concilia con Mercado Pago ANTES de cobrar: busca los pagos de este carrito
+     * (`GET /v1/payments/search?external_reference=<cart_id>`, con la credencial con la que se cobra).
+     *
+     *  - Uno aprobado por el monto esperado: se devuelve ese pago (el pedido se crea con el, sin cobrar de nuevo).
+     *  - Uno en proceso o pendiente: 422 `pago_en_proceso`, no se cobra de nuevo.
+     *  - La busqueda falla (transporte, 4xx o 5xx): 503, nunca se cobra «a ciegas».
+     *  - Nada que sirva: null (se cobra).
+     *
+     * @param \App\Cart $cart
+     * @param string $access_token
+     * @param float $total El total de la opcion elegida.
+     * @return array|\Illuminate\Http\JsonResponse|null
+     */
+    private static function conciliar(Cart $cart, $access_token, $total)
+    {
+        try {
+            $respuesta = self::http($access_token)->get(self::API.'/v1/payments/search', [
+                'external_reference' => (string) $cart->id,
+                'sort'               => 'date_created',
+                'criteria'           => 'desc',
+                'limit'              => 30,
+            ]);
+        } catch (ConnectionException | RequestException | TransferException $e) {
+            Log::warning('TarjetaMercadoPagoHelper: no se pudo conciliar con Mercado Pago, no se cobra', ['cart_id' => $cart->id]);
+
+            return self::sin_respuesta();
+        }
+
+        if (!$respuesta->successful()) {
+            Log::warning('TarjetaMercadoPagoHelper: la busqueda de pagos fallo, no se cobra', ['cart_id' => $cart->id, 'http' => $respuesta->status()]);
+
+            return self::sin_respuesta();
+        }
+
+        $resultados = $respuesta->json('results');
+        $en_proceso = false;
+
+        foreach (is_array($resultados) ? $resultados : [] as $pago) {
+            if (!is_array($pago) || !isset($pago['external_reference']) || (string) $pago['external_reference'] !== (string) $cart->id) {
+                continue;
+            }
+
+            $estado = isset($pago['status']) ? $pago['status'] : null;
+
+            if ($estado === 'approved' && isset($pago['transaction_amount']) && abs((float) $pago['transaction_amount'] - $total) <= self::TOLERANCIA) {
+                return $pago;
+            }
+
+            if (in_array($estado, ['in_process', 'pending', 'authorized', 'in_mediation'], true)) {
+                $en_proceso = true;
+            }
+        }
+
+        if ($en_proceso) {
+            return self::error('pago_en_proceso', 'Tenés un pago de este pedido todavía en proceso. Esperá unos minutos antes de volver a intentar.', 422);
+        }
+
+        return null;
     }
 
     /**
@@ -473,7 +588,7 @@ class TarjetaMercadoPagoHelper
     {
         try {
             $respuesta = self::http($access_token)->get(self::API.'/v1/payments/'.(int) $cart->payment_id);
-        } catch (ConnectionException $e) {
+        } catch (ConnectionException | RequestException | TransferException $e) {
             return self::sin_respuesta();
         }
 
@@ -515,7 +630,7 @@ class TarjetaMercadoPagoHelper
 
         try {
             $respuesta = self::http($access_token)->get(self::API.'/v1/payment_methods/installments', $consulta);
-        } catch (ConnectionException $e) {
+        } catch (ConnectionException | RequestException | TransferException $e) {
             return self::sin_respuesta();
         }
 

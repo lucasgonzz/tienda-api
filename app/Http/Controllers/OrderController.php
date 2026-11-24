@@ -184,7 +184,11 @@ class OrderController extends Controller
         $cobro_aprobado = null;
 
         $cobro = function (Cart $cart) use ($request, &$cobro_aprobado) {
-            $resultado = TarjetaMercadoPagoHelper::cobrar($request, $cart);
+            // Email de respaldo del pagador: el del comprador del pedido (el mismo que usa `/orders`).
+            $comprador = Buyer::find($this->resolverBuyerIdDelPedido($request));
+            $email_de_respaldo = $comprador && $comprador->email ? $comprador->email : $request->input('buyer.email');
+
+            $resultado = TarjetaMercadoPagoHelper::cobrar($request, $cart, $email_de_respaldo);
 
             if ($resultado instanceof \Symfony\Component\HttpFoundation\Response) {
                 return $resultado;
@@ -204,7 +208,7 @@ class OrderController extends Controller
                 throw $e;
             }
 
-            TarjetaMercadoPagoHelper::devolver_pago($cobro_aprobado, $request->cart_id);
+            $se_devolvio = TarjetaMercadoPagoHelper::devolver_pago($cobro_aprobado, $request->cart_id);
 
             Log::error('OrderController@pagar_con_tarjeta: el pago se aprobo pero el pedido no se pudo crear', [
                 'cart_id'    => $request->cart_id,
@@ -214,7 +218,10 @@ class OrderController extends Controller
 
             return response()->json([
                 'codigo'  => 'pedido_no_creado',
-                'message' => 'No pudimos registrar tu pedido y devolvimos el pago. Probá de nuevo en unos minutos.',
+                // Solo se dice que se devolvio si Mercado Pago acepto la devolucion.
+                'message' => $se_devolvio
+                    ? 'No pudimos registrar tu pedido y devolvimos el pago. Probá de nuevo en unos minutos.'
+                    : 'No pudimos registrar tu pedido pero el pago quedó cobrado. El comercio te lo va a devolver y se va a contactar con vos.',
             ], 500);
         }
     }
