@@ -213,16 +213,30 @@ class ImagenParaMailHelper
             && is_file($real) && is_readable($real) ? $real : null;
     }
 
+    /**
+     * Entrada de CURLOPT_RESOLVE que fija la IP del host y el puerto del esquema (el esquema se compara
+     * en minúsculas: HTTPS:// también es 443).
+     *
+     * @param string $url URL a descargar.
+     * @param string $host Host de la URL.
+     * @param string $ip IP pública ya validada.
+     * @return string "host:puerto:ip"
+     */
+    protected function curlResolveEntry($url, $host, $ip)
+    {
+        $port = strtolower((string) parse_url($url, PHP_URL_SCHEME)) === 'https' ? 443 : 80;
+        return $host.':'.$port.':'.$ip;
+    }
+
     protected function download($url, $host, $ip)
     {
         $bytes = '';
         if (app()->environment('testing')) return ''; // En tests sólo downloader fake explícito.
         $ch = curl_init($url);
-        $port = parse_url($url, PHP_URL_SCHEME) === 'https' ? 443 : 80;
         curl_setopt_array($ch, [CURLOPT_FOLLOWLOCATION => false, CURLOPT_MAXREDIRS => 0,
             CURLOPT_CONNECTTIMEOUT_MS => 1000, CURLOPT_TIMEOUT_MS => 3000,
             CURLOPT_PROXY => '', CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-            CURLOPT_RESOLVE => [$host.':'.$port.':'.$ip], CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_RESOLVE => [$this->curlResolveEntry($url, $host, $ip)], CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2, CURLOPT_WRITEFUNCTION => function ($handle, $chunk) use (&$bytes) {
                 if (strlen($bytes) + strlen($chunk) > self::MAX_BYTES) return 0;
                 $bytes .= $chunk;
