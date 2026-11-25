@@ -214,4 +214,39 @@ class SerializacionDeSecretosTest extends TestCase
         // Y el acceso desde PHP sigue funcionando: $hidden no puede romper el login.
         $this->assertNotNull($buyer->password, '$hidden no puede impedir leer el atributo desde PHP: Hash::check lo necesita.');
     }
+
+    /**
+     * Misión envios-andreani (25/11/2026): el conector de Andreani de un comercio (número de cliente, contratos y el
+     * JSON de usuario y contraseña de la etapa 2) vive en la base compartida y NUNCA sale por el endpoint público
+     * del comercio. Es la misma regla que ya cumple el conector de Zipnova.
+     *
+     * Método agregado al final: no toca ninguna aserción de los tests de arriba.
+     */
+    public function test_el_endpoint_publico_del_comercio_no_manda_el_conector_de_andreani()
+    {
+        $comercio = User::create([
+            'name'     => 'Comercio Andreani Secretos',
+            'email'    => 'andreani-secretos-'.uniqid().'@test.local',
+            'password' => bcrypt('secreto'),
+            'status'   => 'commerce',
+        ]);
+
+        $plataforma = \App\Platform::firstOrCreate(['slug' => 'andreani'], ['name' => 'Andreani']);
+
+        \App\PlatformConnector::create([
+            'user_id'          => $comercio->id,
+            'platform_id'      => $plataforma->id,
+            'status'           => \App\PlatformConnector::STATUS_CONECTADO,
+            'access_token'     => json_encode(['usuario' => 'usuario-secreto-andreani', 'password' => 'clave-secreta-andreani']),
+            'platform_user_id' => 'CL0009999',
+            'expires_at'       => null,
+            'extra_config'     => ['contrato_domicilio' => '400009999', 'contrato_sucursal' => '400008888', 'sucursal_origen' => 40476, 'ofrecer_en_tienda' => true],
+        ]);
+
+        $crudo = $this->json('GET', '/api/commerce/'.$comercio->id)->assertStatus(200)->getContent();
+
+        foreach (['CL0009999', '400009999', '400008888', 'usuario-secreto-andreani', 'clave-secreta-andreani', 'access_token', 'platform_user_id', 'contrato_domicilio', 'contrato_sucursal'] as $prohibido) {
+            $this->assertStringNotContainsString($prohibido, $crudo, 'La respuesta publica del comercio no puede incluir '.$prohibido);
+        }
+    }
 }
