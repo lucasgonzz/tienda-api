@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Cart;
 use App\Envio;
+use App\Services\Envios\CotizadorDeEnviosService;
 use App\Services\Zipnova\EnvioDestinoHelper;
 use App\Services\Zipnova\SinArticulosException;
 use App\Services\Zipnova\SinZipnovaException;
@@ -67,7 +68,7 @@ use Illuminate\Support\Facades\Log;
  */
 class EnvioCartHelper
 {
-    /** Proveedor que se escribe en `orders.envio_proveedor`. */
+    /** Proveedor de las opciones que no declaran uno (todas las de Zipnova); el de cada pedido sale de `CotizadorDeEnviosService::proveedor_de()`. */
     const PROVEEDOR = Envio::PROVEEDOR_ZIPNOVA;
 
     /**
@@ -287,7 +288,8 @@ class EnvioCartHelper
             'envio_opcion'     => $opcion,
             'envio_destino'    => is_array($cart->envio_destino) ? $cart->envio_destino : null,
             'envio_precio'     => is_numeric($cart->envio_precio) ? round((float) $cart->envio_precio, 2) : 0.0,
-            'envio_proveedor'  => self::PROVEEDOR,
+            // El proveedor lo dice la opción elegida (Andreani directo trae `proveedor`); las de Zipnova no, y son Zipnova.
+            'envio_proveedor'  => CotizadorDeEnviosService::proveedor_de($opcion),
         ];
     }
 
@@ -476,7 +478,7 @@ class EnvioCartHelper
             self::promociones_del_request($data), self::combos_del_request($data), false);
 
         try {
-            return ZipnovaCotizadorService::cotizar(
+            return CotizadorDeEnviosService::cotizar(
                 (int) $cart->user_id,
                 $armado['lineas'],
                 $armado['subtotal'],

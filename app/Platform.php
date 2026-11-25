@@ -37,6 +37,13 @@ class Platform extends Model
      */
     public const SLUG_ZIPNOVA = 'zipnova';
 
+    /**
+     * Slug persistido para Andreani directo (misión envios-andreani, 25/11/2026): segunda opción de envío por
+     * correo de la tienda, al lado de Zipnova. Mismo valor que en `empresa-api`: el conector (número de cliente,
+     * contratos y preferencias) lo escribe el ERP y la tienda solo lo lee.
+     */
+    public const SLUG_ANDREANI = 'andreani';
+
     protected $guarded = [];
 
     /**
