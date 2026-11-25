@@ -68,11 +68,12 @@ return [
 
     // Andreani directo, misión envios-andreani (25/11/2026): segunda opción de envío por correo, al lado de
     // Zipnova. Sin credenciales a nivel instancia (cada comercio carga su número de cliente y contratos en el ERP).
-    // Mismo bloque que empresa-api (App\Services\Andreani\AndreaniClient), con el timeout más corto: acá cotiza un
+    // Mismo bloque que empresa-api (App\Services\Andreani\AndreaniClient), con el timeout más corto (5 s): acá cotiza un
     // endpoint público y Andreani tarda o cae sin que eso pueda frenar la cotización de Zipnova.
     'andreani' => [
         'base_url'         => env('ANDREANI_BASE_URL', 'https://apis.andreani.com'),
-        'timeout'          => (int) env('ANDREANI_TIMEOUT', 8),
+        // 5 s: con Andreani lento la ficha del producto espera como mucho una tarifa (ver AndreaniCotizadorService).
+        'timeout'          => (int) env('ANDREANI_TIMEOUT', 5),
         'guzzle_verify'    => filter_var(env('ANDREANI_GUZZLE_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
         'guzzle_ca_bundle' => env('ANDREANI_GUZZLE_CA_BUNDLE', ''),
     ],

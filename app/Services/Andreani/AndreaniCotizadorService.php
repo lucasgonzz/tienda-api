@@ -29,7 +29,10 @@ use Illuminate\Support\Facades\Log;
  * Zipnova (el pedido de Lucas del 25/11: Andreani es otra opción, no un punto de falla): cualquier problema sale
  * como `motivo` y la lista de opciones queda vacía. Un solo intento y timeout corto (`services.andreani.timeout`).
  *
- * Caché de diez minutos para tarifas y sucursales, como Zipnova: una falla nunca se cachea.
+ * Caché de diez minutos para tarifas y sucursales, como Zipnova: una falla de Andreani con respuesta (400, 5xx) nunca
+ * se cachea. Excepción deliberada y corta: si la tarifa a domicilio falla SIN respuesta (status 0: timeout o
+ * conexión), esa cotización no pide sucursales ni la tarifa de sucursal (tres esperas de timeout en serie) y la falla
+ * se recuerda 60 s por comercio para que la siguiente cotización no espere de nuevo.
  *
  * Motivos (`motivo`, null si hay al menos una opción):
  *   `no_conectado`      el comercio no ofrece Andreani (no conectado, apagado o sin esquema).
@@ -47,6 +50,16 @@ class AndreaniCotizadorService
     /** Prefijos de las claves de caché. */
     const PREFIJO_CACHE_TARIFA = 'andreani-tarifa:';
     const PREFIJO_CACHE_SUCURSALES = 'andreani-sucursales:';
+
+    /**
+     * Memoria corta de "Andreani no respondió" (timeout o conexión), por comercio: sin datos sensibles, solo la
+     * marca. Evita que la segunda cotización de la ficha (y las de los demás compradores) vuelva a esperar el
+     * timeout mientras Andreani está lento o caído.
+     */
+    const PREFIJO_CACHE_CAIDA = 'andreani-caida:';
+
+    /** Cuánto se recuerda esa falla de conexión: un minuto. */
+    const SEGUNDOS_DE_CACHE_DE_CAIDA = 60;
 
     /**
      * True si el comercio ofrece Andreani en la tienda. Nunca lanza.
@@ -182,11 +195,19 @@ class AndreaniCotizadorService
             }
         }
 
+        // Andreani sin conexión hace un instante: no se espera otro timeout (Zipnova cotiza igual).
+        if (self::hay_caida_reciente($commerce_id)) {
+            $vacio['motivo'] = 'error';
+
+            return $vacio;
+        }
+
         $consulta = AndreaniTarifaNormalizer::bultos_para_consulta($bultos, $config['declarar_valor']);
         $client = new AndreaniClient();
 
         $opciones = [];
         $motivo_de_falla = null;
+        $sin_conexion = false;
 
         // Domicilio: es la opción base (el contrato de domicilio es obligatorio para estar conectado).
         try {
@@ -198,10 +219,17 @@ class AndreaniCotizadorService
             }
         } catch (AndreaniException $e) {
             $motivo_de_falla = self::motivo_de($e);
+
+            // Status 0 = no hubo respuesta (timeout, conexión, respuesta rota): con las sucursales y la tarifa de
+            // sucursal pasaría lo mismo, y cada intento cuesta un timeout entero.
+            if ($e->getStatus() === 0) {
+                $sin_conexion = true;
+                self::recordar_caida($commerce_id);
+            }
         }
 
         // Retiro en sucursal: solo con contrato de sucursal y sucursales que sirvan en el CP.
-        if (!is_null($config['contrato_sucursal'])) {
+        if (!$sin_conexion && !is_null($config['contrato_sucursal'])) {
             $opcion_sucursal = self::opcion_de_sucursal($client, $commerce_id, $credentials['cliente'], $config, $zipcode, $consulta, $bultos, $valor_declarado, $envio_gratis);
             if (!is_null($opcion_sucursal)) {
                 $opciones[] = $opcion_sucursal;
@@ -303,6 +331,32 @@ class AndreaniCotizadorService
         self::escribir_cache($clave, $sucursales);
 
         return $sucursales;
+    }
+
+    /**
+     * True si hace menos de un minuto Andreani no respondió para este comercio.
+     *
+     * @param int $commerce_id
+     * @return bool
+     */
+    protected static function hay_caida_reciente($commerce_id)
+    {
+        return self::leer_cache(self::PREFIJO_CACHE_CAIDA . (int) $commerce_id) === true;
+    }
+
+    /**
+     * Recuerda por un minuto que Andreani no respondió. Solo la marca, nada del comercio ni de la consulta.
+     *
+     * @param int $commerce_id
+     * @return void
+     */
+    protected static function recordar_caida($commerce_id)
+    {
+        try {
+            Cache::put(self::PREFIJO_CACHE_CAIDA . (int) $commerce_id, true, self::SEGUNDOS_DE_CACHE_DE_CAIDA);
+        } catch (\Throwable $e) {
+            Log::warning('AndreaniCotizadorService: no se pudo recordar la falla de conexión: ' . $e->getMessage());
+        }
     }
 
     /**
