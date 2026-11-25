@@ -231,6 +231,28 @@ class Ronda2CorreccionesTest extends TestCase
         ]);
     }
 
+    /**
+     * Pestaña vieja con consultas activas: A 2/3 (pidio 5, stock 2) y el PUT trae A=5. El renglon se
+     * clasifica con lo que realmente queda guardado (2), no con 5: no hay 422 ni `stock_a_consultar`.
+     *
+     * @return void
+     */
+    public function test_ca27_pestania_vieja_con_consultas_activas_clasifica_con_la_cantidad_guardada()
+    {
+        $this->comercio->online_configuration()->update(['permitir_pedidos_sin_stock' => 1]);
+        $a = $this->articulo(['stock' => 2]);
+        $b = $this->articulo(['stock' => 10]);
+        $this->renglon($a, 2, 3, 1);
+
+        $this->guardar([$this->lineaDelPayload($a, 5), $this->lineaDelPayload($b, 1)])->assertOk();
+
+        $this->assertDatabaseHas('article_cart', [
+            'cart_id' => $this->carrito->id, 'article_id' => $a->id,
+            'amount' => 2, 'amount_insuficiente' => 3, 'stock_a_consultar' => 0,
+        ]);
+        $this->assertDatabaseHas('article_cart', ['cart_id' => $this->carrito->id, 'article_id' => $b->id, 'amount' => 1]);
+    }
+
     // ───────────────────────── ayudas ─────────────────────────
 
     /**
