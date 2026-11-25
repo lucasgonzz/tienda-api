@@ -252,6 +252,8 @@ class CartController extends Controller
            faltante) no pasan por el control de stock aunque se siguen guardando. Sin la columna
            nueva la foto es vacia y todo corre como antes. */
         $previas = CartStockNoticeHelper::snapshot_de_lineas($cart);
+        // Cantidad vieja de una pestaña que no vio el recorte: se trabaja con la que queda guardada.
+        $articulos = CartStockNoticeHelper::con_cantidades_guardadas($articulos, $previas);
         $consultas = ConsultaStockHelper::clasificar_payload($cart, CartStockNoticeHelper::sin_lineas_esperando_stock($articulos, $previas));
 
         /* El envio se sincroniza con las lineas que de verdad se guardan, no con las del payload

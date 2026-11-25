@@ -149,6 +149,51 @@ class CartStockNoticeHelper
     }
 
     /**
+     * Dice si la cantidad del payload es la ORIGINAL pedida de un renglon recortado
+     * (`amount + amount_insuficiente` de la base): el valor viejo de una pestaña, no una decision.
+     *
+     * @param  array  $previa  Entrada de `snapshot_de_lineas()`.
+     * @param  mixed  $cantidad  Cantidad que trae el payload.
+     * @return bool
+     */
+    private static function es_cantidad_original(array $previa, $cantidad)
+    {
+        return is_numeric($previa['amount_insuficiente']) && (float) $previa['amount_insuficiente'] > 0
+            && is_numeric($cantidad)
+            && (float) $cantidad === (float) $previa['amount'] + (float) $previa['amount_insuficiente'];
+    }
+
+    /**
+     * Reemplaza en el payload la cantidad vieja de una pestaña (la original pedida de un renglon
+     * recortado) por la que realmente queda guardada, para que el control de stock, el envio y el
+     * precio trabajen con lo que se va a guardar y no con unidades que se descartan (R2-4).
+     *
+     * @param  array  $articulos  Lineas del payload del SPA.
+     * @param  array  $previas  Resultado de `snapshot_de_lineas()`.
+     * @return array  Las mismas lineas, con la cantidad corregida donde corresponde.
+     */
+    public static function con_cantidades_guardadas(array $articulos, array $previas)
+    {
+        if (empty($previas)) {
+            return $articulos;
+        }
+
+        foreach ($articulos as $indice => $articulo) {
+            if (isset($articulo['is_promocion_vinoteca'])) {
+                continue;
+            }
+            $clave = ConsultaStockHelper::clave_linea(CartHelper::id_de_linea($articulo), $articulo['pivot']['variant_id'] ?? null);
+            if (isset($previas[$clave]) && self::es_cantidad_original($previas[$clave], $articulo['pivot']['amount'] ?? null)) {
+                $articulos[$indice]['pivot']['amount'] = $previas[$clave]['amount'];
+                if (isset($articulo['amount'])) {
+                    $articulos[$indice]['amount'] = $previas[$clave]['amount'];
+                }
+            }
+        }
+        return $articulos;
+    }
+
+    /**
      * Atributos de pivote que corresponden a un renglon que se vuelve a guardar: conserva faltante y
      * casilla si la cantidad no cambio, los resetea (0 y marcada) si el comprador la cambio.
      *
@@ -168,11 +213,7 @@ class CartStockNoticeHelper
             return [];
         }
         $previa = $previas[$clave];
-        $es_cantidad_original = is_numeric($previa['amount_insuficiente']) && (float) $previa['amount_insuficiente'] > 0
-            && is_numeric($cantidad)
-            && (float) $cantidad === (float) $previa['amount'] + (float) $previa['amount_insuficiente'];
-
-        if ($es_cantidad_original) {
+        if (self::es_cantidad_original($previa, $cantidad)) {
             // Pestaña vieja: se queda lo que dice la base, incluida la cantidad ya recortada.
             return [
                 'amount' => $previa['amount'],
