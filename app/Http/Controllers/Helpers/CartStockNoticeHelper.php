@@ -254,7 +254,8 @@ class CartStockNoticeHelper
      * empresa-api recorto un renglon, el faltante quedaria colgado y el comprador veria "ahora hay 0
      * disponibles". Por eso, a los renglones con `amount_insuficiente > 0` cuyo `tope_de_linea()` es
      * null se les devuelve la cantidad (con la casilla marcada o ausente: `amount + faltante`) o solo
-     * se olvida el faltante (casilla desmarcada), sin mail ni Message y sin tocar `carts.updated_at`
+     * se olvida el faltante (casilla desmarcada). Excepcion: con consultas activas y stock 0 el renglon
+     * sigue esperando la reposicion (CA17). Sin mail ni Message y sin tocar `carts.updated_at`
      * (se escribe directo en `article_cart`). No agrega consultas cuando el carrito ya trae sus articulos y
      * ninguno tiene faltante; si no los trae, hace una sola consulta con las variantes.
      *
@@ -285,6 +286,13 @@ class CartStockNoticeHelper
                 continue;
             }
             if (self::tope_de_linea($configuracion, $articulo, $variante, $consultas_activas) !== null) {
+                continue;
+            }
+
+            // "Consultar con 0": con consultas activas y stock exactamente 0 el renglon no tiene tope
+            // solo porque se pide a consultar, pero sigue esperando la reposicion (CA17): no se sanea.
+            $disponible = $variante ? $variante->stock : $articulo->stock;
+            if ($consultas_activas && $disponible !== null && (float) $disponible === 0.0) {
                 continue;
             }
 
