@@ -6,6 +6,7 @@ use App\Services\ActualizacionDelSistema;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 
 /**
@@ -16,9 +17,18 @@ use Throwable;
  *
  * Va en el grupo `api` del Kernel. El comercio se resuelve, en este orden:
  *   1. parámetro de ruta `commerce_id` (casi todas las rutas de la tienda);
- *   2. input `commerce_id` (query o cuerpo, p. ej. el webhook de Mercado Pago y varios POST);
- *   3. el comprador autenticado (`Buyer.user_id`, guard `buyer`) para las rutas `auth:buyer` sin comercio.
- * Si no se puede identificar ningún comercio, la request pasa (no hay a quién bloquear).
+ *   2. input `commerce_id` (query o cuerpo, p. ej. el alta `POST carts` y el webhook de Mercado Pago);
+ *   3. el carrito (`carts.user_id`, que ES el comercio: `CartController@store` guarda
+ *      `user_id = commerce_id` y `lastCart` filtra por él): el `{cart_id}` de las rutas de carrito, el
+ *      input `cart_id` (`POST mercado-pago/preference`, `POST orders`, `POST mercado-pago/tarjeta/montos`)
+ *      y el `id` del cuerpo de `PUT api/carts`. Se lee de la base, no del cuerpo: un `user_id` mentido en el
+ *      cuerpo no puede bloquear a otro comercio;
+ *   4. `payment_method.user_id` del cuerpo (`POST mercado-pago/preference` sin carrito): es el comercio que
+ *      cobra (`MercadoPagoController@preference` hace `User::find($request->payment_method['user_id'])`);
+ *   5. el comprador autenticado (`Buyer.user_id`, guard `buyer`) para las rutas `auth:buyer` sin comercio.
+ * El SPA real NO manda `commerce_id` en la compra (los puntos 3 y 4 existen por eso): sin ellos un invitado
+ * podía pagar con Mercado Pago en plena actualización. Si no se puede identificar ningún comercio, o la
+ * resolución falla, la request pasa (no hay a quién bloquear).
  *
  * Exceptuadas, siempre pasan:
  *   - `api/mercado-pago/webhook`: Mercado Pago no puede perder avisos de pago por una actualización;
@@ -69,7 +79,7 @@ class TiendaActualizando
     }
 
     /**
-     * Resuelve el comercio de la request: parámetro de ruta, luego input, luego comprador autenticado.
+     * Resuelve el comercio de la request: ruta, input `commerce_id`, carrito, medio de pago y comprador autenticado (ver la clase).
      *
      * @param \Illuminate\Http\Request $request Request entrante.
      * @return int Id del comercio, o 0 si no se pudo identificar.
@@ -88,7 +98,54 @@ class TiendaActualizando
             return $del_input;
         }
 
+        $del_carrito = $this->comercio_del_carrito($request);
+
+        if ($del_carrito > 0) {
+            return $del_carrito;
+        }
+
+        $del_medio_de_pago = $this->como_id($request->input('payment_method.user_id'));
+
+        if ($del_medio_de_pago > 0) {
+            return $del_medio_de_pago;
+        }
+
         return $this->comercio_del_comprador();
+    }
+
+    /**
+     * Comercio dueño del carrito que nombra la request (`carts.user_id`), leído de la base.
+     *
+     * El id del carrito sale, en este orden, de: parámetro de ruta `cart_id` (DELETE/PATCH/PUT de
+     * `carts/{cart_id}...`), input `cart_id` (preference, orders, montos de tarjeta) y, sólo en
+     * `PUT api/carts`, del `id` del cuerpo (el SPA manda el carrito entero que devolvió el servidor). El `id` no
+     * se mira en otras rutas: es un nombre demasiado genérico y podría ser de cualquier otro recurso.
+     * Nunca rompe la request: carrito inexistente, id inválido o error de base devuelven 0.
+     *
+     * @param \Illuminate\Http\Request $request Request entrante.
+     * @return int Id del comercio dueño del carrito, o 0 si no se pudo determinar.
+     */
+    protected function comercio_del_carrito(Request $request): int
+    {
+        $cart_id = $this->como_id($request->route('cart_id'));
+
+        if ($cart_id <= 0) {
+            $cart_id = $this->como_id($request->input('cart_id'));
+        }
+
+        if ($cart_id <= 0 && $request->isMethod('PUT') && $request->is('api/carts')) {
+            $cart_id = $this->como_id($request->input('id'));
+        }
+
+        if ($cart_id <= 0) {
+            return 0;
+        }
+
+        try {
+            return $this->como_id(DB::table('carts')->where('id', $cart_id)->value('user_id'));
+        } catch (Throwable $excepcion) {
+            return 0;
+        }
     }
 
     /**
