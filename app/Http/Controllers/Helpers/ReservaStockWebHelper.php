@@ -213,6 +213,10 @@ class ReservaStockWebHelper
         }
         $lineas = DB::table('article_cart')->where('cart_id', $carrito->id)->orderBy('id')->lockForUpdate()->get();
         foreach ($lineas as $linea) {
+            // Un renglon esperando stock (cantidad 0 con faltante) no se envia ni se reserva.
+            if (CartStockNoticeHelper::es_linea_esperando_stock($linea)) {
+                continue;
+            }
             if (!is_numeric($linea->amount) || !is_finite((float) $linea->amount)
                 || (float) $linea->amount <= 0 || floor((float) $linea->amount) !== (float) $linea->amount) {
                 ConsultaStockHelper::fallar('Ingresá una cantidad entera y mayor que cero para cada artículo del pedido.');
