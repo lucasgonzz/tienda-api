@@ -198,7 +198,8 @@ class OrderController extends Controller
 
             TarjetaMercadoPagoHelper::anotar_en_el_carrito($cart, $resultado);
 
-            return $resultado['pago'];
+            // El cobro entero (pago aprobado y, si se reuso uno previo, los atributos reales del pedido).
+            return $resultado;
         };
 
         try {
@@ -218,10 +219,11 @@ class OrderController extends Controller
 
             return response()->json([
                 'codigo'  => 'pedido_no_creado',
-                // Solo se dice que se devolvio si Mercado Pago acepto la devolucion.
+                // Solo se dice que se devolvio si Mercado Pago acepto la devolucion. Si no, el pago sigue aprobado y el
+                // proximo Pagar lo reusa (`TarjetaMercadoPagoHelper::cobrar()`): no se cobra de nuevo.
                 'message' => $se_devolvio
                     ? 'No pudimos registrar tu pedido y devolvimos el pago. Probá de nuevo en unos minutos.'
-                    : 'No pudimos registrar tu pedido pero el pago quedó cobrado. El comercio te lo va a devolver y se va a contactar con vos.',
+                    : 'No pudimos registrar tu pedido. Volvé a tocar Pagar: no se te cobra de nuevo. Si no se resuelve, el comercio se va a contactar con vos.',
             ], 500);
         }
     }
@@ -461,6 +463,8 @@ class OrderController extends Controller
             // crear nada. Una respuesta corta el alta; el pago aprobado queda anotado en el carrito (que
             // `Order::create` lee) y sus datos de cobro viajan al pedido.
             $pago_cobrado = null;
+            $atributos_del_pago_previo = [];
+            $es_pago_previo = false;
 
             if ($cobro) {
                 $resultado_del_cobro = $cobro($cart);
@@ -469,7 +473,9 @@ class OrderController extends Controller
                     return $resultado_del_cobro;
                 }
 
-                $pago_cobrado = is_array($resultado_del_cobro) ? $resultado_del_cobro : null;
+                $pago_cobrado              = is_array($resultado_del_cobro) && isset($resultado_del_cobro['pago']) ? $resultado_del_cobro['pago'] : null;
+                $atributos_del_pago_previo = is_array($resultado_del_cobro) && isset($resultado_del_cobro['atributos_de_pedido']) ? $resultado_del_cobro['atributos_de_pedido'] : [];
+                $es_pago_previo            = is_array($resultado_del_cobro) && !empty($resultado_del_cobro['previo']);
             }
 
             Log::info('Fecha entrega carrito: '.$cart->fecha_entrega);
@@ -503,6 +509,8 @@ class OrderController extends Controller
             $a_consultar ? [] : CuotasMercadoPagoHelper::atributos_para_pedido($cart),
         	// Lo que Mercado Pago cobro de verdad (cuotas y medio), solo en el cobro con tarjeta.
         	$pago_cobrado ? CuotasMercadoPagoHelper::atributos_de_cobro($pago_cobrado) : [],
+        	// Si se reuso un pago aprobado previo: las cuotas y el recargo REALES que Mercado Pago cobro (pisan los de la opcion elegida).
+        	$atributos_del_pago_previo,
         	// La direccion de entrega (`buyer_address_id` + `envio_direccion`), solo con el esquema y si
         	// el carrito tiene una (vacio si no: el create de siempre no cambia).
         	$atributos_de_direccion));
@@ -619,7 +627,8 @@ class OrderController extends Controller
             // pasar de cuerpo vacio a cuerpo con una clave no rompe al SPA viejo (ignora el
             // cuerpo del 201) ni al SPA nuevo contra una API vieja (lee el id de forma
             // defensiva). El status sigue siendo 201 y no se saca ni se renombra nada.
-        	return response()->json(['order_id' => $order->id], 201);
+        	// `pago_previo` (aditivo, solo si se reuso un pago aprobado anterior) para que la SPA lo muestre.
+        	return response()->json($es_pago_previo ? ['order_id' => $order->id, 'pago_previo' => true] : ['order_id' => $order->id], 201);
         }
         return response(null, 200);
     }

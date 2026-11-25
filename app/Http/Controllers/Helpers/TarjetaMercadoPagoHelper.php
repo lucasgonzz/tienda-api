@@ -253,34 +253,38 @@ class TarjetaMercadoPagoHelper
             ], 409);
         }
 
-        // e. Pago aprobado en el carrito pero sin pedido (se cobro y la transaccion del pedido fallo): se reusa.
+        // e. Un pago APROBADO de este carrito (sea del monto que sea) bloquea un cobro nuevo: el pedido se crea con
+        // ESE pago. Primero el que el carrito ya tiene anotado (se cobro y la transaccion del pedido fallo)...
+        $previo = null;
+
         if ($cart->payment_status === 'approved' && !empty($cart->payment_id)) {
-            $recuperado = self::pago_ya_aprobado($cart, $access_token, $opcion['total']);
+            $anotado = self::pago_ya_aprobado($cart, $access_token);
 
-            if ($recuperado instanceof \Symfony\Component\HttpFoundation\Response) {
-                return $recuperado;
+            if ($anotado instanceof \Symfony\Component\HttpFoundation\Response) {
+                return $anotado;
             }
 
-            if (is_array($recuperado)) {
-                return ['pago' => $recuperado, 'cuotas' => $cuotas, 'metodo' => $payment_method, 'access_token' => $access_token];
+            $previo = $anotado;
+        }
+
+        // e2. ...y despues la conciliacion con Mercado Pago: la SPA pide un token NUEVO en cada Pagar, asi que la
+        // clave de idempotencia no alcanza para el reintento despues de un corte (o de cambiar de cuotas): un pago
+        // anterior pudo quedar aprobado sin que nos enteremos. Si la busqueda falla, no se cobra a ciegas.
+        $descartados = [];
+
+        if (is_null($previo)) {
+            $conciliado = self::conciliar($cart, $access_token);
+
+            if ($conciliado['respuesta']) {
+                return $conciliado['respuesta'];
             }
+
+            $previo      = $conciliado['previo'];
+            $descartados = $conciliado['descartados'];
         }
 
-        // e2. Conciliacion: la SPA pide un token NUEVO en cada Pagar, asi que la clave de idempotencia no alcanza
-        // para el reintento despues de un corte: un pago anterior pudo quedar aprobado sin que nos enteremos.
-        $conciliado = self::conciliar($cart, $access_token, $opcion['total']);
-
-        if ($conciliado instanceof \Symfony\Component\HttpFoundation\Response) {
-            return $conciliado;
-        }
-
-        if (is_array($conciliado)) {
-            Log::warning('TarjetaMercadoPagoHelper: el carrito ya tenia un pago aprobado en Mercado Pago, se reusa sin volver a cobrar', [
-                'cart_id'    => $cart->id,
-                'payment_id' => isset($conciliado['id']) ? $conciliado['id'] : null,
-            ]);
-
-            return ['pago' => $conciliado, 'cuotas' => $cuotas, 'metodo' => $payment_method, 'access_token' => $access_token];
+        if (is_array($previo)) {
+            return self::usar_pago_previo($previo, $cart, $opciones, $opcion, $payment_method, $access_token);
         }
 
         // f. En cuotas, Mercado Pago no le puede sumar SU interes al comprador.
@@ -363,6 +367,17 @@ class TarjetaMercadoPagoHelper
             'status'        => $estado,
             'status_detail' => isset($pago['status_detail']) ? $pago['status_detail'] : null,
         ]);
+
+        if ($estado === 'approved' && isset($pago['id']) && in_array((string) $pago['id'], $descartados, true)) {
+            // Mercado Pago repitio la respuesta ORIGINAL de un token ya usado (misma clave de idempotencia), pero ese
+            // pago figura devuelto o cancelado: no se crea un pedido contra un pago que ya no existe.
+            Log::warning('TarjetaMercadoPagoHelper: el cobro devolvio un pago que figura devuelto o cancelado, se pide cargar la tarjeta de nuevo', [
+                'cart_id'    => $cart->id,
+                'payment_id' => $pago['id'],
+            ]);
+
+            return self::error('token_usado', 'Volvé a cargar los datos de la tarjeta para pagar.', 409);
+        }
 
         if ($estado === 'approved') {
             // Alarma de la pregunta P1: si Mercado Pago le sumo SU interes, el pago sigue (ya esta cobrado).
@@ -485,18 +500,21 @@ class TarjetaMercadoPagoHelper
      * Concilia con Mercado Pago ANTES de cobrar: busca los pagos de este carrito
      * (`GET /v1/payments/search?external_reference=<cart_id>`, con la credencial con la que se cobra).
      *
-     *  - Uno aprobado por el monto esperado: se devuelve ese pago (el pedido se crea con el, sin cobrar de nuevo).
-     *  - Uno en proceso o pendiente: 422 `pago_en_proceso`, no se cobra de nuevo.
+     *  - Uno aprobado y sin devolver, DE CUALQUIER MONTO: es el `previo` (bloquea un cobro nuevo).
+     *  - Uno en proceso o pendiente (y ninguno aprobado): 422 `pago_en_proceso`, no se cobra de nuevo.
      *  - La busqueda falla (transporte, 4xx o 5xx): 503, nunca se cobra «a ciegas».
-     *  - Nada que sirva: null (se cobra).
+     *  - Los pagos devueltos, cancelados o con contracargo no bloquean, pero sus ids quedan en `descartados`: si
+     *    el cobro nuevo contesta con uno de ellos (respuesta original repetida por la misma clave de
+     *    idempotencia) no se crea pedido.
      *
      * @param \App\Cart $cart
      * @param string $access_token
-     * @param float $total El total de la opcion elegida.
-     * @return array|\Illuminate\Http\JsonResponse|null
+     * @return array{previo: array|null, respuesta: \Illuminate\Http\JsonResponse|null, descartados: array<int, string>}
      */
-    private static function conciliar(Cart $cart, $access_token, $total)
+    private static function conciliar(Cart $cart, $access_token)
     {
+        $resultado = ['previo' => null, 'respuesta' => null, 'descartados' => []];
+
         try {
             $respuesta = self::http($access_token)->get(self::API.'/v1/payments/search', [
                 'external_reference' => (string) $cart->id,
@@ -507,13 +525,17 @@ class TarjetaMercadoPagoHelper
         } catch (ConnectionException | RequestException | TransferException $e) {
             Log::warning('TarjetaMercadoPagoHelper: no se pudo conciliar con Mercado Pago, no se cobra', ['cart_id' => $cart->id]);
 
-            return self::sin_respuesta();
+            $resultado['respuesta'] = self::sin_respuesta();
+
+            return $resultado;
         }
 
         if (!$respuesta->successful()) {
             Log::warning('TarjetaMercadoPagoHelper: la busqueda de pagos fallo, no se cobra', ['cart_id' => $cart->id, 'http' => $respuesta->status()]);
 
-            return self::sin_respuesta();
+            $resultado['respuesta'] = self::sin_respuesta();
+
+            return $resultado;
         }
 
         $resultados = $respuesta->json('results');
@@ -526,20 +548,20 @@ class TarjetaMercadoPagoHelper
 
             $estado = isset($pago['status']) ? $pago['status'] : null;
 
-            if ($estado === 'approved' && isset($pago['transaction_amount']) && abs((float) $pago['transaction_amount'] - $total) <= self::TOLERANCIA) {
-                return $pago;
-            }
-
-            if (in_array($estado, ['in_process', 'pending', 'authorized', 'in_mediation'], true)) {
+            if (is_null($resultado['previo']) && self::es_pago_vigente_del_carrito($pago, $cart)) {
+                $resultado['previo'] = $pago;
+            } elseif (in_array($estado, ['refunded', 'cancelled', 'charged_back'], true) && isset($pago['id'])) {
+                $resultado['descartados'][] = (string) $pago['id'];
+            } elseif (in_array($estado, ['in_process', 'pending', 'authorized', 'in_mediation'], true)) {
                 $en_proceso = true;
             }
         }
 
-        if ($en_proceso) {
-            return self::error('pago_en_proceso', 'Tenés un pago de este pedido todavía en proceso. Esperá unos minutos antes de volver a intentar.', 422);
+        if (is_null($resultado['previo']) && $en_proceso) {
+            $resultado['respuesta'] = self::error('pago_en_proceso', 'Tenés un pago de este pedido todavía en proceso. Esperá unos minutos antes de volver a intentar.', 422);
         }
 
-        return null;
+        return $resultado;
     }
 
     /**
@@ -577,14 +599,14 @@ class TarjetaMercadoPagoHelper
     }
 
     /**
-     * El pago que el carrito ya tiene aprobado, si sigue siendo valido para cobrar ESTE total.
+     * El pago que el carrito ya tiene aprobado anotado (`carts.payment_id`), de CUALQUIER monto, si Mercado Pago
+     * lo confirma aprobado, de este carrito y sin devolver.
      *
      * @param \App\Cart $cart Con `payment_id` y `payment_status = approved`.
      * @param string $access_token
-     * @param float $total El total de la opcion elegida.
-     * @return array|\Illuminate\Http\JsonResponse|null El pago, un 503 si Mercado Pago no contesta, o null si no sirve (se cobra de nuevo).
+     * @return array|\Illuminate\Http\JsonResponse|null El pago, un 503 si Mercado Pago no contesta, o null si no sirve.
      */
-    private static function pago_ya_aprobado(Cart $cart, $access_token, $total)
+    private static function pago_ya_aprobado(Cart $cart, $access_token)
     {
         try {
             $respuesta = self::http($access_token)->get(self::API.'/v1/payments/'.(int) $cart->payment_id);
@@ -598,14 +620,103 @@ class TarjetaMercadoPagoHelper
 
         $pago = $respuesta->json();
 
-        if (is_array($pago)
-            && isset($pago['status']) && $pago['status'] === 'approved'
-            && isset($pago['external_reference']) && (string) $pago['external_reference'] === (string) $cart->id
-            && isset($pago['transaction_amount']) && abs((float) $pago['transaction_amount'] - $total) <= self::TOLERANCIA) {
+        if (is_array($pago) && self::es_pago_vigente_del_carrito($pago, $cart)) {
             return $pago;
         }
 
         return null;
+    }
+
+    /**
+     * True si el pago es de este carrito, esta aprobado y no se devolvio.
+     *
+     * @param array $pago
+     * @param \App\Cart $cart
+     * @return bool
+     */
+    private static function es_pago_vigente_del_carrito(array $pago, Cart $cart)
+    {
+        if (!isset($pago['status']) || $pago['status'] !== 'approved'
+            || !isset($pago['external_reference']) || (string) $pago['external_reference'] !== (string) $cart->id
+            || !isset($pago['transaction_amount']) || (float) $pago['transaction_amount'] <= 0) {
+            return false;
+        }
+
+        $devuelto = isset($pago['transaction_amount_refunded']) ? (float) $pago['transaction_amount_refunded'] : 0.0;
+
+        return $devuelto < (float) $pago['transaction_amount'];
+    }
+
+    /**
+     * El pedido se crea con un pago aprobado que el carrito YA tenia, sin cobrar de nuevo, y registra lo que
+     * Mercado Pago realmente cobro: las cuotas (`installments`) y el recargo real en porcentaje sobre el total
+     * en 1 pago (`(cobrado - total_en_1_pago) / total_en_1_pago`, minimo 0).
+     *
+     * Si lo cobrado es MENOR al total en 1 pago actual (el carrito crecio), no alcanza: 409
+     * `pago_previo_no_cubre`, sin cobrar y sin pedido, y queda un `Log::error` para que el comercio lo resuelva.
+     *
+     * @param array $previo El pago aprobado.
+     * @param \App\Cart $cart
+     * @param array $opciones Las opciones de hoy (`opciones()`).
+     * @param array $opcion La opcion que eligio el comprador.
+     * @param \App\PaymentMethod $payment_method
+     * @param string $access_token
+     * @return array|\Illuminate\Http\JsonResponse El cobro (con `previo` y los atributos del pedido) o el 409.
+     */
+    private static function usar_pago_previo(array $previo, Cart $cart, array $opciones, array $opcion, PaymentMethod $payment_method, $access_token)
+    {
+        $cobrado = round((float) $previo['transaction_amount'], 2);
+
+        $total_en_un_pago = $opcion['total'];
+
+        foreach ($opciones as $candidata) {
+            if ($candidata['cuotas'] === 1) {
+                $total_en_un_pago = $candidata['total'];
+            }
+        }
+
+        if ($cobrado < $total_en_un_pago - self::TOLERANCIA) {
+            Log::error('TarjetaMercadoPagoHelper: el carrito tiene un pago aprobado que no cubre el total actual, no se cobra ni se crea el pedido', [
+                'cart_id'          => $cart->id,
+                'payment_id'       => isset($previo['id']) ? $previo['id'] : null,
+                'cobrado'          => $cobrado,
+                'total_en_un_pago' => $total_en_un_pago,
+            ]);
+
+            return self::error(
+                'pago_previo_no_cubre',
+                'Ya tenés un pago aprobado de $'.number_format($cobrado, 2, ',', '.').' para este carrito que no cubre el total actual. Comunicate con el comercio.',
+                409
+            );
+        }
+
+        if (abs($cobrado - $opcion['total']) > self::TOLERANCIA) {
+            Log::warning('TarjetaMercadoPagoHelper: el pago aprobado del carrito es de otro monto que el que eligio el comprador, el pedido queda con lo que Mercado Pago cobro', [
+                'cart_id'    => $cart->id,
+                'payment_id' => isset($previo['id']) ? $previo['id'] : null,
+                'cobrado'    => $cobrado,
+                'elegido'    => $opcion['total'],
+            ]);
+        }
+
+        $cuotas_cobradas = isset($previo['installments']) && (int) $previo['installments'] >= 1 ? (int) $previo['installments'] : 1;
+
+        $atributos = [];
+
+        if ($cuotas_cobradas > 1 && CuotasMercadoPagoHelper::pedido_disponible()) {
+            $recargo = $total_en_un_pago > 0 ? max(0.0, round(($cobrado - $total_en_un_pago) / $total_en_un_pago * 100, 2)) : 0.0;
+
+            $atributos = ['cuotas' => $cuotas_cobradas, 'cuotas_recargo' => $recargo];
+        }
+
+        return [
+            'pago'                => $previo,
+            'cuotas'              => $cuotas_cobradas,
+            'metodo'              => $payment_method,
+            'access_token'        => $access_token,
+            'previo'              => true,
+            'atributos_de_pedido' => $atributos,
+        ];
     }
 
     /**

@@ -649,7 +649,8 @@ class MercadoPagoController extends Controller
                 ->timeout(20)
                 ->get(self::API_PAGOS.$payment_id);
 
-            if ($respuesta->status() !== 404) {
+            // 404 (pago de otra cuenta), 401 y 403 (credencial vencida o de otra cuenta): se prueba la siguiente.
+            if (!in_array($respuesta->status(), [401, 403, 404], true)) {
                 break;
             }
         }
