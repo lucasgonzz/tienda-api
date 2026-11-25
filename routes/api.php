@@ -177,10 +177,18 @@ Route::post('/mercado-pago/webhook',
 	'MercadoPagoController@webhook'
 );
 
-// Payway
-Route::post('/payway/token',
-	'PaywayController@getToken'
-);
+// Cobro con tarjeta adentro de la tienda con Mercado Pago (mision tienda-cobro-tarjeta, 24/11/2026).
+// `montos`: las opciones de cuotas calculadas por el servidor. `pagar`: cobra y, solo con el pago
+// aprobado, crea el pedido. Cada una con su propio cubo de throttle.
+Route::post('/mercado-pago/tarjeta/montos',
+	'MercadoPagoController@montos_de_tarjeta'
+)->middleware('throttle:30,1,tarjeta-montos');
+Route::post('/mercado-pago/tarjeta/pagar',
+	'OrderController@pagar_con_tarjeta'
+)->middleware('throttle:10,1,tarjeta-pagar');
+
+// (Se saco `POST /payway/token` el 24/11/2026: recibia numero de tarjeta, vencimiento y CVV crudos en el
+// body y nadie la usaba; Payway.vue tokeniza en el navegador y le pega a /payment-card-info.)
 
 // DeliveryZones
 Route::get('/delivery-zones/{commerce_id}',

@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
 use App\Http\Controllers\Helpers\MercadoPagoCredentialsHelper;
 use App\Http\Controllers\Helpers\OnlinePaymentHelper;
+use App\Http\Controllers\Helpers\TarjetaMercadoPagoHelper;
 use App\Order;
 use App\PaymentMethod;
 use App\User;
@@ -42,6 +43,53 @@ class MercadoPagoController extends Controller
         $credentials = MercadoPagoCredentialsHelper::credentials_for_payment_method($user_id, $payment_method);
 
         return $credentials['access_token'];
+    }
+
+    /**
+     * Las opciones de cuotas del checkout con tarjeta adentro de la tienda (mision
+     * `tienda-cobro-tarjeta`, 24/11/2026): `POST /api/mercado-pago/tarjeta/montos`.
+     *
+     * Todo lo calcula el SERVIDOR (`TarjetaMercadoPagoHelper::opciones()`): precio web + envio y, sobre
+     * esa base, el recargo de cada fila de `cuotas`. El comprador ve solo el valor de cada cuota; el
+     * `total` viaja para que la SPA lo mande de vuelta como `monto_esperado`.
+     *
+     * - Carrito que no es de la sesion: 403 (mismo criterio que el resto de la tienda).
+     * - Metodo que no es de tipo Tarjeta Mercado Pago o que es de otro comercio: 422.
+     *
+     * @param Request $request `cart_id` y `payment_method_id`.
+     * @return \Illuminate\Http\JsonResponse `{opciones: [{cuotas, valor_cuota, total}]}`.
+     */
+    function montos_de_tarjeta(Request $request)
+    {
+        $cart = is_numeric($request->input('cart_id')) ? Cart::find((int) $request->input('cart_id')) : null;
+
+        if (!CartOwnershipHelper::puede($cart)) {
+            return response()->json(['codigo' => 'carrito', 'message' => 'No encontramos tu carrito.'], 403);
+        }
+
+        $payment_method = is_numeric($request->input('payment_method_id'))
+            ? PaymentMethod::with('type')->find((int) $request->input('payment_method_id'))
+            : null;
+
+        if (!TarjetaMercadoPagoHelper::es_tarjeta($payment_method) || (int) $payment_method->user_id !== (int) $cart->user_id) {
+            return response()->json([
+                'codigo'  => 'metodo_invalido',
+                'message' => 'Ese medio de pago no corresponde a este carrito. Volvé a elegir cómo querés pagar.',
+            ], 422);
+        }
+
+        try {
+            $opciones = TarjetaMercadoPagoHelper::opciones($cart, ContextoDeComercio::comercio($cart->user_id), $payment_method);
+        } catch (\Throwable $e) {
+            CuotasMercadoPagoHelper::avisar_falla_de_lectura('montos_de_tarjeta', $payment_method, $e);
+
+            return response()->json([
+                'codigo'  => 'cuotas_no_disponibles',
+                'message' => 'No pudimos calcular las cuotas en este momento. Probá de nuevo en un rato.',
+            ], 503);
+        }
+
+        return response()->json(['opciones' => $opciones], 200);
     }
 
     /**
@@ -277,51 +325,15 @@ class MercadoPagoController extends Controller
      */
     protected function articulos_a_cobrar(Request $request, $commerce, $payment_method, $cart)
     {
+        if ($cart) {
+            // Una sola lista de lo que se cobra, compartida con el cobro con tarjeta (mision
+            // `tienda-cobro-tarjeta`): ver `OnlinePaymentHelper::items_del_carrito()`.
+            return OnlinePaymentHelper::items_del_carrito($cart, $commerce, $payment_method);
+        }
+
         $online_payment_helper = new OnlinePaymentHelper($commerce, $payment_method);
 
         $envio_precio = EnvioCartHelper::precio_para_cobrar($cart);
-
-        if ($cart) {
-            // Una forma propia "a convenir" (mision formas-envio-direcciones-maps) no se cobra
-            // online: no viaja ningun item de envio, ni siquiera uno de $0. El recargo por cuotas
-            // tampoco la suma, porque se calcula sobre estos mismos items.
-            $delivery_zone = is_null($envio_precio) && $cart->delivery_zone && !DireccionesEsquemaHelper::zona_a_convenir($cart->delivery_zone)
-                ? ['price' => $cart->delivery_zone->price]
-                : null;
-
-            $cupon = $cart->cupon
-                ? ['amount' => $cart->cupon->amount, 'percentage' => $cart->cupon->percentage]
-                : null;
-
-            $mapear = function ($item) {
-                return [
-                    'name'        => $item->name,
-                    'amount'      => $item->pivot->amount,
-                    'final_price' => $item->pivot->price,
-                ];
-            };
-
-            // withTrashed(): ver el punto 2 del docblock de arriba.
-            $articles = $cart->articles()->withTrashed()->get()->map($mapear)->all();
-
-            // Ver el punto 1 del docblock de arriba. `PromocionVinoteca` tambien usa SoftDeletes,
-            // asi que se trae con el mismo `withTrashed()` que los articulos y por el mismo motivo.
-            $promociones = $cart->promociones_vinoteca()->withTrashed()->get()->map($mapear)->all();
-
-            // Ver el punto 3 del docblock de arriba. Detras de la guarda de esquema, como TODO
-            // acceso a los combos en este repo: sin `cart_combo` esta linea seria "Base table or
-            // view not found" con el comprador apretando "Pagar", que es el peor lugar posible
-            // para enterarse (`ComboEsquemaHelper`). Sin esquema no hay combos que cobrar y el
-            // cobro queda byte por byte como en master.
-            //
-            // `withTrashed()` por el punto 2: `Combo` tambien usa SoftDeletes, y un combo dado de
-            // baja mientras el comprador tiene el carrito abierto no puede esfumarse del cobro.
-            $combos = ComboEsquemaHelper::disponible()
-                ? $cart->combos()->withTrashed()->get()->map($mapear)->all()
-                : [];
-
-            return $online_payment_helper->setPrices($cupon, $delivery_zone, array_merge($articles, $promociones, $combos), $envio_precio);
-        }
 
         $delivery_zone = is_null($envio_precio) ? $request->delivery_zone : null;
 
@@ -574,7 +586,7 @@ class MercadoPagoController extends Controller
      */
     protected function url_del_webhook(Request $request, $commerce_id)
     {
-        return rtrim($request->root(), '/').'/api/mercado-pago/webhook?commerce_id='.(int) $commerce_id;
+        return OnlinePaymentHelper::url_del_webhook($request, $commerce_id);
     }
 
     /**
@@ -616,9 +628,12 @@ class MercadoPagoController extends Controller
             return response()->json(['ignorado' => true, 'motivo' => 'no es una notificacion de pago completa'], 200);
         }
 
-        $access_token = MercadoPagoCredentialsHelper::access_token($commerce_id);
+        // Las credenciales con las que se pudo haber cobrado: la del comercio (conector o fila MercadoPago) y
+        // la propia de cada fila de tipo Tarjeta Mercado Pago (mision `tienda-cobro-tarjeta`). Se prueban en
+        // orden hasta que una conozca el pago (un 404 es «ese pago es de otra cuenta»).
+        $tokens = $this->tokens_para_consultar_pagos($commerce_id);
 
-        if (empty($access_token)) {
+        if (empty($tokens)) {
             // warning y no error: la ruta es publica y cualquiera puede mandar un commerce_id inventado.
             Log::warning('MercadoPagoController@webhook: llego un pago para un comercio sin credencial de Mercado Pago', [
                 'commerce_id' => $commerce_id,
@@ -628,10 +643,17 @@ class MercadoPagoController extends Controller
             return response()->json(['ignorado' => true, 'motivo' => 'el comercio no tiene credencial'], 200);
         }
 
-        $respuesta = Http::withToken($access_token)
-            ->acceptJson()
-            ->timeout(20)
-            ->get(self::API_PAGOS.$payment_id);
+        foreach ($tokens as $access_token) {
+            $respuesta = Http::withToken($access_token)
+                ->acceptJson()
+                ->timeout(20)
+                ->get(self::API_PAGOS.$payment_id);
+
+            // 404 (pago de otra cuenta), 401 y 403 (credencial vencida o de otra cuenta): se prueba la siguiente.
+            if (!in_array($respuesta->status(), [401, 403, 404], true)) {
+                break;
+            }
+        }
 
         if ($respuesta->status() === 404) {
             Log::warning('MercadoPagoController@webhook: Mercado Pago no conoce ese pago para este comercio', [
@@ -658,6 +680,36 @@ class MercadoPagoController extends Controller
 
         return ConsultaStockHelper::con_carrito($cart?->id, fn ($carrito) =>
             $this->registrar_webhook_en_carrito($carrito, $pago, $commerce_id, $payment_id));
+    }
+
+    /**
+     * Los access token con los que se puede consultar un pago del comercio, sin repetir y sin vacios: el de
+     * `MercadoPagoCredentialsHelper::credentials()` primero (como siempre) y despues el propio de cada fila de
+     * tipo Tarjeta Mercado Pago, que es con el que `TarjetaMercadoPagoHelper::cobrar()` cobra cuando la fila
+     * tiene credencial propia y no hay conector.
+     *
+     * @param int $commerce_id
+     * @return array<int, string>
+     */
+    protected function tokens_para_consultar_pagos($commerce_id)
+    {
+        $tokens = [];
+
+        $del_comercio = MercadoPagoCredentialsHelper::access_token($commerce_id);
+
+        if (!empty($del_comercio)) {
+            $tokens[] = $del_comercio;
+        }
+
+        $filas = PaymentMethod::where('user_id', $commerce_id)->with('type')->get();
+
+        foreach ($filas as $fila) {
+            if (TarjetaMercadoPagoHelper::es_tarjeta($fila) && !empty($fila->access_token) && !in_array($fila->access_token, $tokens, true)) {
+                $tokens[] = $fila->access_token;
+            }
+        }
+
+        return $tokens;
     }
 
     private function registrar_webhook_en_carrito(?Cart $cart, $pago, $commerce_id, $payment_id)
@@ -703,6 +755,20 @@ class MercadoPagoController extends Controller
             return response()->json(['ignorado' => true, 'motivo' => 'ya hay un pago aprobado'], 200);
         }
 
+        // Dos pagos APROBADOS para el mismo pedido (por ejemplo, un cobro con tarjeta que se repitio tras un
+        // corte de red): no se pisa el del pedido, y queda la alarma con los dos ids para devolver uno.
+        if ($this->es_pago_aprobado_duplicado($cart, $pago)) {
+            Log::error('MercadoPagoController@webhook: pago aprobado duplicado para un pedido que ya tiene otro pago aprobado, no se pisa (devolver uno)', [
+                'commerce_id'       => $commerce_id,
+                'cart_id'           => $cart->id,
+                'order_id'          => $cart->order_id,
+                'payment_id_pedido' => $cart->payment_id,
+                'payment_id_nuevo'  => isset($pago['id']) ? $pago['id'] : $payment_id,
+            ]);
+
+            return response()->json(['ignorado' => true, 'motivo' => 'pago aprobado duplicado'], 200);
+        }
+
         $cart->payment_id     = isset($pago['id']) ? $pago['id'] : $payment_id;
         $cart->payment_status = isset($pago['status']) ? $pago['status'] : null;
         $cart->save();
@@ -742,10 +808,10 @@ class MercadoPagoController extends Controller
      * pendiente no cobro nada, y anotarlo dejaria en el pedido «3 cuotas con tarjeta» sobre un
      * pedido sin cobrar. Las notificaciones de un mismo pago siguen siendo idempotentes.
      *
-     * 🔴 Solo cuando la feature APLICA a ese carrito (`CuotasMercadoPagoHelper::aplica_al_carrito()`:
-     * el metodo de pago ofrece cuotas, o el comprador ya habia elegido cuotas). Un comercio sin
-     * vinculo ni cuotas cargadas sigue exactamente como antes: su pedido no gana ni el medio ni las
-     * cuotas cobradas, y el ERP no empieza a mostrar nada nuevo.
+     * Mision `tienda-cobro-tarjeta` (24/11/2026), regla 8 del pedido: TODO pago aprobado anota el
+     * medio y las cuotas cobradas, aplique o no la feature de cuotas al carrito. Antes (15/10) solo se
+     * anotaba si el metodo ofrecia cuotas, y los pedidos de Masquito pagados con dinero en cuenta no
+     * mostraron nada en la ficha (ticket 160). Un pago rechazado o pendiente sigue sin anotar.
      *
      * No guarda: el llamador ya hace el `save()` del pedido. Sin las columnas (guarda de esquema)
      * no hace nada.
@@ -763,7 +829,7 @@ class MercadoPagoController extends Controller
 
         $atributos = CuotasMercadoPagoHelper::atributos_de_cobro($pago);
 
-        if (empty($atributos) || !CuotasMercadoPagoHelper::aplica_al_carrito($cart)) {
+        if (empty($atributos)) {
             return;
         }
 
@@ -804,6 +870,26 @@ class MercadoPagoController extends Controller
             'cuotas_cobradas' => isset($pago['installments']) ? $pago['installments'] : null,
             'medio_cobrado'   => isset($pago['payment_type_id']) ? $pago['payment_type_id'] : null,
         ]);
+    }
+
+    /**
+     * True si el carrito ya tiene un PEDIDO con un pago aprobado y llega la notificacion de OTRO pago, tambien
+     * aprobado (un cobro duplicado). Para el mismo pago las notificaciones siguen siendo idempotentes.
+     *
+     * @param \App\Cart $cart
+     * @param array $pago El pago tal como lo devuelve la API de Mercado Pago.
+     * @return bool
+     */
+    protected function es_pago_aprobado_duplicado(Cart $cart, array $pago)
+    {
+        if (empty($cart->order_id) || $cart->payment_status !== 'approved' || empty($cart->payment_id)) {
+            return false;
+        }
+
+        $es_el_mismo_pago = isset($pago['id']) && (string) $pago['id'] === (string) $cart->payment_id;
+        $viene_aprobado   = isset($pago['status']) && $pago['status'] === 'approved';
+
+        return !$es_el_mismo_pago && $viene_aprobado;
     }
 
     /**

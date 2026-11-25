@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
 use App\Http\Controllers\Helpers\MercadoPagoCredentialsHelper;
+use App\Http\Controllers\Helpers\TarjetaMercadoPagoHelper;
 use App\PaymentMethod;
 use Illuminate\Http\Request;
 
@@ -30,13 +31,53 @@ class PaymentMethodController extends Controller
 
         $this->publicar_public_key_vigente_de_mercado_pago($payment_methods, $commerce_id);
 
+        $payment_methods = $this->publicar_metodos_de_tarjeta($payment_methods, $commerce_id);
+
         $this->publicar_cuotas_disponibles($payment_methods);
 
         return response()->json(['payment_methods' => $payment_methods], 200);
     }
 
     /**
-     * Pone en las filas de tipo "MercadoPago" el campo `cuotas_disponibles`: las cuotas que el
+     * Prepara las filas de tipo "Tarjeta Mercado Pago" (cobro con tarjeta adentro de la tienda, mision
+     * `tienda-cobro-tarjeta`, 24/11/2026): les pone la `public_key` de la cuenta con la que de verdad se
+     * cobra (`credentials_for_payment_method()` de ESA fila, la misma que usa el cobro) para que el Brick tokenice
+     * contra esa cuenta, y SACA la fila si el comercio no tiene access_token: una opcion muerta en el
+     * checkout es peor que ninguna. Nunca viaja un token. Las demas filas no cambian.
+     *
+     * @param \Illuminate\Database\Eloquent\Collection $payment_methods Filas ya cargadas con `type`.
+     * @param int $commerce_id Comercio (owner).
+     * @return \Illuminate\Database\Eloquent\Collection La misma lista, sin las filas de tarjeta que no se pueden cobrar.
+     */
+    protected function publicar_metodos_de_tarjeta($payment_methods, $commerce_id)
+    {
+        if (!$payment_methods->contains(function ($payment_method) {
+            return TarjetaMercadoPagoHelper::es_tarjeta($payment_method);
+        })) {
+            return $payment_methods;
+        }
+
+        // La credencial de CADA fila es la misma con la que `TarjetaMercadoPagoHelper::cobrar()` cobra:
+        // la del conector si esta conectado; si no, la propia de la fila; si no, la del comercio.
+        return $payment_methods->filter(function ($payment_method) use ($commerce_id) {
+            if (!TarjetaMercadoPagoHelper::es_tarjeta($payment_method)) {
+                return true;
+            }
+
+            $credentials = MercadoPagoCredentialsHelper::credentials_for_payment_method($commerce_id, $payment_method);
+
+            if (empty($credentials['access_token'])) {
+                return false;
+            }
+
+            $payment_method->public_key = $credentials['public_key'];
+
+            return true;
+        })->values();
+    }
+
+    /**
+     * Pone en las filas de tipo "MercadoPago" (y "Tarjeta Mercado Pago") el campo `cuotas_disponibles`: las cuotas que el
      * comerciante cargo en el ERP para el metodo de cuenta corriente al que vinculo ese metodo
      * (mision `tienda-cuotas-mercado-pago`, 15/10/2026).
      *
@@ -55,7 +96,7 @@ class PaymentMethodController extends Controller
     protected function publicar_cuotas_disponibles($payment_methods)
     {
         foreach ($payment_methods as $payment_method) {
-            if (!CuotasMercadoPagoHelper::es_mercado_pago($payment_method)) {
+            if (!CuotasMercadoPagoHelper::admite_cuotas($payment_method)) {
                 continue;
             }
 
