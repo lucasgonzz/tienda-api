@@ -8,6 +8,7 @@ use App\DeliveryZone;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartHelper;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
+use App\Http\Controllers\Helpers\CartStockNoticeHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\ConsultaStockHelper;
 use App\Http\Controllers\Helpers\ReservaStockWebHelper;
@@ -245,7 +246,13 @@ class CartController extends Controller
             : [];
 
         $articulos = CartHelper::sin_lineas_no_disponibles($request->articles, $no_disponibles);
-        $consultas = ConsultaStockHelper::clasificar_payload($cart, $articulos);
+
+        /* Mision carritos-ajuste-stock: foto de los renglones antes del `sync([])` para conservar el
+           faltante y la casilla del comprador, y los renglones que esperan stock (cantidad 0 con
+           faltante) no pasan por el control de stock aunque se siguen guardando. Sin la columna
+           nueva la foto es vacia y todo corre como antes. */
+        $previas = CartStockNoticeHelper::snapshot_de_lineas($cart);
+        $consultas = ConsultaStockHelper::clasificar_payload($cart, CartStockNoticeHelper::sin_lineas_esperando_stock($articulos, $previas));
 
         /* El envio se sincroniza con las lineas que de verdad se guardan, no con las del payload
            crudo: si no, una linea descartada entra en la cotizacion de Zipnova y en el items_hash.
@@ -273,7 +280,7 @@ class CartController extends Controller
 
             if (count($articulos) >= 1) {
                 // Ya vienen limpias: se le pasa el resultado de arriba para no volver a consultar.
-                CartHelper::attachArticles($cart, $articulos, [], $consultas);
+                CartHelper::attachArticles($cart, $articulos, [], $consultas, $previas);
             }
 
             if (count($request->promociones_vinoteca) >= 1) {
@@ -361,6 +368,10 @@ class CartController extends Controller
             ConsultaStockHelper::fallar('Este carrito ya se envió como pedido. Para cambiarlo, contactá al negocio.');
         }
 
+        // Cantidades antes del cambio: si el comprador cambia a mano un renglon recortado, el faltante
+        // se olvida y la casilla vuelve a marcarse (mision carritos-ajuste-stock). Vacio sin la columna.
+        $cantidades_antes = CartStockNoticeHelper::cantidades_del_articulo($cart, $request->id);
+
         // `is_combo` apunta al tercer pivote, igual que `is_promocion_vinoteca` apunta al segundo.
         // Va detras de la guarda de esquema: sin `cart_combo` no hay a que apuntar, y un payload
         // con `is_combo` contra una base vieja no puede reventar el carrito.
@@ -387,6 +398,7 @@ class CartController extends Controller
             ]);
         }
 
+        CartStockNoticeHelper::resetear_faltante_si_cambio($cart, $request->id, $cantidades_antes);
 
         // 🔴 Y acá adentro está el arreglo del hueco que abre la misión combos-y-rangos-de-precio:
         // `set_total()` vuelve a resolver el precio de las líneas con tramos por cantidad
@@ -516,6 +528,45 @@ class CartController extends Controller
 
             CartHelper::recalcular_tras_quitar($cart);
             EnvioCartHelper::invalidar_cotizacion($cart);
+
+            return response()->json(['cart' => CartHelper::getFullModel($cart->id, false)], 200);
+        });
+    }
+
+    /**
+     * Cambia la casilla "completar al reponer" de un renglon del carrito (mision carritos-ajuste-stock).
+     * La regla vive en `CartStockNoticeHelper::cambiar_casilla()`; aca solo el molde de `remove_item`.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  int  $cart_id
+     * @return \Illuminate\Http\JsonResponse
+     */
+    function update_item(Request $request, $cart_id) {
+        $datos = $request->validate([
+            'tipo' => 'required|in:articulo',
+            'id' => 'required|integer|min:1',
+            'variant_id' => 'nullable|integer|min:1',
+            'completar_al_reponer' => 'required|boolean',
+        ]);
+
+        // Base anterior (sin la columna): se responde como respuesta y no como excepcion.
+        if (!CartStockNoticeHelper::hay_casilla()) {
+            return response()->json([
+                'codigo' => 'no_disponible',
+                'message' => 'Esta opción todavía no está disponible.',
+            ], 422);
+        }
+
+        return DB::transaction(function () use ($cart_id, $datos) {
+            $cart = Cart::lockForUpdate()->find($cart_id);
+            if (is_null($cart)) {
+                return response()->json(['cart' => null], 404);
+            }
+            if (!CartOwnershipHelper::puede($cart)) {
+                return response()->json(['cart' => null], 403);
+            }
+
+            CartStockNoticeHelper::cambiar_casilla($cart, $datos);
 
             return response()->json(['cart' => CartHelper::getFullModel($cart->id, false)], 200);
         });

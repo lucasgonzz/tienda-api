@@ -58,7 +58,18 @@ class CartHelper {
      *                                      sincroniza con las lineas que quedan). Null = calcularlas aca.
      * @return array<int, array{id: int, name: string}>  Las lineas descartadas (vacio si ninguna).
      */
-    static function attachArticles($cart, $articles, $no_disponibles = null, array $consultas = []) {
+    /**
+     * Guarda las lineas de articulo del carrito.
+     *
+     * @param  \App\Cart  $cart
+     * @param  array  $articles  Lineas del payload.
+     * @param  array|null  $no_disponibles  Lineas descartadas por lista de precios (null = calcularlas).
+     * @param  array  $consultas  Renglones a consultar (control de stock).
+     * @param  array  $previas  Foto de los renglones antes del guardado (`CartStockNoticeHelper::snapshot_de_lineas`):
+     *                          conserva el faltante y la casilla si la cantidad no cambio, los resetea si cambio.
+     * @return array
+     */
+    static function attachArticles($cart, $articles, $no_disponibles = null, array $consultas = [], array $previas = []) {
 
         if (count($articles) == 0) {
             return [];
@@ -111,6 +122,13 @@ class CartHelper {
 
                 /* El id se normaliza con la misma regla con la que se decidio si la linea se ve
                    (`id_de_linea()`): las lineas sin un id entero ya se descartaron arriba. */
+                // Faltante y casilla del comprador (vacio si la base no tiene la columna).
+                $atributos += CartStockNoticeHelper::atributos_de_faltante(
+                    $previas,
+                    ConsultaStockHelper::clave_linea($id, $variante_id),
+                    $article['pivot']['amount']
+                );
+
                 $cart->articles()->attach($id, $atributos + [
                                             'price'         => $price,
                                             'cost'          => $consulta ? $consulta->cost : $article['cost'],
@@ -1540,6 +1558,10 @@ class CartHelper {
         if ($depurar_repetidos) {
             $model = Self::check_repetidos($model);
         }
+
+        // Aviso "puede agotarse" por renglon (mision carritos-ajuste-stock): una sola consulta
+        // agrupada y solo si la opcion del negocio esta prendida.
+        CartStockNoticeHelper::marcar_puede_agotarse($model);
 
         return $model;
     }
