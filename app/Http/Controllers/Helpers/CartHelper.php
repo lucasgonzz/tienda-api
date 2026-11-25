@@ -105,6 +105,19 @@ class CartHelper {
                 $id = Self::id_de_linea($article);
                 $variante_id = $article['pivot']['variant_id'] ?? null;
                 $atributos = [];
+                /* Faltante y casilla del comprador. Si es la cantidad vieja de una pestaña que no vio el
+                   recorte, la cantidad de la base manda tambien para el precio (ronda 2, R2-4). */
+                $atributos += CartStockNoticeHelper::atributos_de_faltante(
+                    $previas,
+                    ConsultaStockHelper::clave_linea($id, $variante_id),
+                    $article['pivot']['amount']
+                );
+                if (isset($atributos['amount'])) {
+                    $article['pivot']['amount'] = $atributos['amount'];
+                    if (isset($article['amount'])) {
+                        $article['amount'] = $atributos['amount'];
+                    }
+                }
                 $consulta = $consultas[ConsultaStockHelper::clave_linea($id, $variante_id)] ?? null;
                 $linea_para_precio = $consulta
                     ? $consulta->toArray() + ['pivot' => $article['pivot'], 'amount' => $article['pivot']['amount']]
@@ -122,13 +135,6 @@ class CartHelper {
 
                 /* El id se normaliza con la misma regla con la que se decidio si la linea se ve
                    (`id_de_linea()`): las lineas sin un id entero ya se descartaron arriba. */
-                // Faltante y casilla del comprador (vacio si la base no tiene la columna).
-                $atributos += CartStockNoticeHelper::atributos_de_faltante(
-                    $previas,
-                    ConsultaStockHelper::clave_linea($id, $variante_id),
-                    $article['pivot']['amount']
-                );
-
                 $cart->articles()->attach($id, $atributos + [
                                             'price'         => $price,
                                             'cost'          => $consulta ? $consulta->cost : $article['cost'],
@@ -1517,13 +1523,20 @@ class CartHelper {
     }
 
     static function getFullModel($id, $depurar_repetidos = true) {
-        $model = Cart::where('id', $id)
+        $cargar = fn () => Cart::where('id', $id)
                         ->withAll()
                         ->with(['articles' => function($query) {
                             $query->withAll();
                         }])
                         ->first();
-                        
+        $model = $cargar();
+
+        // Faltantes viejos de renglones sin tope (mision carritos-ajuste-stock, ronda 2): se sanean
+        // antes de armar la respuesta y, si cambio algo, se vuelve a leer el carrito.
+        if ($model && CartStockNoticeHelper::sanear_faltantes_sin_tope($model)) {
+            $model = $cargar();
+        }
+
         $model->articles = ArticleHelper::setArticlesVariants($model->articles);
         $model->articles = ArticleHelper::checkPriceTypes($model->articles);
         $model->promociones_vinoteca = ArticleHelper::set_promociones_vinoteca($model->promociones_vinoteca);

@@ -155,7 +155,9 @@ class OnlinePaymentHelper {
         };
 
         // withTrashed(): un articulo dado de baja con el carrito abierto no puede esfumarse del cobro.
-        $articles = $cart->articles()->withTrashed()->get()->map($mapear)->all();
+        // Un renglon con cantidad 0 (esperando stock) no viaja: Mercado Pago rechaza items con quantity 0.
+        $articles = $cart->articles()->withTrashed()->get()
+            ->filter(fn ($item) => (float) $item->pivot->amount > 0)->map($mapear)->all();
 
         $promociones = $cart->promociones_vinoteca()->withTrashed()->get()->map($mapear)->all();
 

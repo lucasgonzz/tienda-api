@@ -152,6 +152,11 @@ class CartStockNoticeHelper
      * Atributos de pivote que corresponden a un renglon que se vuelve a guardar: conserva faltante y
      * casilla si la cantidad no cambio, los resetea (0 y marcada) si el comprador la cambio.
      *
+     * Ronda 2 (R2-4): si el renglon esta recortado (`amount_insuficiente > 0`) y el payload trae la
+     * cantidad ORIGINAL pedida (`amount + amount_insuficiente`), es el valor viejo de una pestaña que
+     * no se enteró del recorte, no una decision del comprador: se conservan cantidad, faltante y
+     * casilla de la base (el `amount` devuelto pisa al del payload en el `attach`).
+     *
      * @param  array  $previas  Resultado de `snapshot_de_lineas()`.
      * @param  string  $clave  Clave del renglon (`ConsultaStockHelper::clave_linea`).
      * @param  float|int|string  $cantidad  Cantidad nueva del renglon.
@@ -163,6 +168,18 @@ class CartStockNoticeHelper
             return [];
         }
         $previa = $previas[$clave];
+        $es_cantidad_original = is_numeric($previa['amount_insuficiente']) && (float) $previa['amount_insuficiente'] > 0
+            && is_numeric($cantidad)
+            && (float) $cantidad === (float) $previa['amount'] + (float) $previa['amount_insuficiente'];
+
+        if ($es_cantidad_original) {
+            // Pestaña vieja: se queda lo que dice la base, incluida la cantidad ya recortada.
+            return [
+                'amount' => $previa['amount'],
+                'amount_insuficiente' => $previa['amount_insuficiente'],
+                'completar_al_reponer' => $previa['completar_al_reponer'],
+            ];
+        }
 
         if (is_numeric($cantidad) && (float) $cantidad === (float) $previa['amount']) {
             return [
@@ -216,6 +233,79 @@ class CartStockNoticeHelper
             DB::table('article_cart')->whereIn('id', $cambiaron)
                 ->update(['amount_insuficiente' => 0, 'completar_al_reponer' => 1]);
         }
+    }
+
+    /**
+     * Saca de una lista de renglones (filas crudas de `article_cart`) los que estan esperando stock.
+     * Es el filtro unico que usan el control de stock de `update-article-amount` y el del cobro.
+     *
+     * @param  iterable  $lineas  Filas de `ConsultaStockHelper::lineas_del_carrito()`.
+     * @return \Illuminate\Support\Collection  Renglones con unidades, reindexados.
+     */
+    public static function sin_renglones_esperando_stock($lineas)
+    {
+        return collect($lineas)->reject(fn ($linea) => self::es_linea_esperando_stock($linea))->values();
+    }
+
+    /**
+     * Sanea en silencio los faltantes viejos de los renglones SIN tope (ronda 2, R2-1).
+     *
+     * Si el negocio pasa a ignorar el stock (o el articulo deja de tener tope) despues de que
+     * empresa-api recorto un renglon, el faltante quedaria colgado y el comprador veria "ahora hay 0
+     * disponibles". Por eso, a los renglones con `amount_insuficiente > 0` cuyo `tope_de_linea()` es
+     * null se les devuelve la cantidad (con la casilla marcada o ausente: `amount + faltante`) o solo
+     * se olvida el faltante (casilla desmarcada), sin mail ni Message y sin tocar `carts.updated_at`
+     * (se escribe directo en `article_cart`). No agrega consultas cuando el carrito ya trae sus articulos y
+     * ninguno tiene faltante; si no los trae, hace una sola consulta con las variantes.
+     *
+     * @param  \App\Cart  $cart  Carrito (con o sin `articles` cargados).
+     * @return bool  true si cambio alguna fila (quien ya cargo el carrito tiene que releerlo).
+     */
+    public static function sanear_faltantes_sin_tope(Cart $cart)
+    {
+        $articulos = $cart->relationLoaded('articles')
+            ? $cart->articles
+            : $cart->articles()->with('article_variants')->wherePivot('amount_insuficiente', '>', 0)->get();
+
+        $con_faltante = $articulos->filter(fn ($articulo) =>
+            is_numeric($articulo->pivot->amount_insuficiente ?? null) && (float) $articulo->pivot->amount_insuficiente > 0);
+        if ($con_faltante->isEmpty()) {
+            return false;
+        }
+
+        $configuracion = ConsultaStockHelper::configuracion($cart);
+        $consultas_activas = ConsultaStockHelper::activa($configuracion);
+        $cambio = false;
+
+        foreach ($con_faltante as $articulo) {
+            $pivote = $articulo->pivot;
+            $variante_id = $pivote->variant_id;
+            $variante = $variante_id ? $articulo->article_variants->firstWhere('id', $variante_id) : null;
+            if ($variante_id && !$variante) {
+                continue;
+            }
+            if (self::tope_de_linea($configuracion, $articulo, $variante, $consultas_activas) !== null) {
+                continue;
+            }
+
+            // Casilla marcada (o columna ausente): las unidades vuelven; desmarcada: solo se olvida el faltante.
+            // El pivote cargado por la relacion no trae el id de la fila, asi que se la ubica por
+            // carrito + articulo + variante (el renglon es unico por esa clave) y se suma en la base.
+            $completar = (bool) ($pivote->completar_al_reponer ?? 1);
+            // 🔴 `amount` va ANTES que `amount_insuficiente`: MySQL evalua el SET de izquierda a derecha.
+            $cambios = [];
+            if ($completar) {
+                $cambios['amount'] = DB::raw('amount + amount_insuficiente');
+            }
+            $cambios['amount_insuficiente'] = 0;
+            $fila = DB::table('article_cart')->where('cart_id', $cart->id)->where('article_id', $articulo->id)
+                ->where('amount_insuficiente', '>', 0);
+            $variante_id ? $fila->where('variant_id', $variante_id) : $fila->whereNull('variant_id');
+            $fila->update($cambios);
+            $cambio = true;
+        }
+
+        return $cambio;
     }
 
     /**

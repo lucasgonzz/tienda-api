@@ -362,6 +362,8 @@ class OrderController extends Controller
              */
             $configuracion = ConsultaStockHelper::configuracion($cart);
             $consultas_activas = ConsultaStockHelper::activa($configuracion);
+            // Faltantes viejos de renglones sin tope: se saneaban solo al abrir el carrito (ronda 2, R2-1).
+            CartStockNoticeHelper::sanear_faltantes_sin_tope($cart);
             // Un carrito con solo renglones esperando stock no tiene nada para enviar.
             CartStockNoticeHelper::validar_hay_unidades_para_enviar($cart);
             ReservaStockWebHelper::validar_cantidades_carrito($cart, $configuracion);

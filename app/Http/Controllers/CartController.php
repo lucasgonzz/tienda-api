@@ -436,6 +436,8 @@ class CartController extends Controller
         }
 
         $elegida->amount = $request->amount;
+        // Los renglones esperando stock (0 con faltante) no pasan por el control (ronda 2, R2-2).
+        $lineas = CartStockNoticeHelper::sin_renglones_esperando_stock($lineas);
         $consultas = ConsultaStockHelper::clasificar($cart, $lineas, $configuracion, ConsultaStockHelper::activa($configuracion));
 
         foreach ($lineas as $linea) {
