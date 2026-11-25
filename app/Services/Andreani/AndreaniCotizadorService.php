@@ -71,7 +71,7 @@ class AndreaniCotizadorService
      * @param int $commerce_id Comercio (owner) dueño de los artículos.
      * @param array $lineas `[['article' => Article, 'amount' => int], ...]` (ver `ZipnovaCotizadorService::lineas_desde_*`).
      * @param float $subtotal Subtotal de artículos, para el valor declarado y el envío gratis.
-     * @param string $zipcode Código postal de destino, ya limpio.
+     * @param string $zipcode Código postal de destino, ya limpio (puede ser el CPA: acá se reduce a sus 4 dígitos).
      * @return array `{opciones: [...], motivo: null|string}` (ver los motivos en el docblock de la clase).
      */
     public static function cotizar($commerce_id, array $lineas, $subtotal, $zipcode)
@@ -129,6 +129,11 @@ class AndreaniCotizadorService
     protected static function armar_cotizacion($commerce_id, array $lineas, $subtotal, $zipcode)
     {
         $vacio = ['opciones' => [], 'motivo' => null];
+
+        // 🔴 Andreani sólo entiende el CP de 4 dígitos (el CPA "X5000ABC" que devuelve Google Places da 400 y la
+        // opción desaparecía). Zipnova no pasa por acá y sigue recibiendo el CPA. Además las cachés de tarifa y de
+        // sucursales comparten clave entre "5000" y "X5000ABC".
+        $zipcode = AndreaniTarifaNormalizer::codigo_postal_numerico($zipcode);
 
         if (!ZipnovaEsquemaHelper::disponible()) {
             $vacio['motivo'] = 'no_conectado';
