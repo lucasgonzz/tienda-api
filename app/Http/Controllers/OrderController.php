@@ -9,6 +9,7 @@ use App\Combo;
 use App\Http\Controllers\Helpers\AjustesDeClienteHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CartHelper;
+use App\Http\Controllers\Helpers\CartStockNoticeHelper;
 use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\ConsultaStockHelper;
@@ -362,6 +363,14 @@ class OrderController extends Controller
              */
             $configuracion = ConsultaStockHelper::configuracion($cart);
             $consultas_activas = ConsultaStockHelper::activa($configuracion);
+            // Faltantes viejos de renglones sin tope: se saneaban solo al abrir el carrito (ronda 2, R2-1).
+            // R3-1: si el saneo cambio cantidades, `carts.total` se recalcula antes de crear el pedido
+            // (`orders.total` se copia de ahi). Sin cambios no hay consultas de mas.
+            if (CartStockNoticeHelper::sanear_faltantes_sin_tope($cart)) {
+                CartHelper::set_total($cart);
+            }
+            // Un carrito con solo renglones esperando stock no tiene nada para enviar.
+            CartStockNoticeHelper::validar_hay_unidades_para_enviar($cart);
             ReservaStockWebHelper::validar_cantidades_carrito($cart, $configuracion);
             $consultas = $this->consultas_del_pedido($request, $cart, $configuracion, $consultas_activas);
             $a_consultar = !empty($consultas);
@@ -809,7 +818,9 @@ class OrderController extends Controller
             return [];
         }
 
-        $lineas = ConsultaStockHelper::lineas_del_carrito($cart);
+        // Los renglones esperando stock no se controlan: no viajan al pedido.
+        $lineas = ConsultaStockHelper::lineas_del_carrito($cart)
+            ->reject(fn ($linea) => CartStockNoticeHelper::es_linea_esperando_stock($linea))->values();
         $consultas = ConsultaStockHelper::clasificar($cart, $lineas, $configuracion, $activa);
         if ($acepta !== !empty($consultas)) {
             ConsultaStockHelper::fallar('Cambió la disponibilidad de tu pedido. Revisá el carrito antes de enviarlo.');

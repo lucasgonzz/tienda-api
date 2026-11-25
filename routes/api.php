@@ -422,6 +422,9 @@ Route::delete('/carts/{cart_id}',
 Route::delete('/carts/{cart_id}/items',
 	'CartController@remove_item'
 );
+Route::patch('/carts/{cart_id}/items',
+	'CartController@update_item'
+);
 Route::put('/carts/update-article-amount/{cart_id}',
 	'CartController@update_article_amount'
 );

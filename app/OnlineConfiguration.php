@@ -77,6 +77,9 @@ class OnlineConfiguration extends Model
         // la columna la agrega empresa-api, este repo solo la lee.
         'ignorar_stock' => 'boolean',
         'permitir_pedidos_sin_stock' => 'boolean',
+        // Avisar en el carrito que el producto esta en carritos de otros y puede agotarse (mision
+        // carritos-ajuste-stock). La columna la agrega empresa-api: este repo solo la lee.
+        'avisar_puede_agotarse' => 'boolean',
         'reservar_stock_pedidos_web' => 'boolean',
         // Si la tienda muestra la seccion "Novedades" del home y el item "Marca" de la barra de
         // navegacion. Prendidos de fabrica (default 1). Las columnas las agrega empresa-api en su
