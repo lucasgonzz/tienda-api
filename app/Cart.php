@@ -55,6 +55,11 @@ class Cart extends Model
         if (ConsultaStockHelper::hay_columna('article_cart', 'stock_a_consultar')) {
             $relacion->withPivot('stock_a_consultar');
         }
+        // Casilla "completar al reponer" del comprador (mision carritos-ajuste-stock): solo si la
+        // base ya tiene la columna que crea empresa-api.
+        if (ConsultaStockHelper::hay_columna('article_cart', 'completar_al_reponer')) {
+            $relacion->withPivot('completar_al_reponer');
+        }
         return $relacion;
     }
 

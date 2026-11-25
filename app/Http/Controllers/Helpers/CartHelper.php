@@ -58,7 +58,18 @@ class CartHelper {
      *                                      sincroniza con las lineas que quedan). Null = calcularlas aca.
      * @return array<int, array{id: int, name: string}>  Las lineas descartadas (vacio si ninguna).
      */
-    static function attachArticles($cart, $articles, $no_disponibles = null, array $consultas = []) {
+    /**
+     * Guarda las lineas de articulo del carrito.
+     *
+     * @param  \App\Cart  $cart
+     * @param  array  $articles  Lineas del payload.
+     * @param  array|null  $no_disponibles  Lineas descartadas por lista de precios (null = calcularlas).
+     * @param  array  $consultas  Renglones a consultar (control de stock).
+     * @param  array  $previas  Foto de los renglones antes del guardado (`CartStockNoticeHelper::snapshot_de_lineas`):
+     *                          conserva el faltante y la casilla si la cantidad no cambio, los resetea si cambio.
+     * @return array
+     */
+    static function attachArticles($cart, $articles, $no_disponibles = null, array $consultas = [], array $previas = []) {
 
         if (count($articles) == 0) {
             return [];
@@ -94,6 +105,19 @@ class CartHelper {
                 $id = Self::id_de_linea($article);
                 $variante_id = $article['pivot']['variant_id'] ?? null;
                 $atributos = [];
+                /* Faltante y casilla del comprador. Si es la cantidad vieja de una pestaña que no vio el
+                   recorte, la cantidad de la base manda tambien para el precio (ronda 2, R2-4). */
+                $atributos += CartStockNoticeHelper::atributos_de_faltante(
+                    $previas,
+                    ConsultaStockHelper::clave_linea($id, $variante_id),
+                    $article['pivot']['amount']
+                );
+                if (isset($atributos['amount'])) {
+                    $article['pivot']['amount'] = $atributos['amount'];
+                    if (isset($article['amount'])) {
+                        $article['amount'] = $atributos['amount'];
+                    }
+                }
                 $consulta = $consultas[ConsultaStockHelper::clave_linea($id, $variante_id)] ?? null;
                 $linea_para_precio = $consulta
                     ? $consulta->toArray() + ['pivot' => $article['pivot'], 'amount' => $article['pivot']['amount']]
@@ -1499,13 +1523,24 @@ class CartHelper {
     }
 
     static function getFullModel($id, $depurar_repetidos = true) {
-        $model = Cart::where('id', $id)
+        $cargar = fn () => Cart::where('id', $id)
                         ->withAll()
                         ->with(['articles' => function($query) {
                             $query->withAll();
                         }])
                         ->first();
-                        
+        $model = $cargar();
+
+        // Faltantes viejos de renglones sin tope (mision carritos-ajuste-stock, ronda 2): se sanean
+        // antes de armar la respuesta y, si cambio algo, se vuelve a leer el carrito.
+        if ($model && CartStockNoticeHelper::sanear_faltantes_sin_tope($model)) {
+            // R3-1: el saneo cambio cantidades sin tocar `carts.total`; se recalcula con el mismo
+            // `set_total()` del PUT ANTES de releer, asi la respuesta (y el pedido que sale despues)
+            // llevan el total de los renglones. Sin cambios no se agrega ninguna consulta.
+            Self::set_total(Cart::find($model->id));
+            $model = $cargar();
+        }
+
         $model->articles = ArticleHelper::setArticlesVariants($model->articles);
         $model->articles = ArticleHelper::checkPriceTypes($model->articles);
         $model->promociones_vinoteca = ArticleHelper::set_promociones_vinoteca($model->promociones_vinoteca);
@@ -1540,6 +1575,10 @@ class CartHelper {
         if ($depurar_repetidos) {
             $model = Self::check_repetidos($model);
         }
+
+        // Aviso "puede agotarse" por renglon (mision carritos-ajuste-stock): una sola consulta
+        // agrupada y solo si la opcion del negocio esta prendida.
+        CartStockNoticeHelper::marcar_puede_agotarse($model);
 
         return $model;
     }

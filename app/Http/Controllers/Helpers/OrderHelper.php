@@ -93,6 +93,10 @@ class OrderHelper {
             }
         }
         foreach ($cart->articles as $article) {
+            // Un renglon esperando stock (cantidad 0 con faltante) no viaja al pedido.
+            if (CartStockNoticeHelper::es_linea_esperando_stock($article->pivot)) {
+                continue;
+            }
             // Log::info('cart pivot price: '.$article->pivot->price);
             $price = $article->pivot->price;
             $user = ContextoDeComercio::comercio($order->user_id);

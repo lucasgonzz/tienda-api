@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Cart;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\ComboEsquemaHelper;
+use App\Http\Controllers\Helpers\CartStockNoticeHelper;
 use App\Http\Controllers\Helpers\ConsultaStockHelper;
 use App\Http\Controllers\Helpers\ContextoDeComercio;
 use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
@@ -249,7 +250,9 @@ class MercadoPagoController extends Controller
             ConsultaStockHelper::fallar('Guardá tu carrito antes de pagar este pedido.');
         }
 
-        $consultas = ConsultaStockHelper::clasificar($cart, ConsultaStockHelper::lineas_del_carrito($cart), $configuracion, $activa);
+        // Un renglon esperando stock (0 con faltante) no se cobra ni frena el cobro (ronda 2, R2-3).
+        $lineas_a_cobrar = CartStockNoticeHelper::sin_renglones_esperando_stock(ConsultaStockHelper::lineas_del_carrito($cart));
+        $consultas = ConsultaStockHelper::clasificar($cart, $lineas_a_cobrar, $configuracion, $activa);
         if ($consultas || $carrito_marcado) {
             ConsultaStockHelper::fallar('El negocio tiene que revisar la disponibilidad antes de cobrar este pedido.');
         }
