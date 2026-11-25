@@ -120,6 +120,11 @@ class CotizadorDeEnviosService
 
         self::ordenar($opciones);
 
+        // Las etiquetas de Zipnova valen sólo entre sus correos: con Andreani en la lista se recalculan sobre la lista final.
+        if ($hay_andreani) {
+            self::recalcular_etiquetas($opciones);
+        }
+
         return self::respuesta($commerce_id, $zipnova, $zipnova_falla, $andreani, $opciones, $zipcode, $city, $state);
     }
 
@@ -207,6 +212,64 @@ class CotizadorDeEnviosService
 
             return strcmp($a['key'], $b['key']);
         });
+    }
+
+    /**
+     * Recalcula las etiquetas `cheapest` y `fastest` sobre la lista final (Zipnova + Andreani).
+     *
+     * - `cheapest`: la(s) opción(es) de menor precio cobrado al comprador.
+     * - `fastest`: la(s) de menor `dias_min`, sólo entre las que informan plazo (Andreani no informa).
+     * - Con envío gratis en todas (precio 0 en toda la lista) se mantiene el criterio de Zipnova, sin tocar nada.
+     * Las demás etiquetas que traiga una opción se conservan.
+     *
+     * @param array $opciones Lista final; se modifica en el lugar.
+     * @return void
+     */
+    protected static function recalcular_etiquetas(array &$opciones)
+    {
+        if (count($opciones) === 0) {
+            return;
+        }
+
+        // Precio mínimo y si hay alguna opción con precio: si todo es gratis no hay «más barato» que recalcular.
+        $precio_minimo = null;
+        $dias_minimo = null;
+        $todo_gratis = true;
+
+        foreach ($opciones as $opcion) {
+            if ($opcion['precio'] != 0) {
+                $todo_gratis = false;
+            }
+            if (is_null($precio_minimo) || $opcion['precio'] < $precio_minimo) {
+                $precio_minimo = $opcion['precio'];
+            }
+            if (!is_null($opcion['dias_min']) && (is_null($dias_minimo) || $opcion['dias_min'] < $dias_minimo)) {
+                $dias_minimo = $opcion['dias_min'];
+            }
+        }
+
+        if ($todo_gratis) {
+            return;
+        }
+
+        foreach ($opciones as $i => $opcion) {
+            // Se sacan las dos etiquetas de Zipnova y se conservan las otras.
+            $tags = [];
+            foreach ((isset($opcion['tags']) && is_array($opcion['tags']) ? $opcion['tags'] : []) as $tag) {
+                if ($tag !== 'cheapest' && $tag !== 'fastest') {
+                    $tags[] = $tag;
+                }
+            }
+
+            if ($opcion['precio'] == $precio_minimo) {
+                $tags[] = 'cheapest';
+            }
+            if (!is_null($opcion['dias_min']) && $opcion['dias_min'] == $dias_minimo) {
+                $tags[] = 'fastest';
+            }
+
+            $opciones[$i]['tags'] = $tags;
+        }
     }
 
     /**
