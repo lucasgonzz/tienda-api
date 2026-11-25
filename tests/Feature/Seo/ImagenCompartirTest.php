@@ -507,4 +507,125 @@ class ImagenCompartirTest extends TestCase
         $con_query = SeoContexto::paraCompartir('https://cdn.test/foto.webp?v=2');
         $this->assertStringContainsString('/api/seo/imagen-compartir?src='.rawurlencode('https://cdn.test/foto.webp?v=2'), $con_query);
     }
+
+    /*
+    |---------------------------------------------------------------------------------------------
+    | Reduccion de tamaño (mision tienda-vista-previa-y-titulo, CA2 y CA3)
+    |---------------------------------------------------------------------------------------------
+    */
+
+    /**
+     * Un webp liso del tamaño pedido (un logo de 3590x3590 pesa mucho de decodificar: aca alcanza
+     * con dimensiones grandes).
+     *
+     * @param  int  $ancho
+     * @param  int  $alto
+     * @return string
+     */
+    private function webpDeTamano($ancho, $alto)
+    {
+        $img = imagecreatetruecolor($ancho, $alto);
+        $rojo = imagecolorallocate($img, 200, 30, 30);
+        imagefilledrectangle($img, 0, 0, $ancho - 1, intdiv($alto, 2), $rojo);
+
+        ob_start();
+        imagewebp($img, null, 80);
+        $bytes = ob_get_clean();
+        imagedestroy($img);
+
+        return $bytes;
+    }
+
+    /**
+     * Pide $src con el origen falseado devolviendo $webp y devuelve [ancho, alto] del JPEG.
+     *
+     * @param  string  $src
+     * @param  string  $webp
+     * @return array
+     */
+    private function medidasDelJpegPara($src, $webp)
+    {
+        Http::fake([
+            'api-imgtest.comerciocity.com/*' => Http::response($webp, 200, ['Content-Type' => 'image/webp']),
+        ]);
+
+        $respuesta = $this->pedir($src);
+        $respuesta->assertStatus(200);
+        $respuesta->assertHeader('Content-Type', 'image/jpeg');
+
+        $medidas = getimagesizefromstring($respuesta->getContent());
+        $this->assertSame(IMAGETYPE_JPEG, $medidas[2]);
+
+        return [$medidas[0], $medidas[1]];
+    }
+
+    /** CA2: una imagen grande se reduce a lado mayor 1200 manteniendo la proporcion. */
+    public function test_un_webp_de_3000x2000_sale_como_jpeg_de_1200x800()
+    {
+        if (!function_exists('imagecreatefromwebp')) {
+            $this->markTestSkipped('Este PHP no tiene soporte GD para webp.');
+        }
+
+        $medidas = $this->medidasDelJpegPara(
+            'https://api-imgtest.comerciocity.com/public/storage/grande.webp',
+            $this->webpDeTamano(3000, 2000)
+        );
+
+        $this->assertSame([1200, 800], $medidas);
+    }
+
+    /** CA2: una imagen vertical se reduce por su lado mayor (el alto). */
+    public function test_un_webp_vertical_de_2000x3000_sale_como_jpeg_de_800x1200()
+    {
+        if (!function_exists('imagecreatefromwebp')) {
+            $this->markTestSkipped('Este PHP no tiene soporte GD para webp.');
+        }
+
+        $medidas = $this->medidasDelJpegPara(
+            'https://api-imgtest.comerciocity.com/public/storage/vertical.webp',
+            $this->webpDeTamano(2000, 3000)
+        );
+
+        $this->assertSame([800, 1200], $medidas);
+    }
+
+    /** CA2: una imagen chica NO se agranda. */
+    public function test_un_webp_de_800x600_sale_como_jpeg_de_800x600()
+    {
+        if (!function_exists('imagecreatefromwebp')) {
+            $this->markTestSkipped('Este PHP no tiene soporte GD para webp.');
+        }
+
+        $medidas = $this->medidasDelJpegPara(
+            'https://api-imgtest.comerciocity.com/public/storage/chica.webp',
+            $this->webpDeTamano(800, 600)
+        );
+
+        $this->assertSame([800, 600], $medidas);
+    }
+
+    /**
+     * CA3: un JPEG ya cacheado a tamaño original (con la clave de cache vieja) no se sigue
+     * sirviendo: la clave cambia y se reconvierte reducido.
+     */
+    public function test_un_jpeg_cacheado_a_tamano_original_con_la_clave_vieja_no_se_sirve()
+    {
+        if (!function_exists('imagecreatefromwebp')) {
+            $this->markTestSkipped('Este PHP no tiene soporte GD para webp.');
+        }
+
+        $src = 'https://api-imgtest.comerciocity.com/public/storage/cacheada.webp';
+
+        /* Un JPEG de 3000x2000 como el que dejaba la version anterior, en la ruta vieja. */
+        $viejo = imagecreatetruecolor(3000, 2000);
+        ob_start();
+        imagejpeg($viejo, null, 85);
+        $jpeg_viejo = ob_get_clean();
+        imagedestroy($viejo);
+        Storage::put('seo/imagen-compartir/'.md5($src).'.jpg', $jpeg_viejo);
+
+        $medidas = $this->medidasDelJpegPara($src, $this->webpDeTamano(3000, 2000));
+
+        $this->assertSame([1200, 800], $medidas, 'No se sirvio el JPEG viejo cacheado a tamaño original.');
+    }
 }

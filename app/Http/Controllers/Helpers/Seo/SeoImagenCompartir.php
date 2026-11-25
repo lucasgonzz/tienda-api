@@ -46,6 +46,12 @@ class SeoImagenCompartir
      *  de empresa-api). */
     const CALIDAD_JPEG = 85;
 
+    /** Lado mayor maximo, en px, del JPEG que se devuelve (WhatsApp no necesita mas para el preview). */
+    const LADO_MAXIMO = 1200;
+
+    /** Version de la cache a disco: se sube cuando cambia lo que se guarda (v2: reducido a LADO_MAXIMO). */
+    const VERSION_CACHE = 'v2';
+
     /** Segundos de conexion antes de abandonar la descarga del origen. */
     const TIMEOUT_CONEXION = 3;
 
@@ -372,21 +378,27 @@ class SeoImagenCompartir
      * no tiene alfa) y codifica. Mismo patron que
      * ImageAssignment\CandidateImageProcessor::miniatura_para_ia() de empresa-api:
      * imagecreatetruecolor() + imagecolorallocate() blanco + imagefilledrectangle() +
-     * imagealphablending(true) + imagecopyresampled() -aca sin reescalar, al tamaño original.
+     * imagealphablending(true) + imagecopyresampled() -aca reduciendo hasta LADO_MAXIMO si la imagen es mas grande.
      *
      * @param  \GdImage|resource  $origen
      * @return string|null  Los bytes del JPEG.
      */
     private static function aplanarYCodificar($origen)
     {
-        $ancho = imagesx($origen);
-        $alto  = imagesy($origen);
+        $ancho_origen = imagesx($origen);
+        $alto_origen  = imagesy($origen);
+
+        /* Tamaño de salida: el lado mayor queda en LADO_MAXIMO como mucho, con la misma
+           proporcion. Lo que ya es mas chico NO se agranda (escala 1). */
+        $escala = min(1, self::LADO_MAXIMO / max($ancho_origen, $alto_origen));
+        $ancho  = max(1, (int) round($ancho_origen * $escala));
+        $alto   = max(1, (int) round($alto_origen * $escala));
 
         $destino = imagecreatetruecolor($ancho, $alto);
         $blanco  = imagecolorallocate($destino, 255, 255, 255);
         imagefilledrectangle($destino, 0, 0, $ancho - 1, $alto - 1, $blanco);
         imagealphablending($destino, true);
-        imagecopyresampled($destino, $origen, 0, 0, 0, 0, $ancho, $alto, $ancho, $alto);
+        imagecopyresampled($destino, $origen, 0, 0, 0, 0, $ancho, $alto, $ancho_origen, $alto_origen);
 
         ob_start();
         $ok = imagejpeg($destino, null, self::CALIDAD_JPEG);
@@ -404,13 +416,15 @@ class SeoImagenCompartir
     /**
      * La clave de cache: hash de la URL completa, no el nombre de archivo solo -Cloudinary arma
      * el suyo con `/` adentro del public id, y eso no es un nombre de archivo valido tal cual.
+     * Va dentro de una carpeta de version (VERSION_CACHE): los JPEG viejos, guardados a tamaño
+     * original, quedan en la ruta anterior y ya no se sirven.
      *
      * @param  string  $src
      * @return string
      */
     private static function rutaDeCache($src)
     {
-        return 'seo/imagen-compartir/'.md5($src).'.jpg';
+        return 'seo/imagen-compartir/'.self::VERSION_CACHE.'/'.md5($src).'.jpg';
     }
 
     /**
