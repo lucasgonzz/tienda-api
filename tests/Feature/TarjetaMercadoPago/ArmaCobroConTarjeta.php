@@ -454,6 +454,8 @@ trait ArmaCobroConTarjeta
             'payment_type_id'     => 'credit_card',
             'payment_method_id'   => 'visa',
             'external_reference'  => (string) $cart->id,
+            // La marca propia del carrito: la que escribe nuestro cobro (y tambien la preferencia de Checkout Pro).
+            'metadata'            => ['cart_id' => $cart->id, 'commerce_id' => $this->comercio->id, 'origen' => 'tarjeta_en_la_tienda'],
             'transaction_details' => ['total_paid_amount' => $monto],
         ], $campos);
     }
@@ -525,15 +527,32 @@ trait ArmaCobroConTarjeta
             'pagos'        => [],
             'busquedas'    => [$this->busquedaDeMp([])],
             'installments' => $this->respuestaDeMp($this->respuestaDeInstallments()),
-            'consulta'     => $this->respuestaDeMp([], 404),
+            // null = «automatica»: `GET /v1/payments/{id}` devuelve el pago con ese id que haya en las busquedas o
+            // en la cola de cobros; si no hay, 404.
+            'consulta'     => null,
             'cancelacion'  => $this->respuestaDeMp(['id' => 9001, 'status' => 'cancelled']),
             'devolucion'   => $this->respuestaDeMp(['id' => 1, 'status' => 'approved']),
         ], $guion);
 
+        // Registro de los pagos conocidos por id, para la consulta automatica.
+        $conocidos = [];
+
+        foreach ($guion['pagos'] as $respuesta_de_pago) {
+            if (isset($respuesta_de_pago['body']['id'])) {
+                $conocidos[(string) $respuesta_de_pago['body']['id']] = $respuesta_de_pago['body'];
+            }
+        }
+
+        foreach ($guion['busquedas'] as $respuesta_de_busqueda) {
+            foreach (isset($respuesta_de_busqueda['body']['results']) ? $respuesta_de_busqueda['body']['results'] : [] as $pago_buscado) {
+                $conocidos[(string) $pago_buscado['id']] = $pago_buscado;
+            }
+        }
+
         $this->cola_de_pagos     = $guion['pagos'];
         $this->cola_de_busquedas = $guion['busquedas'];
 
-        Http::fake(function ($request) use ($guion) {
+        Http::fake(function ($request) use ($guion, $conocidos) {
             $url    = $request->url();
             $metodo = strtoupper($request->method());
 
@@ -558,7 +577,12 @@ trait ArmaCobroConTarjeta
             } elseif ($metodo === 'GET' && preg_match('#/v1/payment_methods/installments$#', $camino)) {
                 $respuesta = $guion['installments'];
             } elseif ($metodo === 'GET' && preg_match('#/v1/payments/\d+$#', $camino)) {
-                $respuesta = $guion['consulta'];
+                if (!is_null($guion['consulta'])) {
+                    $respuesta = $guion['consulta'];
+                } else {
+                    $id_consultado = substr($camino, strrpos($camino, '/') + 1);
+                    $respuesta = isset($conocidos[$id_consultado]) ? $this->respuestaDeMp($conocidos[$id_consultado]) : $this->respuestaDeMp([], 404);
+                }
             } elseif ($metodo === 'PUT' && preg_match('#/v1/payments/\d+$#', $camino)) {
                 $respuesta = $guion['cancelacion'];
             } elseif ($metodo === 'POST' && preg_match('#/v1/payments/\d+/refunds$#', $camino)) {
