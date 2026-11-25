@@ -253,6 +253,93 @@ class Ronda2CorreccionesTest extends TestCase
         $this->assertDatabaseHas('article_cart', ['cart_id' => $this->carrito->id, 'article_id' => $b->id, 'amount' => 1]);
     }
 
+    // ───────────────────────── CA29 (ronda 3): total coherente tras el saneo ─────────────────────────
+
+    /**
+     * Suma de los renglones de articulo del carrito del test (precio x cantidad), leida de la base.
+     *
+     * @return float
+     */
+    private function suma_de_renglones_del_carrito()
+    {
+        return (float) DB::table('article_cart')->where('cart_id', $this->carrito->id)
+            ->selectRaw('COALESCE(SUM(price * amount), 0) as suma')->value('suma');
+    }
+
+    /**
+     * (a) `ignorar_stock=1`, A 0/2 a $100 y B 1 a $100: el PUT (A=0, B=1) sanea A (vuelve a 2) y el
+     * total del carrito y el del pedido que sale despues coinciden con la suma de renglones (300).
+     *
+     * @return void
+     */
+    public function test_ca29_el_put_y_el_pedido_siguiente_quedan_con_el_total_de_los_renglones()
+    {
+        $this->comercio->online_configuration()->update(['ignorar_stock' => 1]);
+        $a = $this->articulo(['stock' => 0]);
+        $b = $this->articulo(['stock' => 100]);
+        $this->renglon($a, 0, 2, 1);
+        $this->renglon($b, 1, 0, 1);
+
+        $respuesta = $this->guardar([$this->lineaDelPayload($a, 0), $this->lineaDelPayload($b, 1)])->assertOk();
+
+        // El PUT reprecia las lineas con el precio vigente del articulo: la suma esperada sale de las filas.
+        $suma = $this->suma_de_renglones_del_carrito();
+        $this->assertDatabaseHas('article_cart', ['cart_id' => $this->carrito->id, 'article_id' => $a->id, 'amount' => 2, 'amount_insuficiente' => 0]);
+        $this->assertEquals($suma, (float) $respuesta->json('cart.total'), 'La respuesta trae el total recalculado.');
+        $this->assertEquals($suma, (float) DB::table('carts')->where('id', $this->carrito->id)->value('total'));
+
+        $this->enviar_pedido()->assertCreated();
+        $total_del_pedido = (float) DB::table('orders')->where('user_id', $this->comercio->id)->value('total');
+        $this->assertEquals($suma, $total_del_pedido, 'orders.total coincide con la suma de los renglones.');
+    }
+
+    /**
+     * (b) Lo mismo pero el POST /api/orders llega directo, sin PUT previo: el saneo del pedido
+     * recalcula `carts.total` antes de crear el pedido.
+     *
+     * @return void
+     */
+    public function test_ca29_el_pedido_directo_sobre_un_carrito_con_faltante_viejo_sale_con_el_total_de_los_renglones()
+    {
+        $this->comercio->online_configuration()->update(['ignorar_stock' => 1]);
+        $a = $this->articulo(['stock' => 0]);
+        $b = $this->articulo(['stock' => 100]);
+        $this->renglon($a, 0, 2, 1);
+        $this->renglon($b, 1, 0, 1);
+        // El total guardado es el viejo (solo B): el saneo del pedido lo tiene que corregir.
+        DB::table('carts')->where('id', $this->carrito->id)->update(['total' => 100]);
+
+        $this->enviar_pedido()->assertCreated();
+
+        $pedido = DB::table('orders')->where('user_id', $this->comercio->id)->first();
+        $this->assertNotNull($pedido);
+        $this->assertEquals(300.0, $this->suma_de_renglones_del_carrito());
+        $this->assertEquals(300.0, (float) $pedido->total, 'orders.total coincide con la suma de los renglones.');
+    }
+
+    /**
+     * (c) Un carrito que ya es de un pedido (`order_id`) no se sanea al verlo con `from-order`.
+     *
+     * @return void
+     */
+    public function test_ca29_from_order_no_sanea_un_carrito_con_pedido()
+    {
+        $this->comercio->online_configuration()->update(['ignorar_stock' => 1]);
+        $a = $this->articulo(['stock' => 0]);
+        $this->renglon($a, 0, 2, 1);
+        $pedido = \App\Order::create([
+            'num' => 999001, 'buyer_id' => $this->comprador->id, 'user_id' => $this->comercio->id,
+            'total' => 0, 'deliver' => 0, 'order_status_id' => 1, 'status' => 'unconfirmed', 'address_id' => 0,
+        ]);
+        $this->carrito->update(['order_id' => $pedido->id, 'buyer_id' => $this->comprador->id]);
+
+        $this->actingAs($this->comprador, 'buyer')->getJson('/api/carts/from-order/'.$pedido->id)->assertOk();
+
+        $this->assertDatabaseHas('article_cart', [
+            'cart_id' => $this->carrito->id, 'article_id' => $a->id, 'amount' => 0, 'amount_insuficiente' => 2,
+        ]);
+    }
+
     // ───────────────────────── ayudas ─────────────────────────
 
     /**
