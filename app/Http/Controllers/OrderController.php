@@ -211,6 +211,12 @@ class OrderController extends Controller
 
             $se_devolvio = TarjetaMercadoPagoHelper::devolver_pago($cobro_aprobado, $request->cart_id);
 
+            // Si la devolucion fallo, el pago sigue aprobado: se anota en el carrito FUERA de la transaccion que se
+            // revirtio, para que el proximo Pagar lo tome (`pago_ya_aprobado()`) sin depender de la busqueda.
+            if (!$se_devolvio) {
+                TarjetaMercadoPagoHelper::anotar_pago_sin_pedido($request->cart_id, $cobro_aprobado);
+            }
+
             Log::error('OrderController@pagar_con_tarjeta: el pago se aprobo pero el pedido no se pudo crear', [
                 'cart_id'    => $request->cart_id,
                 'payment_id' => isset($cobro_aprobado['pago']['id']) ? $cobro_aprobado['pago']['id'] : null,

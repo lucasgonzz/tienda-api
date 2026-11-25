@@ -353,7 +353,9 @@ class TarjetaMercadoPagoHelper
         $pago = $respuesta->json();
         $pago = is_array($pago) ? $pago : [];
 
-        if ($respuesta->clientError() && !isset($pago['status'])) {
+        // Un 4xx REAL de Mercado Pago (cuerpo de error, con `"status": 400` numerico) es un rechazo del cobro. Un
+        // pago rechazado, en cambio, llega con HTTP 2xx y `status` de texto.
+        if ($respuesta->clientError()) {
             Log::warning('TarjetaMercadoPagoHelper: Mercado Pago rechazo el pedido de cobro', ['cart_id' => $cart->id, 'http' => $respuesta->status()]);
 
             return self::error('pago_rechazado', self::RECHAZO_POR_DEFECTO, 422);
@@ -546,10 +548,33 @@ class TarjetaMercadoPagoHelper
                 continue;
             }
 
+            // Sin la marca propia del carrito el pago ni se reusa ni bloquea: puede ser de OTRA integracion de la misma cuenta.
+            if (!self::marca_del_carrito($pago, $cart)) {
+                Log::warning('TarjetaMercadoPagoHelper: un pago con el external_reference del carrito no tiene su marca (metadata.cart_id), se ignora', [
+                    'cart_id'    => $cart->id,
+                    'payment_id' => isset($pago['id']) ? $pago['id'] : null,
+                ]);
+
+                continue;
+            }
+
             $estado = isset($pago['status']) ? $pago['status'] : null;
 
             if (is_null($resultado['previo']) && self::es_pago_vigente_del_carrito($pago, $cart)) {
-                $resultado['previo'] = $pago;
+                // La busqueda puede ir atrasada (un pago recien devuelto todavia figura aprobado): se confirma.
+                $confirmado = self::confirmar_pago((int) $pago['id'], $cart, $access_token);
+
+                if ($confirmado['respuesta']) {
+                    $resultado['respuesta'] = $confirmado['respuesta'];
+
+                    return $resultado;
+                }
+
+                if ($confirmado['pago']) {
+                    $resultado['previo'] = $confirmado['pago'];
+                } elseif ($confirmado['descartado']) {
+                    $resultado['descartados'][] = (string) $pago['id'];
+                }
             } elseif (in_array($estado, ['refunded', 'cancelled', 'charged_back'], true) && isset($pago['id'])) {
                 $resultado['descartados'][] = (string) $pago['id'];
             } elseif (in_array($estado, ['in_process', 'pending', 'authorized', 'in_mediation'], true)) {
@@ -562,6 +587,28 @@ class TarjetaMercadoPagoHelper
         }
 
         return $resultado;
+    }
+
+    /**
+     * Deja anotado en el carrito (columnas existentes `payment_id` y `payment_status`) un pago aprobado que quedo
+     * sin pedido. Se usa DESPUES de que la transaccion del pedido se revirtio, con una escritura propia. Nunca tira.
+     *
+     * @param int|string $cart_id
+     * @param array $cobro Lo que devolvio `cobrar()`.
+     * @return void
+     */
+    public static function anotar_pago_sin_pedido($cart_id, array $cobro)
+    {
+        try {
+            if (!empty($cobro['pago']['id'])) {
+                Cart::whereKey($cart_id)->update(['payment_id' => $cobro['pago']['id'], 'payment_status' => 'approved']);
+            }
+        } catch (\Throwable $e) {
+            Log::error('TarjetaMercadoPagoHelper: no se pudo anotar en el carrito un pago aprobado sin pedido', [
+                'cart_id'    => $cart_id,
+                'payment_id' => isset($cobro['pago']['id']) ? $cobro['pago']['id'] : null,
+            ]);
+        }
     }
 
     /**
@@ -600,7 +647,7 @@ class TarjetaMercadoPagoHelper
 
     /**
      * El pago que el carrito ya tiene aprobado anotado (`carts.payment_id`), de CUALQUIER monto, si Mercado Pago
-     * lo confirma aprobado, de este carrito y sin devolver.
+     * lo confirma (`confirmar_pago()`).
      *
      * @param \App\Cart $cart Con `payment_id` y `payment_status = approved`.
      * @param string $access_token
@@ -608,23 +655,73 @@ class TarjetaMercadoPagoHelper
      */
     private static function pago_ya_aprobado(Cart $cart, $access_token)
     {
+        $confirmado = self::confirmar_pago((int) $cart->payment_id, $cart, $access_token);
+
+        return $confirmado['respuesta'] ? $confirmado['respuesta'] : $confirmado['pago'];
+    }
+
+    /**
+     * Confirma un pago con `GET /v1/payments/{id}` antes de reusarlo: aprobado, sin devolucion total, de este
+     * carrito (`external_reference`) y con la MARCA PROPIA del carrito (`marca_del_carrito()`). Si el pago no
+     * sirve devuelve `pago` null y, si ademas figura devuelto o cancelado, `descartado` true.
+     *
+     * @param int $payment_id
+     * @param \App\Cart $cart
+     * @param string $access_token
+     * @return array{pago: array|null, respuesta: \Illuminate\Http\JsonResponse|null, descartado: bool}
+     */
+    private static function confirmar_pago($payment_id, Cart $cart, $access_token)
+    {
+        $resultado = ['pago' => null, 'respuesta' => null, 'descartado' => false];
+
         try {
-            $respuesta = self::http($access_token)->get(self::API.'/v1/payments/'.(int) $cart->payment_id);
+            $respuesta = self::http($access_token)->get(self::API.'/v1/payments/'.(int) $payment_id);
         } catch (ConnectionException | RequestException | TransferException $e) {
-            return self::sin_respuesta();
+            $resultado['respuesta'] = self::sin_respuesta();
+
+            return $resultado;
+        }
+
+        if ($respuesta->serverError()) {
+            $resultado['respuesta'] = self::sin_respuesta();
+
+            return $resultado;
         }
 
         if (!$respuesta->successful()) {
-            return $respuesta->serverError() ? self::sin_respuesta() : null;
+            return $resultado;
         }
 
         $pago = $respuesta->json();
 
-        if (is_array($pago) && self::es_pago_vigente_del_carrito($pago, $cart)) {
-            return $pago;
+        if (!is_array($pago)) {
+            return $resultado;
         }
 
-        return null;
+        if (self::es_pago_vigente_del_carrito($pago, $cart) && self::marca_del_carrito($pago, $cart)) {
+            $resultado['pago'] = $pago;
+        } elseif (isset($pago['status']) && in_array($pago['status'], ['refunded', 'cancelled', 'charged_back'], true)) {
+            $resultado['descartado'] = true;
+        } elseif (isset($pago['status']) && $pago['status'] === 'approved') {
+            // Aprobado pero con devolucion total o sin la marca: tampoco se reusa.
+            $resultado['descartado'] = true;
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * True si el pago lleva la marca propia de ESTE carrito: `metadata.cart_id`. La escriben nuestro cobro con
+     * tarjeta y la preferencia de Checkout Pro del mismo carrito; un pago de otra integracion de la misma cuenta
+     * que reuse el `external_reference` no la tiene y no cuenta.
+     *
+     * @param array $pago
+     * @param \App\Cart $cart
+     * @return bool
+     */
+    private static function marca_del_carrito(array $pago, Cart $cart)
+    {
+        return isset($pago['metadata']['cart_id']) && (string) $pago['metadata']['cart_id'] === (string) $cart->id;
     }
 
     /**
