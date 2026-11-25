@@ -146,7 +146,9 @@ class Ronda2CorreccionesTest extends TestCase
     public function test_ca25_update_article_amount_ignora_el_renglon_que_espera()
     {
         $this->comercio->online_configuration()->update(['permitir_pedidos_sin_stock' => 1]);
-        $a = $this->articulo(['stock' => 0]);
+        // A conserva un tope (stock 3): con stock 0 y consultas activas el renglon seria "Consultar"
+        // y el saneo de R2-1 le devolveria las unidades; aca tiene que seguir esperando.
+        $a = $this->articulo(['stock' => 3]);
         $b = $this->articulo(['stock' => 10]);
         $this->renglon($a, 0, 5, 1);
         $this->renglon($b, 2, null, 1);
@@ -186,12 +188,9 @@ class Ronda2CorreccionesTest extends TestCase
         $this->assertNotSame('consulta_stock', $respuesta->json('codigo'), 'El renglon que espera no frena el cobro.');
 
         $items = OnlinePaymentHelper::items_del_carrito($this->carrito->fresh(), $this->comercio->fresh(), $medio);
-        $nombres = array_column($items, 'name');
-        $this->assertContains($b->name, $nombres);
-        $this->assertNotContains($a->name, $nombres, 'Ningun item con cantidad 0 viaja a la preferencia.');
-        foreach ($items as $item) {
-            $this->assertGreaterThan(0, (float) $item['amount']);
-        }
+        // Solo viaja B (2 unidades): el renglon A (0 unidades) no aporta ningun item.
+        $this->assertCount(1, $items, 'Ningun item con cantidad 0 viaja a la preferencia.');
+        $this->assertEquals(2, $items[0]['amount']);
     }
 
     // ───────────────────────── CA27: pestaña vieja ─────────────────────────
