@@ -232,8 +232,8 @@ class AvisosDelCarritoTest extends TestCase
     {
         for ($i = 0; $i < 5; $i++) {
             $articulo = $this->articulo(['stock' => 10]);
-            $this->linea_propia($articulo, 3);
-            $this->carrito_ajeno($articulo, 4);
+            $this->linea_propia($articulo, 6);
+            $this->carrito_ajeno($articulo, 5);
         }
 
         // Primero con la opcion apagada (referencia) y despues prendida.
