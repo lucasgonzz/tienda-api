@@ -23,6 +23,7 @@ use App\Http\Controllers\Helpers\OrderHelper;
 use App\Http\Controllers\Helpers\StringHelper;
 use App\Http\Controllers\Helpers\TarjetaMercadoPagoHelper;
 use App\Http\Controllers\Helpers\ZipnovaEsquemaHelper;
+use App\Jobs\AvisarPedidoAlAsistente;
 use App\Jobs\BroadcastOrderCreated;
 use App\Jobs\SendOrderEmails;
 use App\Order;
@@ -620,6 +621,34 @@ class OrderController extends Controller
                     'order_id' => $order->id,
                     'error'    => $e->getMessage(),
                 ]);
+            }
+
+            // Aviso al asistente personal del duenio (WhatsApp) de que entro un pedido: el job le
+            // avisa a empresa-api, que empuja al admin (mision whatsapp-aviso-pedido).
+            //
+            // 🔴 Va ULTIMO, despues del mail del comprador y del broadcast, y el orden NO es
+            // indistinto: son callbacks de Application::terminate() (while sin try/catch), asi que
+            // uno lento o que tire demora o se lleva puestos a los siguientes. Este es un POST HTTP a
+            // otro servidor (hasta 2 s de conexion + 4 s totales): el comprador va primero, despues
+            // la pantalla del comercio, y recien al final este aviso.
+            //
+            // Mismo patron afterCommit que el mail: empresa tiene que poder leer el pedido ya
+            // commiteado. El try/catch cubre solo el REGISTRO del callback; el job no tira nunca.
+            try {
+                $dispatchAvisoAlAsistente = static function () use ($order) {
+                    try {
+                        AvisarPedidoAlAsistente::dispatchAfterResponse($order->id);
+                    } catch (\Throwable $ignored) {
+                        // El pedido ya confirmado no depende del aviso al asistente.
+                    }
+                };
+                if (\Illuminate\Support\Facades\DB::transactionLevel() > 0) {
+                    \Illuminate\Support\Facades\DB::afterCommit($dispatchAvisoAlAsistente);
+                } else {
+                    $dispatchAvisoAlAsistente();
+                }
+            } catch (\Throwable $ignored) {
+                // Error auxiliar: no modificar el resultado del pedido persistido.
             }
 
             Log::info('Termino');
