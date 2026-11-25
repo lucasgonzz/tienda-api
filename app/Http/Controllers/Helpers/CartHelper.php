@@ -1534,6 +1534,10 @@ class CartHelper {
         // Faltantes viejos de renglones sin tope (mision carritos-ajuste-stock, ronda 2): se sanean
         // antes de armar la respuesta y, si cambio algo, se vuelve a leer el carrito.
         if ($model && CartStockNoticeHelper::sanear_faltantes_sin_tope($model)) {
+            // R3-1: el saneo cambio cantidades sin tocar `carts.total`; se recalcula con el mismo
+            // `set_total()` del PUT ANTES de releer, asi la respuesta (y el pedido que sale despues)
+            // llevan el total de los renglones. Sin cambios no se agrega ninguna consulta.
+            Self::set_total(Cart::find($model->id));
             $model = $cargar();
         }
 

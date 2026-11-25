@@ -300,11 +300,20 @@ class CartStockNoticeHelper
      * (se escribe directo en `article_cart`). No agrega consultas cuando el carrito ya trae sus articulos y
      * ninguno tiene faltante; si no los trae, hace una sola consulta con las variantes.
      *
+     * Ronda 3 (R3-2): un carrito que ya es de un pedido (`order_id`) no se sanea nunca: es historia.
+     * Ronda 3 (R3-1): quien recibe `true` tiene que recalcular `carts.total` (`CartHelper::set_total`),
+     * porque aca se escriben cantidades sin tocar el total.
+     *
      * @param  \App\Cart  $cart  Carrito (con o sin `articles` cargados).
-     * @return bool  true si cambio alguna fila (quien ya cargo el carrito tiene que releerlo).
+     * @return bool  true si cambio alguna fila (quien ya cargo el carrito tiene que releerlo y recalcular el total).
      */
     public static function sanear_faltantes_sin_tope(Cart $cart)
     {
+        // R3-2: el carrito de un pedido ya confirmado no se toca (misma regla que empresa-api).
+        if (!empty($cart->order_id)) {
+            return false;
+        }
+
         $articulos = $cart->relationLoaded('articles')
             ? $cart->articles
             : $cart->articles()->with('article_variants')->wherePivot('amount_insuficiente', '>', 0)->get();
