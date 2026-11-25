@@ -4,7 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\ConsultaStockHelper;
 use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
-use App\Services\Zipnova\ZipnovaCotizadorService;
+use App\Services\Envios\CotizadorDeEnviosService;
 use App\User;
 use App\Workday;
 use Illuminate\Http\Request;
@@ -119,7 +119,7 @@ class CommerceController extends Controller
         // todavia no tiene el esquema, o cuyo conector no se puede descifrar, ve `false`.
         if (!is_null($publico)) {
             $publico['consultas_de_stock'] = ConsultaStockHelper::activa($commerce->online_configuration);
-            $publico = array_merge($publico, ZipnovaCotizadorService::disponibilidad_publica($commerce_id));
+            $publico = array_merge($publico, CotizadorDeEnviosService::disponibilidad_publica($commerce_id));
 
             // Direcciones del comprador con el buscador de Google (mision formas-envio-direcciones-maps,
             // 19/10/2026): clave ADITIVA y calculada, como las de Zipnova. `true` solo si la base ya

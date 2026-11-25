@@ -26,6 +26,8 @@ use App\Jobs\AvisarPedidoAlAsistente;
 use App\Jobs\BroadcastOrderCreated;
 use App\Jobs\SendOrderEmails;
 use App\Order;
+use App\Services\Andreani\AndreaniCotizadorService;
+use App\Services\Envios\CotizadorDeEnviosService;
 use App\Services\Zipnova\ZipnovaCotizadorService;
 use App\User;
 use Illuminate\Http\Request;
@@ -400,11 +402,19 @@ class OrderController extends Controller
              * comprador vuelve a elegir la forma de envío, con el mismo `codigo` que el SPA ya
              * maneja para "volvé a elegir".
              */
-            if (!is_null(EnvioCartHelper::opcion_de($cart))) {
-                $zipnova = ZipnovaCotizadorService::disponibilidad_publica($commerce_id);
+            $opcion_de_envio = EnvioCartHelper::opcion_de($cart);
 
-                if (empty($zipnova['envios_zipnova'])) {
-                    Log::warning('OrderController@store: el carrito trae una opción de Zipnova y el comercio ya no lo ofrece, se pide volver a elegir', [
+            if (!is_null($opcion_de_envio)) {
+                // Misión envios-andreani (25/11/2026): la pregunta es por el proveedor de ESA opción. Un pedido de
+                // Andreani directo sólo necesita que Andreani siga ofrecido, aunque el comercio no tenga Zipnova.
+                $es_andreani = CotizadorDeEnviosService::proveedor_de($opcion_de_envio) === 'andreani';
+
+                $ofrecido = $es_andreani
+                    ? AndreaniCotizadorService::disponibilidad_publica($commerce_id)['envios_andreani']
+                    : !empty(ZipnovaCotizadorService::disponibilidad_publica($commerce_id)['envios_zipnova']);
+
+                if (!$ofrecido) {
+                    Log::warning('OrderController@store: el carrito trae una opción de ' . ($es_andreani ? 'Andreani' : 'Zipnova') . ' y el comercio ya no la ofrece, se pide volver a elegir', [
                         'cart_id'     => $cart->id,
                         'commerce_id' => $commerce_id,
                     ]);

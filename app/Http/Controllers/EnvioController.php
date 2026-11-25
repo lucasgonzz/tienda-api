@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Cart;
 use App\Http\Controllers\Helpers\CartOwnershipHelper;
+use App\Services\Envios\CotizadorDeEnviosService;
 use App\Services\Zipnova\SinArticulosException;
 use App\Services\Zipnova\SinZipnovaException;
 use App\Services\Zipnova\UbicacionException;
@@ -225,7 +226,7 @@ class EnvioController extends Controller
                 // fallas —sin conector, destino que no se reconoce, Zipnova caído— salen por el
                 // mismo lugar de siempre: al conjunto le pasaría exactamente lo mismo.
                 try {
-                    $cotizacion_base = ZipnovaCotizadorService::cotizar(
+                    $cotizacion_base = CotizadorDeEnviosService::cotizar(
                         $commerce_id,
                         $armado['lineas'],
                         $armado['subtotal'],
@@ -240,7 +241,7 @@ class EnvioController extends Controller
                 $armado = ZipnovaCotizadorService::lineas_con_extra($armado, $commerce_id, $articles_extra, $promociones_extra, $combos_extra);
             }
 
-            $cotizacion = ZipnovaCotizadorService::cotizar(
+            $cotizacion = CotizadorDeEnviosService::cotizar(
                 $commerce_id,
                 $armado['lineas'],
                 $armado['subtotal'],
@@ -285,6 +286,14 @@ class EnvioController extends Controller
             'envio_gratis' => $cotizacion['envio_gratis'],
             'opciones'     => $cotizacion['opciones'],
         ];
+
+        // Con Andreani en juego (misión envios-andreani) la respuesta suma dos claves aditivas: qué dijo cada
+        // proveedor y, si no hay opciones, si es porque el paquete excede las medidas de Andreani. Sin Andreani no
+        // existen, así que la respuesta de un comercio sólo con Zipnova es idéntica a la de siempre.
+        if (isset($cotizacion['proveedores'])) {
+            $respuesta['proveedores'] = $cotizacion['proveedores'];
+            $respuesta['sin_opciones_motivo'] = isset($cotizacion['sin_opciones_motivo']) ? $cotizacion['sin_opciones_motivo'] : null;
+        }
 
         // Sin `articles_extra` la respuesta queda igual a la de siempre, clave por clave.
         if ($hay_extra) {
