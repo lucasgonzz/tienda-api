@@ -628,7 +628,18 @@ class OrderController extends Controller
             // cuerpo del 201) ni al SPA nuevo contra una API vieja (lee el id de forma
             // defensiva). El status sigue siendo 201 y no se saca ni se renombra nada.
         	// `pago_previo` (aditivo, solo si se reuso un pago aprobado anterior) para que la SPA lo muestre.
-        	return response()->json($es_pago_previo ? ['order_id' => $order->id, 'pago_previo' => true] : ['order_id' => $order->id], 201);
+        	// Con pago previo suma tambien `order: {cuotas_cobradas, total_cobrado}`: lo que Mercado Pago cobro de verdad.
+        	$respuesta_del_pedido = ['order_id' => $order->id];
+
+        	if ($es_pago_previo && $pago_cobrado) {
+        	    $respuesta_del_pedido['pago_previo'] = true;
+        	    $respuesta_del_pedido['order'] = [
+        	        'cuotas_cobradas' => isset($pago_cobrado['installments']) && (int) $pago_cobrado['installments'] >= 1 ? (int) $pago_cobrado['installments'] : 1,
+        	        'total_cobrado'   => isset($pago_cobrado['transaction_amount']) ? round((float) $pago_cobrado['transaction_amount'], 2) : null,
+        	    ];
+        	}
+
+        	return response()->json($respuesta_del_pedido, 201);
         }
         return response(null, 200);
     }
