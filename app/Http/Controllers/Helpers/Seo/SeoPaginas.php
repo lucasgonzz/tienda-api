@@ -8,6 +8,7 @@ use App\Brand;
 use App\Category;
 use App\Cepa;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\SegmentoDeFichaHelper;
 use App\PromocionVinoteca;
 use App\SubCategory;
 use Illuminate\Support\Facades\Cache;
@@ -560,6 +561,35 @@ class SeoPaginas
             return $this->fichaDePromocion($promocion);
         }
 
+        /* Paso 3 (mision tienda-articulos-sin-slug): `~<id>` es la ficha de un articulo sin slug.
+           Mismo filtro online y misma carga que el paso 1; la canonica sale de urlFicha(), asi que
+           un articulo que si tiene slug canoniza a su slug. */
+        $article_id = SegmentoDeFichaHelper::id_de_segmento($slug);
+        if (!is_null($article_id)) {
+            $query_por_id = $this->filtroOnline(Article::query())
+                ->where('id', $article_id)
+                ->with([
+                    'images'       => function ($q) { $q->select('id', 'hosting_url', 'imageable_id', 'imageable_type')->orderBy('id', 'ASC'); },
+                    'descriptions' => function ($q) { $q->select('id', 'title', 'content', 'article_id')->orderBy('id', 'ASC'); },
+                    'brand:id,name',
+                    'bodega:id,name',
+                    'cepa:id,name',
+                    'category:id,name',
+                    'sub_category:id,name,category_id',
+                ]);
+            if ($ctx->precioPublico()) {
+                $query_por_id->with('price_types');
+            }
+            $articulo = $query_por_id->first();
+
+            if (!is_null($articulo)) {
+                if ($ctx->precioPublico()) {
+                    ArticleHelper::checkPriceTypes(collect([$articulo]));
+                }
+                return $this->fichaDeArticulo($articulo);
+            }
+        }
+
         return $this->noEncontrada();
     }
 
@@ -994,7 +1024,7 @@ class SeoPaginas
     // ------------------------------------------------------------------------------------------
 
     /**
-     * La URL de la ficha, como la arma la SPA: /articulos/{slug}/{commerce_id}.
+     * La URL de la ficha, como la arma la SPA: /articulos/{slug o ~id}/{commerce_id}.
      *
      * @param  SeoContexto  $ctx
      * @param  \Illuminate\Database\Eloquent\Model  $modelo
@@ -1002,7 +1032,13 @@ class SeoPaginas
      */
     static function urlFicha(SeoContexto $ctx, $modelo)
     {
-        return $ctx->url(SeoContexto::path(['articulos', $modelo->slug, $ctx->commerce->id]));
+        /* Un articulo sin slug usa `~<id>` (regla unica de SegmentoDeFichaHelper); una promocion
+           sigue con su slug tal cual. */
+        $segmento = ($modelo instanceof Article)
+            ? SegmentoDeFichaHelper::segmento($modelo)
+            : $modelo->slug;
+
+        return $ctx->url(SeoContexto::path(['articulos', $segmento, $ctx->commerce->id]));
     }
 
     /**

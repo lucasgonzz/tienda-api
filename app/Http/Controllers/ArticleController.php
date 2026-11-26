@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\ContextoDeComercio;
 use App\Http\Controllers\Helpers\HomeHelper;
+use App\Http\Controllers\Helpers\SegmentoDeFichaHelper;
 use App\Http\Controllers\Helpers\RecomendacionesHelper;
 use App\Http\Controllers\Helpers\TagHelper;
 use App\Http\Controllers\LastSearchController;
@@ -24,7 +25,15 @@ use Illuminate\Support\Facades\Log;
 class ArticleController extends Controller {
     
     /**
-     * La ficha de un articulo (o de una promocion de vinoteca) por slug.
+     * La ficha de un articulo (o de una promocion de vinoteca) por slug, o por `~<id>` si el
+     * articulo no tiene slug (mision tienda-articulos-sin-slug, 26/11/2026).
+     *
+     * Orden de resolucion del segmento (PLAN §2.1):
+     *   1. Articulo por slug.
+     *   2. Promocion de vinoteca por slug online.
+     *   3. Si el segmento es `~<id>`: articulo por id del comercio, con la misma restriccion de la
+     *      lista del comprador. Nunca se buscan promociones por id.
+     *   4. Nada: `{"article": null}` con 200.
      *
      * Catalogo por lista (mision catalogo-por-lista-tienda, 5/10/2026): un articulo que el
      * comprador no puede ver por su lista de precios responde IGUAL que un slug inexistente —
@@ -59,9 +68,49 @@ class ArticleController extends Controller {
             if (!is_null($promo)) {
                 AjustesDeClienteHelper::aplicar_a_precios_fijos([$promo], $commerce_id);
             }
+
+            /* Paso 3: un articulo sin slug se abre por `~<id>`. Solo si no hubo promo, asi los pasos
+               1 y 2 quedan exactamente como antes. */
+            if (is_null($promo)) {
+                $article = $this->articulo_por_segmento_de_id($slug, $commerce_id);
+
+                if ($article) {
+                    $article = ArticleHelper::checkPriceTypes([$article])[0];
+                    return response()->json(['article' => $article], 200);
+                }
+            }
+
         	return response()->json(['article' => $promo], 200);
         }
 
+    }
+
+    /**
+     * Paso 3 de `show`: el articulo del comercio que nombra un segmento `~<id>`, o null.
+     *
+     * Misma consulta que el paso 1 pero por `id`: del comercio, visible para la lista del comprador
+     * (un articulo no habilitado responde igual que uno inexistente), con `withAll()` y las mismas
+     * preguntas respondidas. Un borrado logico queda afuera (SoftDeletes del modelo).
+     *
+     * @param  string  $segmento  El segmento de la URL.
+     * @param  int|string  $commerce_id  Comercio de la URL.
+     * @return \App\Article|null  null si el segmento no es `~<id>` o no hay articulo visible.
+     */
+    private function articulo_por_segmento_de_id($segmento, $commerce_id) {
+        $article_id = SegmentoDeFichaHelper::id_de_segmento($segmento);
+
+        if (is_null($article_id)) {
+            return null;
+        }
+
+        return Article::where('id', $article_id)
+                        ->where('user_id', $commerce_id)
+                        ->visibleParaLaLista($commerce_id)
+                        ->withAll()
+                        ->with(['questions' => function($query) {
+                            $query->whereHas('answer')->with('answer');
+                        }])
+                        ->first();
     }
 
     /**
