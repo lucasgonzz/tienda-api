@@ -85,7 +85,9 @@ class ActualizacionDelSistema
 
             $fila = DB::table('actualizaciones_del_sistema')
                 ->where('owner_id', $commerce_id)
-                ->orderByDesc('id')
+                // Misma fila que elige empresa-api por dueño (`orderBy('id')`, la de id más bajo): si hubiera dos,
+                // las dos puntas tienen que leer la misma.
+                ->orderBy('id')
                 ->first(['estado', 'vence_at']);
 
             $estado = is_null($fila) ? null : [
