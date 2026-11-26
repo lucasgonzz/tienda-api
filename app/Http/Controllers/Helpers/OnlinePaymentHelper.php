@@ -124,7 +124,8 @@ class OnlinePaymentHelper {
      * un carrito gana algo comprable y un camino no lo suma, se cobra de menos en silencio). El
      * controller delega en este metodo, asi que los tests que lo invocan por reflexion siguen
      * midiendo lo mismo. Ver el docblock de `articulos_a_cobrar()` para el porque de cada punto
-     * (withTrashed, promociones, combos detras de su guarda de esquema, envio de Zipnova o zona).
+     * (withTrashed, promociones, combos detras de su guarda de esquema, envio de Zipnova o zona; la zona
+     * propia puede ser gratis por monto o por combo: ver `EnvioZonaPropiaHelper`).
      *
      * @param \App\Cart $cart Carrito ya resuelto (y de la sesion: eso lo verifica quien llama).
      * @param \App\User $commerce Comercio que cobra (con su `online_configuration`).
@@ -137,9 +138,12 @@ class OnlinePaymentHelper {
 
         $envio_precio = EnvioCartHelper::precio_para_cobrar($cart);
 
-        // Una forma propia "a convenir" no se cobra online: no viaja ningun item de envio.
-        $delivery_zone = is_null($envio_precio) && $cart->delivery_zone && !DireccionesEsquemaHelper::zona_a_convenir($cart->delivery_zone)
-            ? ['price' => $cart->delivery_zone->price]
+        // Una forma propia "a convenir" no se cobra online: no viaja ningun item de envio. Tampoco la
+        // que resulta gratis (por monto o por combo, mision truvari-carrito-entrega-pago): el precio
+        // sale de `EnvioZonaPropiaHelper` con el carrito vivo, y con precio 0 no viaja ningun item.
+        $zona_resuelta = is_null($envio_precio) ? EnvioZonaPropiaHelper::resolver_del_carrito($cart) : null;
+        $delivery_zone = $zona_resuelta && !$zona_resuelta['a_convenir'] && $zona_resuelta['precio'] > 0
+            ? ['price' => $zona_resuelta['precio']]
             : null;
 
         $cupon = $cart->cupon

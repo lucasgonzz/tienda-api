@@ -237,8 +237,13 @@ class OrderTotalsHelper
             $delivery_label = 'Envío: '.$order->delivery_zone->name;
             $delivery_text = 'A coordinar con el vendedor';
         } elseif (!is_null($order->delivery_zone)) {
-            $delivery_amount = (float) $order->delivery_zone->price;
+            // Lo que se cobro (la foto del pedido; sin ella, el precio vivo de la forma). Si fue gratis
+            // el importe es 0 y la etiqueta lo dice, igual que el envio por correo.
+            $delivery_amount = (float) EnvioZonaPropiaHelper::precio_del_pedido($order);
             $delivery_label = 'Envio a '.$order->delivery_zone->name;
+            if ($delivery_amount <= 0 && is_numeric($order->getAttribute('envio_zona_precio'))) {
+                $delivery_label .= ' - gratis';
+            }
             $total = $total + $delivery_amount;
         }
 
