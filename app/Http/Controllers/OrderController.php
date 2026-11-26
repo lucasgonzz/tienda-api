@@ -18,6 +18,7 @@ use App\Http\Controllers\Helpers\CartOwnershipHelper;
 use App\Http\Controllers\Helpers\CuotasMercadoPagoHelper;
 use App\Http\Controllers\Helpers\DireccionesEsquemaHelper;
 use App\Http\Controllers\Helpers\EnvioCartHelper;
+use App\Http\Controllers\Helpers\EnvioZonaPropiaHelper;
 use App\Http\Controllers\Helpers\MessageHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
 use App\Http\Controllers\Helpers\StringHelper;
@@ -112,7 +113,7 @@ class OrderController extends Controller
         // del mensaje de WhatsApp en Thanks.vue tenga el dato disponible
         $order = Order::where('user_id', $commerce_id)
                         ->orderBy('id', 'DESC')
-                        ->with('articles', 'buyer.comercio_city_client', 'promociones_vinoteca');
+                        ->with('articles', 'buyer.comercio_city_client', 'promociones_vinoteca', 'delivery_zone');
 
         // Mismo criterio que index(): el envío de Zipnova solo si la tabla existe.
         if (ZipnovaEsquemaHelper::tabla_envios()) {
@@ -530,6 +531,8 @@ class OrderController extends Controller
         	// Las columnas envio_* copiadas del carrito, solo si el esquema está y el carrito va
         	// por Zipnova (vacío en cualquier otro caso: el create de siempre no cambia).
         	], EnvioCartHelper::atributos_para_pedido($cart),
+        	// La foto de lo que se cobro de envio por una forma propia (precio y motivo del "gratis").
+        	EnvioZonaPropiaHelper::atributos_para_pedido($cart),
         	// Las cuotas de Mercado Pago (mision tienda-cuotas-mercado-pago): `cuotas` y el recargo neto
         	// resuelto de la base, solo con el esquema y si el carrito eligio cuotas (vacio si no).
             $a_consultar ? [] : CuotasMercadoPagoHelper::atributos_para_pedido($cart),
