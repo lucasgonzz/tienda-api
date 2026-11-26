@@ -44,6 +44,10 @@ class Kernel extends HttpKernel
             EnsureFrontendRequestsAreStateful::class,
             'throttle:api',
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
+            // Misión aviso-actualizacion-sistema: mientras empresa-api actualiza el sistema del comercio, la
+            // tienda contesta la marca 503 `sistema_actualizando`. Va al final, ya con la sesión del comprador
+            // iniciada, para poder resolver el comercio por `Buyer.user_id` cuando la ruta no trae `commerce_id`.
+            \App\Http\Middleware\TiendaActualizando::class,
         ],
     ];
 
