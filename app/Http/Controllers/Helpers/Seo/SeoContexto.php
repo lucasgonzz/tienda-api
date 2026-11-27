@@ -281,16 +281,21 @@ class SeoContexto
 
     /**
      * La URL que va en el campo `imagen` del contrato -el que termina en og:image/twitter:image
-     * del <head>-: si `$urlAbsoluta` termina en `.webp` (sin importar mayusculas ni un posible
-     * `?query`), la cambia por el conversor propio (GET /api/seo/imagen-compartir); si no, o si
-     * es null, la devuelve tal cual.
+     * del <head>-: si `$urlAbsoluta` es una imagen de un origen que el conversor acepta
+     * (SeoImagenCompartir::origenPermitido()), la cambia por la URL limpia del conversor propio
+     * (GET /api/seo/imagen-compartir/<token>.jpg, mision og-imagen-android); si no, o si es null,
+     * la devuelve tal cual. Reglas, en orden: null/vacio o origen no permitido -> tal cual; `.svg`
+     * -> tal cual (GD no lo decodifica); logo `.png/.jpg/.jpeg` -> tal cual; todo lo demas -> URL
+     * del conversor (cualquier formato de la foto de un articulo, y logos webp o de Cloudinary
+     * sin extension).
      *
-     * Por que: WhatsApp -sobre todo en Android- no siempre decodifica webp para armar la
-     * miniatura del preview al compartir un link, aunque el archivo sea valido y cualquier
-     * navegador lo abra sin drama (confirmado con curl contra una ficha real: 200,
-     * Content-Type image/webp). La foto de un articulo SIEMPRE se guarda en .webp
-     * (ImageController de empresa-api) y no hay ninguna version alternativa guardada en ningun
-     * lado, asi que no hay backfill posible: hay que convertir al vuelo.
+     * Por que: WhatsApp -sobre todo en Android- no siempre decodifica webp ni una imagen de forma
+     * y peso impredecibles para armar la miniatura del preview al compartir un link, aunque el
+     * archivo sea valido y cualquier navegador lo abra sin drama. La foto de un articulo SIEMPRE
+     * se guarda en .webp (ImageController de empresa-api) y no hay ninguna version alternativa
+     * guardada en ningun lado, asi que no hay backfill posible: hay que convertir al vuelo.
+     * Antes solo se reescribia `.webp` y SIN mirar el host: uno ajeno salia apuntando a un
+     * conversor que lo rechaza con 400 (og:image roto).
      *
      * 🔴 SOLO para este campo singular. `imagenes()` e `imagenPrincipal()` NO pasan por aca: las
      * usa el array `image` del JSON-LD (Google decodifica webp sin drama) y el `<img>` del
@@ -298,20 +303,36 @@ class SeoContexto
      * trabajo -y riesgo de una transformacion mal aplicada- sin ningun premio.
      *
      * @param  string|null  $urlAbsoluta
+     * @param  bool  $es_logo  true si la imagen es el logo del comercio (los png/jpg quedan directos).
      * @return string|null
      */
-    static function paraCompartir($urlAbsoluta)
+    static function paraCompartir($urlAbsoluta, $es_logo = false)
     {
         if (!is_string($urlAbsoluta) || trim($urlAbsoluta) === '') {
             return $urlAbsoluta;
         }
 
-        $sin_query = preg_replace('/\?.*$/', '', $urlAbsoluta);
-        if (!preg_match('/\.webp$/i', $sin_query)) {
+        /* Fuera del allowlist del conversor (host ajeno, http) el conversor respondería 400 y el
+           og:image saldria roto: se deja la URL tal cual. */
+        if (!SeoImagenCompartir::origenPermitido($urlAbsoluta)) {
             return $urlAbsoluta;
         }
 
-        return url('/api/seo/imagen-compartir').'?src='.rawurlencode($urlAbsoluta);
+        $path = parse_url($urlAbsoluta, PHP_URL_PATH);
+        $extension = is_string($path) ? strtolower(pathinfo($path, PATHINFO_EXTENSION)) : '';
+
+        /* GD no decodifica svg. */
+        if ($extension === 'svg') {
+            return $urlAbsoluta;
+        }
+
+        /* Un logo png/jpg se deja como esta: un logo blanco sobre transparente, aplanado sobre
+           blanco, desapareceria. Los logos webp o de Cloudinary sin extension si se convierten. */
+        if ($es_logo && in_array($extension, ['png', 'jpg', 'jpeg'], true)) {
+            return $urlAbsoluta;
+        }
+
+        return SeoImagenCompartir::urlParaCompartir($urlAbsoluta);
     }
 
     /**
