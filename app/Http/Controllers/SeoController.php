@@ -49,6 +49,11 @@ class SeoController extends Controller
 
         $pagina = (new SeoPaginas($ctx))->responder($request->query('ruta', '/'));
 
+        /* Deja la imagen de la vista previa convertida para DESPUES de responder: asi el telefono
+           que arma el preview no paga la primera conversion (1-2 s). No suma latencia a esta
+           respuesta (ver SeoImagenCompartir::programarPrecalentado()). */
+        SeoImagenCompartir::programarPrecalentado($pagina['imagen'] ?? null);
+
         return response()->json($pagina, 200, [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
 
@@ -94,6 +99,28 @@ class SeoController extends Controller
     function imagenCompartir(Request $request)
     {
         $src = $request->query('src');
+
+        if (!SeoImagenCompartir::origenPermitido($src)) {
+            return response()->json(['message' => 'src invalido o con un host no permitido.'], 400);
+        }
+
+        return SeoImagenCompartir::responder($src);
+    }
+
+    /**
+     * GET /api/seo/imagen-compartir/{token}.jpg
+     *
+     * La ruta nueva del conversor (mision og-imagen-android): el token es el `src` en base64url y
+     * la URL termina en `.jpg`. Decodifica el token y valida el `src` resultante con el MISMO
+     * allowlist que la ruta vieja (SeoImagenCompartir::origenPermitido()); la logica vive en
+     * SeoImagenCompartir::responder().
+     *
+     * @param  string  $token
+     * @return \Illuminate\Http\Response|\Illuminate\Http\RedirectResponse|\Illuminate\Http\JsonResponse
+     */
+    function imagenCompartirJpg($token)
+    {
+        $src = SeoImagenCompartir::srcDeToken($token);
 
         if (!SeoImagenCompartir::origenPermitido($src)) {
             return response()->json(['message' => 'src invalido o con un host no permitido.'], 400);

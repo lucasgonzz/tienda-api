@@ -57,9 +57,19 @@ Route::get('/seo/pagina/{commerce_id}', 'SeoController@pagina')
 	->where('commerce_id', '[0-9]+')
 	->middleware('throttle:120,1,seo-pagina')
 	->withoutMiddleware('throttle:api');
+// Mision og-imagen-android: las dos rutas de imagen no abren sesion ni mandan cookies aunque el
+// Referer/Origin sea un dominio "stateful" de Sanctum (la tienda): una imagen publica con Set-Cookie
+// no es cacheable por los proxies y WhatsApp la trata distinto.
 Route::get('/seo/imagen-compartir', 'SeoController@imagenCompartir')
 	->middleware('throttle:120,1,seo-imagen-compartir')
-	->withoutMiddleware('throttle:api');
+	->withoutMiddleware([\Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class, 'throttle:api']);
+// Ruta nueva, URL limpia que termina en .jpg: el token es el `src` en base64url (solo [A-Za-z0-9_-]).
+// Throttle de 300: el crawler de Meta/WhatsApp usa pocas IP compartidas y repite pedidos (HEAD + GET,
+// reintentos); un pedido cacheado cuesta una lectura de disco y la conversion sigue acotada por imagen.
+Route::get('/seo/imagen-compartir/{token}.jpg', 'SeoController@imagenCompartirJpg')
+	->where('token', '[A-Za-z0-9_-]+')
+	->middleware('throttle:300,1,seo-imagen-compartir-jpg')
+	->withoutMiddleware([\Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class, 'throttle:api']);
 Route::get('/seo/sitemap/{commerce_id}', 'SeoController@sitemap')
 	->where('commerce_id', '[0-9]+')
 	->middleware('throttle:30,1,seo-sitemap')
