@@ -8,12 +8,21 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 /**
- * GET /api/seo/imagen-compartir?src=<url-absoluta> (mision og-image-webp-whatsapp, 28/9/2026).
+ * GET /api/seo/imagen-compartir/{token}.jpg y GET /api/seo/imagen-compartir?src=<url-absoluta>
+ * (mision og-image-webp-whatsapp, 28/9/2026; reescrita en og-imagen-android, 26/11/2026).
  *
- * Convierte a JPEG, con cache a disco, la imagen que SeoContexto::paraCompartir() manda cuando
- * el og:image/twitter:image de una ficha o promocion es un .webp: WhatsApp -sobre todo
- * Android- no siempre lo decodifica para armar el preview al compartir un link, aunque el
- * archivo sea valido y cualquier navegador lo abra sin drama.
+ * Convierte a JPEG, con cache a disco, la imagen que SeoContexto::paraCompartir() manda como
+ * og:image/twitter:image de una pagina: WhatsApp -sobre todo Android- no siempre decodifica
+ * webp, ni una imagen de forma/peso impredecibles, para armar el preview al compartir un link,
+ * aunque el archivo sea valido y cualquier navegador lo abra sin drama.
+ *
+ * 🔴 og-imagen-android: el JPEG de salida es IDENTICO EN FORMA para cualquier origen (lienzo
+ * fijo 1200x630, baseline, hasta 150 KB, con Content-Length) y se sirve desde una URL limpia que
+ * termina en `.jpg` (token base64url del `src`, sin `?` ni `%`). Asi se declaran medidas
+ * verdaderas en el HTML y se descartan de una vez las hipotesis de Android: URL sin extension,
+ * respuesta chunked, medidas no declaradas, peso y proporcion, latencia en frio. La ruta vieja
+ * `?src=` sigue viva (paginas cacheadas 6 h por seo.php y previews ya generadas) y comparte
+ * responder(): tambien sirve el formato nuevo.
  *
  * 🔴 `src` es un query PUBLICO: antes de pedirle nada a nadie se valida con origenPermitido()
  * contra un allowlist de host (parse_url(), nunca un regex sobre la URL completa). Y el
@@ -42,15 +51,41 @@ use Illuminate\Support\Facades\Storage;
  */
 class SeoImagenCompartir
 {
-    /** Calidad del JPEG de salida (mismo criterio que ImageAssignment\CandidateImageProcessor
-     *  de empresa-api). */
-    const CALIDAD_JPEG = 85;
+    /** Ancho fijo, en px, del lienzo de salida (relacion 1.91:1 que piden WhatsApp y Facebook). */
+    const ANCHO_SALIDA = 1200;
 
-    /** Lado mayor maximo, en px, del JPEG que se devuelve (WhatsApp no necesita mas para el preview). */
-    const LADO_MAXIMO = 1200;
+    /** Alto fijo, en px, del lienzo de salida. */
+    const ALTO_SALIDA = 630;
 
-    /** Version de la cache a disco: se sube cuando cambia lo que se guarda (v2: reducido a LADO_MAXIMO). */
-    const VERSION_CACHE = 'v2';
+    /** Escalera de calidades JPEG: se usa la primera que deja el archivo en PESO_OBJETIVO. */
+    const CALIDADES_JPEG = [82, 72, 62, 50];
+
+    /** Peso objetivo del JPEG, en bytes (150 KB): una miniatura de preview no necesita mas y un
+     *  archivo mas liviano llega antes en una conexion movil. Si ninguna calidad lo logra se
+     *  sirve la mas baja: nunca se falla por peso. */
+    const PESO_OBJETIVO = 153600;
+
+    /** Tope de pixeles (ancho x alto) que se acepta decodificar: 16 MP son ~64 MB en GD
+     *  truecolor. Se mide con getimagesizefromstring() ANTES de decodificar, porque un archivo
+     *  chico en bytes puede declarar decenas de megapixeles y un fatal de memoria no se atrapa. */
+    const TOPE_PIXELES = 16000000;
+
+    /** Version de la cache a disco: se sube cuando cambia lo que se guarda (v3: lienzo fijo
+     *  1200x630; lo convertido a v2, proporcional, no se sirve mas). */
+    const VERSION_CACHE = 'v3';
+
+    /** Largo maximo del token en la URL nueva: hay Apache/LiteSpeed que devuelven 403 con un
+     *  segmento de path de mas de 255 bytes. Un token mas largo sale por la ruta vieja `?src=`. */
+    const LARGO_MAXIMO_TOKEN = 200;
+
+    /** Header Accept con el que se descarga del origen: Cloudinary con `f_auto` decide el formato
+     *  por este header y nunca elige avif (GD de este hosting no lo decodifica). */
+    const ACCEPT_ORIGEN = 'image/jpeg,image/png;q=0.9,image/webp;q=0.8';
+
+    /** Para tests y operacion: null = automatico; true/false fuerza si el precalentado puede
+     *  correr despues de responder (ver puedeTrabajarDespuesDeResponder()).
+     *  @var bool|null */
+    public static $forzar_cierre_anticipado = null;
 
     /** Segundos de conexion antes de abandonar la descarga del origen. */
     const TIMEOUT_CONEXION = 3;
@@ -128,21 +163,19 @@ class SeoImagenCompartir
         try {
             $ruta = self::rutaDeCache($src);
 
-            if (Storage::exists($ruta)) {
-                $cacheado = Storage::get($ruta);
-                if (is_string($cacheado) && $cacheado !== '') {
-                    return self::respuestaJpeg($cacheado);
-                }
-                /* Cache vacio o corrupto (raro, pero no imposible): se reconvierte como si no
-                   hubiera nada, en vez de servir una imagen rota. */
+            $cacheado = self::leerCacheValido($ruta);
+            if (!is_null($cacheado)) {
+                return self::respuestaJpeg($cacheado);
             }
+            /* Cache ausente, vacio o a medio escribir: se reconvierte como si no hubiera nada,
+               en vez de servir una imagen rota. */
 
             $jpeg = self::convertir($src);
             if (is_null($jpeg)) {
                 return self::redirectAlOriginal($src);
             }
 
-            Storage::put($ruta, $jpeg);
+            self::guardarAtomico($ruta, $jpeg);
 
             return self::respuestaJpeg($jpeg);
         } catch (\Throwable $e) {
@@ -150,6 +183,215 @@ class SeoImagenCompartir
                 'src' => $src, 'error' => $e->getMessage(),
             ]);
             return self::redirectAlOriginal($src);
+        }
+    }
+
+    /**
+     * Codifica un `src` en el token de la URL nueva: base64url (`-` y `_` en lugar de `+` y `/`)
+     * sin relleno `=`. Es SOLO otra forma de escribir el mismo `src`: lo que se decodifica pasa
+     * por el mismo allowlist (origenPermitido()), no hay firma ni estado.
+     *
+     * @param  string  $src
+     * @return string
+     */
+    static function tokenDe($src)
+    {
+        return rtrim(strtr(base64_encode($src), '+/', '-_'), '=');
+    }
+
+    /**
+     * Decodifica el token de la URL nueva. Estricto: devuelve null si no es base64 valido o si lo
+     * decodificado no es texto UTF-8 sin caracteres de control (un `src` real es una URL).
+     *
+     * @param  string  $token
+     * @return string|null
+     */
+    static function srcDeToken($token)
+    {
+        if (!is_string($token) || $token === '') {
+            return null;
+        }
+
+        $src = base64_decode(strtr($token, '-_', '+/'), true);
+        if (!is_string($src) || $src === '') {
+            return null;
+        }
+        if (!mb_check_encoding($src, 'UTF-8') || preg_match('/[\x00-\x1F\x7F]/', $src)) {
+            return null;
+        }
+
+        return $src;
+    }
+
+    /**
+     * La URL (absoluta) por la que se sirve el JPEG de `$src`: la ruta nueva `/<token>.jpg` o, si
+     * el token pasa de LARGO_MAXIMO_TOKEN, la vieja `?src=` (que sigue andando como siempre).
+     *
+     * @param  string  $src  Ya validado por origenPermitido().
+     * @return string
+     */
+    static function urlParaCompartir($src)
+    {
+        $token = self::tokenDe($src);
+
+        if (strlen($token) > self::LARGO_MAXIMO_TOKEN) {
+            return url('/api/seo/imagen-compartir').'?src='.rawurlencode($src);
+        }
+
+        return url('/api/seo/imagen-compartir/'.$token.'.jpg');
+    }
+
+    /**
+     * Operacion inversa de urlParaCompartir(): el `src` que esconde una URL del conversor (de la
+     * ruta nueva o de la vieja), o null si `$url` no es una URL del conversor.
+     *
+     * @param  string|null  $url
+     * @return string|null
+     */
+    static function srcDeUrlParaCompartir($url)
+    {
+        if (!is_string($url) || $url === '') {
+            return null;
+        }
+
+        $path = parse_url($url, PHP_URL_PATH);
+        if (!is_string($path)) {
+            return null;
+        }
+
+        if (preg_match('#/api/seo/imagen-compartir/([A-Za-z0-9_-]+)\.jpg$#', $path, $coincidencia)) {
+            return self::srcDeToken($coincidencia[1]);
+        }
+
+        if (preg_match('#/api/seo/imagen-compartir$#', $path)) {
+            parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+            return isset($query['src']) && is_string($query['src']) ? $query['src'] : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * ¿Puede el servidor seguir trabajando despues de haberle entregado la respuesta al cliente?
+     * Sin `fastcgi_finish_request` ni `litespeed_finish_request`, un callback `terminating`
+     * correria ANTES de cerrar la conexion: seo.php espera a la API con un tope de 2 s y, si se
+     * pasa, sirve el index sin og:image (peor que no precalentar).
+     *
+     * @return bool
+     */
+    static function puedeTrabajarDespuesDeResponder()
+    {
+        if (!is_null(self::$forzar_cierre_anticipado)) {
+            return (bool) self::$forzar_cierre_anticipado;
+        }
+
+        return function_exists('fastcgi_finish_request')
+            || function_exists('litespeed_finish_request')
+            || app()->runningUnitTests();
+    }
+
+    /**
+     * Registra el precalentado de la imagen de una pagina para DESPUES de responder: la primera
+     * conversion cuesta 1-2 s y, si la paga el primer pedido de la imagen, es el telefono que
+     * esta armando la vista previa. El que comparte casi siempre abrio la ficha antes, y esa
+     * apertura pasa por aca. No hace nada si la imagen no es del conversor o si el servidor no
+     * puede trabajar despues de responder.
+     *
+     * @param  string|null  $url_imagen  El campo `imagen` de la pagina.
+     * @return void
+     */
+    static function programarPrecalentado($url_imagen)
+    {
+        if (!self::puedeTrabajarDespuesDeResponder()) {
+            return;
+        }
+
+        $src = self::srcDeUrlParaCompartir($url_imagen);
+        if (is_null($src)) {
+            return;
+        }
+
+        app()->terminating(function () use ($src) {
+            self::precalentar($src);
+        });
+    }
+
+    /**
+     * Convierte y guarda la imagen en el cache si todavia no esta (ni esta marcada rota). Nunca
+     * propaga una excepcion: corre despues de responder y no puede romper nada.
+     *
+     * @param  string  $src
+     * @return void
+     */
+    static function precalentar($src)
+    {
+        try {
+            if (!self::origenPermitido($src)) {
+                return;
+            }
+
+            $ruta = self::rutaDeCache($src);
+            if (!is_null(self::leerCacheValido($ruta)) || Cache::has(self::claveRoto($src))) {
+                return;
+            }
+
+            $jpeg = self::convertir($src);
+            if (!is_null($jpeg)) {
+                self::guardarAtomico($ruta, $jpeg);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('SeoImagenCompartir: fallo el precalentado.', ['src' => $src, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Lee el JPEG cacheado y lo devuelve solo si esta completo (empieza con FF D8 FF y termina
+     * con FF D9). Un archivo a medio escribir o corrupto da null y se reconvierte.
+     *
+     * @param  string  $ruta
+     * @return string|null
+     */
+    private static function leerCacheValido($ruta)
+    {
+        if (!Storage::exists($ruta)) {
+            return null;
+        }
+
+        $cacheado = Storage::get($ruta);
+        if (!is_string($cacheado) || strlen($cacheado) < 5) {
+            return null;
+        }
+        if (substr($cacheado, 0, 3) !== "\xFF\xD8\xFF" || substr($cacheado, -2) !== "\xFF\xD9") {
+            return null;
+        }
+
+        return $cacheado;
+    }
+
+    /**
+     * Escribe el JPEG en el cache de forma atomica: primero a un temporal en la misma carpeta y
+     * despues `move` (rename en el disco local) a la ruta final. Un pedido concurrente nunca lee
+     * un archivo a medio escribir.
+     *
+     * @param  string  $ruta
+     * @param  string  $jpeg
+     * @return void
+     */
+    private static function guardarAtomico($ruta, $jpeg)
+    {
+        $temporal = $ruta.'.tmp-'.str_replace('.', '', uniqid('', true));
+
+        try {
+            Storage::put($temporal, $jpeg);
+            Storage::move($temporal, $ruta);
+        } catch (\Throwable $e) {
+            /* Si el rename falla (disco raro), no se deja basura y se intenta la escritura directa. */
+            try {
+                Storage::delete($temporal);
+            } catch (\Throwable $ignorada) {
+                // Nada mas para hacer.
+            }
+            Storage::put($ruta, $jpeg);
         }
     }
 
@@ -163,10 +405,6 @@ class SeoImagenCompartir
      */
     private static function convertir($src)
     {
-        if (!function_exists('imagecreatefromwebp')) {
-            return null;
-        }
-
         /* Circuit breaker (ver decodificarWebp()): si un pedido anterior a esta MISMA imagen ya
            hizo fatalear a GD, ni se intenta de nuevo -directo al fallback, sin gastar ni la
            descarga. */
@@ -177,6 +415,7 @@ class SeoImagenCompartir
         try {
             $respuesta = Http::timeout(self::TIMEOUT_TOTAL)
                 ->connectTimeout(self::TIMEOUT_CONEXION)
+                ->withHeaders(['Accept' => self::ACCEPT_ORIGEN])
                 ->withOptions(['stream' => true])
                 ->withoutRedirecting()
                 ->get($src);
@@ -194,12 +433,57 @@ class SeoImagenCompartir
             return null;
         }
 
-        $origen = self::decodificarWebp($binario, $src);
+        $origen = self::decodificar($binario, $src);
         if (is_null($origen)) {
             return null;
         }
 
         return self::aplanarYCodificar($origen);
+    }
+
+    /**
+     * Decodifica `$binario` segun lo que DICEN LOS BYTES (no la extension ni el Content-Type, que
+     * un origen puede mentir o que Cloudinary decide por Accept): webp, jpeg, png o gif. Cualquier
+     * otra cosa (avif, bmp, basura) o una imagen que declara mas de TOPE_PIXELES da null y el
+     * llamador cae al redirect.
+     *
+     * getimagesizefromstring() esta hecha para sondear datos no confiables y no puede crashear:
+     * las medidas se miran ANTES de decodificar nada.
+     *
+     * @param  string  $binario
+     * @param  string  $src  Para la clave del circuit breaker de webp.
+     * @return \GdImage|resource|null
+     */
+    private static function decodificar($binario, $src)
+    {
+        $info = @getimagesizefromstring($binario);
+        if ($info === false) {
+            return null;
+        }
+
+        $ancho = (int) $info[0];
+        $alto = (int) $info[1];
+        if ($ancho < 1 || $alto < 1 || $ancho * $alto > self::TOPE_PIXELES) {
+            return null;
+        }
+
+        switch ($info[2]) {
+            case IMAGETYPE_WEBP:
+                /* Camino de siempre, intacto: gate de estructura + circuit breaker. */
+                if (!function_exists('imagecreatefromwebp')) {
+                    return null;
+                }
+                return self::decodificarWebp($binario, $src);
+
+            case IMAGETYPE_JPEG:
+            case IMAGETYPE_PNG:
+            case IMAGETYPE_GIF:
+                $origen = @imagecreatefromstring($binario);
+                return $origen !== false ? $origen : null;
+
+            default:
+                return null;
+        }
     }
 
     /**
@@ -374,11 +658,20 @@ class SeoImagenCompartir
     }
 
     /**
-     * Aplana sobre fondo BLANCO (un webp con canal alfa da colores rotos al pasarlo a jpeg, que
-     * no tiene alfa) y codifica. Mismo patron que
-     * ImageAssignment\CandidateImageProcessor::miniatura_para_ia() de empresa-api:
-     * imagecreatetruecolor() + imagecolorallocate() blanco + imagefilledrectangle() +
-     * imagealphablending(true) + imagecopyresampled() -aca reduciendo hasta LADO_MAXIMO si la imagen es mas grande.
+     * Dibuja la imagen entera ("contain", sin recortar) y centrada sobre un lienzo BLANCO fijo de
+     * ANCHO_SALIDA x ALTO_SALIDA, y la codifica como JPEG baseline. El blanco aplana la
+     * transparencia (jpeg no tiene alfa: sin aplanar, el RGB(0,0,0) de base se cuela como negro).
+     * Se agranda lo chico para llenar el lienzo: una miniatura de 20x10 sale 1200x600.
+     *
+     * Por que un lienzo fijo y no una reduccion proporcional: con la salida proporcional un
+     * producto de 1080x1080 salia 1080x1080 y no se podian declarar `og:image:width/height`
+     * verdaderos; con medidas fijas se declaran de antemano y todas las imagenes son iguales de
+     * previsibles para el cliente que arma la vista previa.
+     *
+     * La calidad baja por una escalera (CALIDADES_JPEG) hasta entrar en PESO_OBJETIVO; si ninguna
+     * entra se sirve la mas baja. `imageinterlace(false)` fuerza baseline (el progresivo es una
+     * de las cosas que algunos visores de Android no muestran en una miniatura); GD no escribe
+     * perfil ICC (medido).
      *
      * @param  \GdImage|resource  $origen
      * @return string|null  Los bytes del JPEG.
@@ -388,36 +681,49 @@ class SeoImagenCompartir
         $ancho_origen = imagesx($origen);
         $alto_origen  = imagesy($origen);
 
-        /* Tamaño de salida: el lado mayor queda en LADO_MAXIMO como mucho, con la misma
-           proporcion. Lo que ya es mas chico NO se agranda (escala 1). */
-        $escala = min(1, self::LADO_MAXIMO / max($ancho_origen, $alto_origen));
-        $ancho  = max(1, (int) round($ancho_origen * $escala));
-        $alto   = max(1, (int) round($alto_origen * $escala));
+        /* Escala "contain": el producto entero adentro del lienzo, por el lado que mas aprieta. */
+        $escala = min(self::ANCHO_SALIDA / $ancho_origen, self::ALTO_SALIDA / $alto_origen);
+        $ancho  = max(1, min(self::ANCHO_SALIDA, (int) round($ancho_origen * $escala)));
+        $alto   = max(1, min(self::ALTO_SALIDA, (int) round($alto_origen * $escala)));
 
-        $destino = imagecreatetruecolor($ancho, $alto);
-        $blanco  = imagecolorallocate($destino, 255, 255, 255);
-        imagefilledrectangle($destino, 0, 0, $ancho - 1, $alto - 1, $blanco);
-        imagealphablending($destino, true);
-        imagecopyresampled($destino, $origen, 0, 0, 0, 0, $ancho, $alto, $ancho_origen, $alto_origen);
+        /* Centrado en el lienzo. */
+        $desde_x = intdiv(self::ANCHO_SALIDA - $ancho, 2);
+        $desde_y = intdiv(self::ALTO_SALIDA - $alto, 2);
 
-        ob_start();
-        $ok = imagejpeg($destino, null, self::CALIDAD_JPEG);
-        $jpeg = ob_get_clean();
-
-        imagedestroy($destino);
+        $lienzo = imagecreatetruecolor(self::ANCHO_SALIDA, self::ALTO_SALIDA);
+        $blanco = imagecolorallocate($lienzo, 255, 255, 255);
+        imagefilledrectangle($lienzo, 0, 0, self::ANCHO_SALIDA - 1, self::ALTO_SALIDA - 1, $blanco);
+        imagealphablending($lienzo, true);
+        imagecopyresampled($lienzo, $origen, $desde_x, $desde_y, 0, 0, $ancho, $alto, $ancho_origen, $alto_origen);
         imagedestroy($origen);
 
-        if (!$ok || !is_string($jpeg) || $jpeg === '') {
-            return null;
+        imageinterlace($lienzo, false);
+
+        $jpeg = null;
+        foreach (self::CALIDADES_JPEG as $calidad) {
+            ob_start();
+            $ok = imagejpeg($lienzo, null, $calidad);
+            $jpeg = ob_get_clean();
+
+            if (!$ok || !is_string($jpeg) || $jpeg === '') {
+                $jpeg = null;
+                break;
+            }
+            if (strlen($jpeg) <= self::PESO_OBJETIVO) {
+                break;
+            }
         }
+
+        imagedestroy($lienzo);
+
         return $jpeg;
     }
 
     /**
      * La clave de cache: hash de la URL completa, no el nombre de archivo solo -Cloudinary arma
      * el suyo con `/` adentro del public id, y eso no es un nombre de archivo valido tal cual.
-     * Va dentro de una carpeta de version (VERSION_CACHE): los JPEG viejos, guardados a tamaño
-     * original, quedan en la ruta anterior y ya no se sirven.
+     * Va dentro de una carpeta de version (VERSION_CACHE): los JPEG viejos (v2, proporcionales)
+     * quedan en su carpeta y ya no se sirven.
      *
      * @param  string  $src
      * @return string
@@ -428,15 +734,79 @@ class SeoImagenCompartir
     }
 
     /**
+     * La respuesta 200 con el JPEG y todos los headers que una vista previa agradece: largo
+     * declarado (sin Content-Length LiteSpeed/h2 responde chunked), cache de 30 dias `immutable`
+     * (la clave de cache es el hash de la URL: el contenido bajo esa clave no cambia),
+     * Accept-Ranges, `inline` y `nosniff`. Sin Set-Cookie. Si el pedido trae un `Range` simple
+     * satisfacible, responde 206 con ese tramo (ver responderConRango()).
+     *
      * @param  string  $jpeg
      * @return \Illuminate\Http\Response
      */
     private static function respuestaJpeg($jpeg)
     {
-        return response($jpeg, 200, [
-            'Content-Type'  => 'image/jpeg',
-            'Cache-Control' => 'public, max-age='.self::MAX_AGE,
-        ]);
+        $headers = [
+            'Content-Type'           => 'image/jpeg',
+            'Content-Length'         => (string) strlen($jpeg),
+            'Cache-Control'          => 'public, max-age='.self::MAX_AGE.', immutable',
+            'Accept-Ranges'          => 'bytes',
+            'Content-Disposition'    => 'inline; filename="imagen.jpg"',
+            'X-Content-Type-Options' => 'nosniff',
+        ];
+
+        $tramo = self::tramoPedido(request()->header('Range'), strlen($jpeg));
+        if (!is_null($tramo)) {
+            list($desde, $hasta) = $tramo;
+            $headers['Content-Range'] = 'bytes '.$desde.'-'.$hasta.'/'.strlen($jpeg);
+            $headers['Content-Length'] = (string) ($hasta - $desde + 1);
+
+            return response(substr($jpeg, $desde, $hasta - $desde + 1), 206, $headers);
+        }
+
+        return response($jpeg, 200, $headers);
+    }
+
+    /**
+     * El tramo `[desde, hasta]` (inclusive) que pide un header `Range`, o null si hay que
+     * responder el archivo entero. Solo se atiende UN rango simple satisfacible (`bytes=a-b`,
+     * `bytes=a-`, `bytes=-n`); uno multiple, malformado o insatisfacible se IGNORA y se manda el
+     * archivo entero con 200 (RFC 9110 permite ignorar Range). Algunos clientes de imagenes de
+     * Android piden por rangos.
+     *
+     * @param  string|null  $range
+     * @param  int  $total  Largo del archivo en bytes.
+     * @return array|null
+     */
+    private static function tramoPedido($range, $total)
+    {
+        if (!is_string($range) || $total < 1) {
+            return null;
+        }
+        if (!preg_match('/^\s*bytes=(\d*)-(\d*)\s*$/i', $range, $partes)) {
+            return null;
+        }
+
+        list(, $inicio, $fin) = $partes;
+        if ($inicio === '' && $fin === '') {
+            return null;
+        }
+
+        if ($inicio === '') {
+            /* `bytes=-n`: los ultimos n bytes. */
+            $ultimos = (int) $fin;
+            if ($ultimos < 1) {
+                return null;
+            }
+            return [max(0, $total - $ultimos), $total - 1];
+        }
+
+        $desde = (int) $inicio;
+        $hasta = $fin === '' ? $total - 1 : min((int) $fin, $total - 1);
+        if ($desde >= $total || $desde > $hasta) {
+            return null;
+        }
+
+        return [$desde, $hasta];
     }
 
     /**

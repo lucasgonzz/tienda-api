@@ -8,6 +8,7 @@ use App\PriceType;
 use App\PromocionVinoteca;
 use App\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
@@ -29,6 +30,10 @@ class FichaDelArticuloTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        /* Mision og-imagen-android: pagina() deja la imagen de la vista previa convertida DESPUES de
+           responder (en los tests corre igual, ver SeoImagenCompartir::puedeTrabajarDespuesDeResponder()).
+           Esta clase no prueba la conversion: se falsea el origen para que no intente salir. */
+        Http::fake();
         $this->armarComercio();
     }
 
@@ -316,19 +321,23 @@ class FichaDelArticuloTest extends TestCase
     public function test_con_imagen_webp_el_campo_imagen_usa_el_conversor_pero_el_json_ld_no()
     {
         $articulo = $this->articulo('Malbec Webp');
-        $this->imagen($articulo, 'https://cdn.test/malbec.webp');
+        /* Mision og-imagen-android: el fixture pasa a un host del allowlist del conversor
+           (`*.comerciocity.com`): con un host ajeno (cdn.test) el conversor responde 400 y el
+           og:image saldria roto, asi que ahora paraCompartir() lo deja tal cual. */
+        $origen = 'https://api-imgtest.comerciocity.com/public/storage/malbec.webp';
+        $this->imagen($articulo, $origen);
 
         $pagina = $this->pagina($this->rutaDe($articulo));
 
-        $this->assertStringContainsString(
-            '/api/seo/imagen-compartir?src='.rawurlencode('https://cdn.test/malbec.webp'),
+        $this->assertSame(
+            url('/api/seo/imagen-compartir/aHR0cHM6Ly9hcGktaW1ndGVzdC5jb21lcmNpb2NpdHkuY29tL3B1YmxpYy9zdG9yYWdlL21hbGJlYy53ZWJw.jpg'),
             $pagina['imagen'],
-            '`imagen` pasa por el conversor'
+            '`imagen` pasa por el conversor con la URL limpia que termina en .jpg'
         );
-        $this->assertNotSame('https://cdn.test/malbec.webp', $pagina['imagen']);
+        $this->assertNotSame($origen, $pagina['imagen']);
 
         $producto = $this->jsonLd($pagina, 'Product');
-        $this->assertSame(['https://cdn.test/malbec.webp'], $producto['image'], 'json_ld.image se queda con el original, sin convertir');
+        $this->assertSame([$origen], $producto['image'], 'json_ld.image se queda con el original, sin convertir');
     }
 
     /** Una PromocionVinoteca online es ficha valida por la misma ruta; offline, 404. */

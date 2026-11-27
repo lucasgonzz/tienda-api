@@ -3,12 +3,13 @@
 namespace Tests\Feature\Seo;
 
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
  * Mision tienda-vista-previa-y-titulo (CA1): el og:image de las paginas que usan el logo como
  * imagen para compartir tiene que pasar por SeoContexto::paraCompartir(), igual que las fichas.
- * Un logo .webp se reescribe a /api/seo/imagen-compartir (WhatsApp no siempre decodifica webp ni
+ * Un logo .webp se reescribe a /api/seo/imagen-compartir/<token>.jpg (WhatsApp no siempre decodifica webp ni
  * un archivo de 3590x3590); un logo jpg/png queda tal cual. El JSON-LD (`logo` del Store) NO cambia.
  */
 class LogoParaCompartirTest extends TestCase
@@ -25,6 +26,9 @@ class LogoParaCompartirTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        /* Mision og-imagen-android: pagina() precalienta la imagen convertida despues de responder;
+           este test no prueba la conversion, asi que se falsea el origen para que no intente salir. */
+        Http::fake();
         $this->armarComercio();
     }
 
@@ -36,7 +40,8 @@ class LogoParaCompartirTest extends TestCase
      */
     private function urlParaCompartir($logo)
     {
-        return url('/api/seo/imagen-compartir').'?src='.rawurlencode($logo);
+        /* Mision og-imagen-android: URL limpia con el src en base64url y terminada en .jpg. */
+        return url('/api/seo/imagen-compartir/'.rtrim(strtr(base64_encode($logo), '+/', '-_'), '=').'.jpg');
     }
 
     /**

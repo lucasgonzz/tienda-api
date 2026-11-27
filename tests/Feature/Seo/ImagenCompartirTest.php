@@ -491,21 +491,92 @@ class ImagenCompartirTest extends TestCase
     |---------------------------------------------------------------------------------------------
     */
 
-    /** Solo reescribe lo que termina en .webp, sin importar mayusculas ni un ?query detras. */
-    public function test_para_compartir_solo_reescribe_webp_sin_importar_mayusculas_ni_query()
+    /**
+     * Token de la URL nueva calculado ACA, a mano y sin llamar al codigo bajo prueba: base64url
+     * (sin relleno `=`, con `-` y `_` en lugar de `+` y `/`) del `src`.
+     *
+     * @param  string  $src
+     * @return string
+     */
+    private function tokenEsperado($src)
     {
+        return rtrim(strtr(base64_encode($src), '+/', '-_'), '=');
+    }
+
+    /**
+     * CA1, CA2 y CA3 (mision og-imagen-android). Reescribe el test viejo
+     * `test_para_compartir_solo_reescribe_webp_sin_importar_mayusculas_ni_query`, que asertaba
+     * que `https://cdn.test/foto.webp` -un host que el propio conversor rechaza con 400- salia
+     * apuntando al conversor: un og:image roto fijado como correcto. Ahora se fija la URL EXACTA
+     * (assertSame) para los origenes permitidos, y "tal cual" para los que no.
+     *
+     * Rutea por el conversor todo origen permitido de cualquier formato (jpg/png/webp y
+     * Cloudinary sin extension), con una URL limpia que termina en `.jpg`, sin `?` ni `%`.
+     */
+    public function test_para_compartir_rutea_por_el_conversor_solo_origenes_permitidos()
+    {
+        $base = 'https://api-imgtest.comerciocity.com/public/storage/';
+        $malbec = $base.'malbec.webp';
+
+        /* El literal sale del plan: 84 caracteres, sin `?`, sin `%`. */
+        $esperada = url('/api/seo/imagen-compartir/aHR0cHM6Ly9hcGktaW1ndGVzdC5jb21lcmNpb2NpdHkuY29tL3B1YmxpYy9zdG9yYWdlL21hbGJlYy53ZWJw.jpg');
+        $this->assertSame($esperada, SeoContexto::paraCompartir($malbec));
+        $this->assertStringNotContainsString('?', $esperada);
+        $this->assertStringNotContainsString('%', substr($esperada, strlen(url('/'))));
+
+        /* Mayusculas, query, y los otros formatos: todo por la URL nueva con su propio token. */
+        $casos = [
+            $base.'FOTO.WEBP',
+            $base.'foto.webp?v=2',
+            $base.'foto.jpg',
+            $base.'foto.png',
+            SeoContexto::CLOUDINARY.'carpeta/foto',
+        ];
+        foreach ($casos as $origen) {
+            $this->assertSame(
+                url('/api/seo/imagen-compartir/'.$this->tokenEsperado($origen).'.jpg'),
+                SeoContexto::paraCompartir($origen),
+                'por el conversor: '.$origen
+            );
+        }
+
+        /* Tal cual: null, vacio, host ajeno, http, svg. */
         $this->assertNull(SeoContexto::paraCompartir(null));
         $this->assertSame('', SeoContexto::paraCompartir(''));
-        $this->assertSame('https://cdn.test/foto.jpg', SeoContexto::paraCompartir('https://cdn.test/foto.jpg'), 'no webp: tal cual');
+        $this->assertSame('https://cdn.test/foto.webp', SeoContexto::paraCompartir('https://cdn.test/foto.webp'), 'host ajeno: el conversor lo rechazaria con 400');
+        $this->assertSame('http://api-imgtest.comerciocity.com/foto.jpg', SeoContexto::paraCompartir('http://api-imgtest.comerciocity.com/foto.jpg'), 'http');
+        $this->assertSame($base.'logo.svg', SeoContexto::paraCompartir($base.'logo.svg'), 'svg: GD no lo decodifica');
 
-        $convertida = SeoContexto::paraCompartir('https://cdn.test/foto.webp');
-        $this->assertStringContainsString('/api/seo/imagen-compartir?src='.rawurlencode('https://cdn.test/foto.webp'), $convertida);
+        /* Logo: png y jpg permitidos quedan directos (un logo blanco sobre transparente aplanado
+           sobre blanco desapareceria); un logo webp si va por el conversor. */
+        $this->assertSame($base.'logo.png', SeoContexto::paraCompartir($base.'logo.png', true));
+        $this->assertSame($base.'logo.jpg', SeoContexto::paraCompartir($base.'logo.jpg', true));
+        $this->assertSame(
+            url('/api/seo/imagen-compartir/'.$this->tokenEsperado($base.'logo.webp').'.jpg'),
+            SeoContexto::paraCompartir($base.'logo.webp', true)
+        );
+    }
 
-        $mayusculas = SeoContexto::paraCompartir('https://cdn.test/FOTO.WEBP');
-        $this->assertStringContainsString('/api/seo/imagen-compartir?src='.rawurlencode('https://cdn.test/FOTO.WEBP'), $mayusculas);
+    /**
+     * CA15 (ruta vieja): la respuesta de `?src=` tambien declara su largo y no abre sesion.
+     * Sin Content-Length LiteSpeed/h2 responde chunked, y WhatsApp Android lo trata peor.
+     */
+    public function test_la_ruta_vieja_tambien_manda_content_length()
+    {
+        if (!function_exists('imagecreatefromwebp')) {
+            $this->markTestSkipped('Este PHP no tiene soporte GD para webp.');
+        }
 
-        $con_query = SeoContexto::paraCompartir('https://cdn.test/foto.webp?v=2');
-        $this->assertStringContainsString('/api/seo/imagen-compartir?src='.rawurlencode('https://cdn.test/foto.webp?v=2'), $con_query);
+        $src = 'https://api-imgtest.comerciocity.com/public/storage/con-largo.webp';
+        Http::fake([
+            'api-imgtest.comerciocity.com/*' => Http::response($this->webpDePrueba(), 200, ['Content-Type' => 'image/webp']),
+        ]);
+
+        $respuesta = $this->pedir($src);
+
+        $respuesta->assertStatus(200);
+        $this->assertSame((string) strlen($respuesta->getContent()), $respuesta->headers->get('Content-Length'));
+        $this->assertEmpty($respuesta->headers->getCookies(), 'sin Set-Cookie');
     }
 
     /*
@@ -559,54 +630,130 @@ class ImagenCompartirTest extends TestCase
         return [$medidas[0], $medidas[1]];
     }
 
-    /** CA2: una imagen grande se reduce a lado mayor 1200 manteniendo la proporcion. */
-    public function test_un_webp_de_3000x2000_sale_como_jpeg_de_1200x800()
+    /**
+     * Pide el JPEG de un webp y verifica que salga en el lienzo fijo 1200x630 (CA9). Devuelve la
+     * imagen GD decodificada para que cada test asierte pixeles.
+     *
+     * @param  string  $src
+     * @param  string  $webp
+     * @return \GdImage|resource
+     */
+    private function lienzoDe($src, $webp)
+    {
+        $medidas = $this->medidasDelJpegPara($src, $webp);
+        $this->assertSame([1200, 630], $medidas, 'el lienzo es siempre 1200x630');
+
+        $respuesta = $this->pedir($src);
+        $imagen = imagecreatefromstring($respuesta->getContent());
+        $this->assertNotFalse($imagen);
+
+        return $imagen;
+    }
+
+    /**
+     * @param  \GdImage|resource  $imagen
+     * @param  int  $x
+     * @param  int  $y
+     * @return array  ['red' => , 'green' => , 'blue' => ]
+     */
+    private function pixel($imagen, $x, $y)
+    {
+        return imagecolorsforindex($imagen, imagecolorat($imagen, $x, $y));
+    }
+
+    /** @param  array  $rgb */
+    private function assertBlanco($rgb, $mensaje)
+    {
+        $this->assertGreaterThan(240, $rgb['red'], $mensaje);
+        $this->assertGreaterThan(240, $rgb['green'], $mensaje);
+        $this->assertGreaterThan(240, $rgb['blue'], $mensaje);
+    }
+
+    /** @param  array  $rgb */
+    private function assertRojo($rgb, $mensaje)
+    {
+        $this->assertGreaterThan(150, $rgb['red'], $mensaje);
+        $this->assertLessThan(80, $rgb['green'], $mensaje);
+    }
+
+    /**
+     * CA9: una imagen apaisada grande sale en el lienzo 1200x630 con el producto entero
+     * ("contain"): 3000x2000 -> 945x630 centrado en x=127. Mitad superior roja.
+     */
+    public function test_un_webp_de_3000x2000_sale_en_el_lienzo_de_1200x630()
     {
         if (!function_exists('imagecreatefromwebp')) {
             $this->markTestSkipped('Este PHP no tiene soporte GD para webp.');
         }
 
-        $medidas = $this->medidasDelJpegPara(
+        $lienzo = $this->lienzoDe(
             'https://api-imgtest.comerciocity.com/public/storage/grande.webp',
             $this->webpDeTamano(3000, 2000)
         );
 
-        $this->assertSame([1200, 800], $medidas);
+        $this->assertBlanco($this->pixel($lienzo, 5, 315), 'el margen izquierdo es blanco');
+        $this->assertRojo($this->pixel($lienzo, 600, 100), 'la mitad superior roja del producto esta adentro');
+        $abajo = $this->pixel($lienzo, 600, 600);
+        $this->assertFalse($abajo['red'] > 150 && $abajo['green'] < 80, 'la mitad inferior del producto no es roja');
     }
 
-    /** CA2: una imagen vertical se reduce por su lado mayor (el alto). */
-    public function test_un_webp_vertical_de_2000x3000_sale_como_jpeg_de_800x1200()
+    /**
+     * CA9: una imagen vertical sale 420x630 centrada en x=390: el producto entero, no recortado.
+     */
+    public function test_un_webp_vertical_de_2000x3000_sale_en_el_lienzo_de_1200x630()
     {
         if (!function_exists('imagecreatefromwebp')) {
             $this->markTestSkipped('Este PHP no tiene soporte GD para webp.');
         }
 
-        $medidas = $this->medidasDelJpegPara(
+        $lienzo = $this->lienzoDe(
             'https://api-imgtest.comerciocity.com/public/storage/vertical.webp',
             $this->webpDeTamano(2000, 3000)
         );
 
-        $this->assertSame([800, 1200], $medidas);
+        $this->assertBlanco($this->pixel($lienzo, 5, 315), 'margen izquierdo blanco');
+        $this->assertBlanco($this->pixel($lienzo, 380, 315), 'el producto empieza en x=390');
+        $this->assertRojo($this->pixel($lienzo, 600, 100), 'el producto esta centrado');
     }
 
-    /** CA2: una imagen chica NO se agranda. */
-    public function test_un_webp_de_800x600_sale_como_jpeg_de_800x600()
+    /**
+     * CA9: una imagen chica se AGRANDA para llenar el alto del lienzo: 800x600 -> 840x630 en x=180.
+     */
+    public function test_un_webp_de_800x600_sale_en_el_lienzo_de_1200x630()
     {
         if (!function_exists('imagecreatefromwebp')) {
             $this->markTestSkipped('Este PHP no tiene soporte GD para webp.');
         }
 
-        $medidas = $this->medidasDelJpegPara(
+        $lienzo = $this->lienzoDe(
             'https://api-imgtest.comerciocity.com/public/storage/chica.webp',
             $this->webpDeTamano(800, 600)
         );
 
-        $this->assertSame([800, 600], $medidas);
+        $this->assertBlanco($this->pixel($lienzo, 5, 315), 'margen izquierdo blanco');
+        $this->assertRojo($this->pixel($lienzo, 600, 100), 'el producto agrandado esta en el centro');
     }
 
     /**
-     * CA3: un JPEG ya cacheado a tamaño original (con la clave de cache vieja) no se sigue
-     * sirviendo: la clave cambia y se reconvierte reducido.
+     * CA9: un webp diminuto (20x10) tambien sale 1200x630 (se agranda a 1200x600 en y=15).
+     */
+    public function test_un_webp_de_20x10_sale_en_el_lienzo_de_1200x630()
+    {
+        if (!function_exists('imagecreatefromwebp')) {
+            $this->markTestSkipped('Este PHP no tiene soporte GD para webp.');
+        }
+
+        $lienzo = $this->lienzoDe(
+            'https://api-imgtest.comerciocity.com/public/storage/minima.webp',
+            $this->webpDeTamano(20, 10)
+        );
+
+        $this->assertBlanco($this->pixel($lienzo, 600, 5), 'franja blanca arriba (y<15)');
+    }
+
+    /**
+     * CA19: un JPEG cacheado con la clave v2 (la del conversor proporcional) NO se sirve: la
+     * version de cache sube a v3, se reconvierte y el nuevo queda en v3.
      */
     public function test_un_jpeg_cacheado_a_tamano_original_con_la_clave_vieja_no_se_sirve()
     {
@@ -616,16 +763,17 @@ class ImagenCompartirTest extends TestCase
 
         $src = 'https://api-imgtest.comerciocity.com/public/storage/cacheada.webp';
 
-        /* Un JPEG de 3000x2000 como el que dejaba la version anterior, en la ruta vieja. */
+        /* Un JPEG de 3000x2000 como el que dejaba la version anterior, en la ruta v2. */
         $viejo = imagecreatetruecolor(3000, 2000);
         ob_start();
         imagejpeg($viejo, null, 85);
         $jpeg_viejo = ob_get_clean();
         imagedestroy($viejo);
-        Storage::put('seo/imagen-compartir/'.md5($src).'.jpg', $jpeg_viejo);
+        Storage::put('seo/imagen-compartir/v2/'.md5($src).'.jpg', $jpeg_viejo);
 
         $medidas = $this->medidasDelJpegPara($src, $this->webpDeTamano(3000, 2000));
 
-        $this->assertSame([1200, 800], $medidas, 'No se sirvio el JPEG viejo cacheado a tamaño original.');
+        $this->assertSame([1200, 630], $medidas, 'No se sirvio el JPEG viejo cacheado (v2).');
+        Storage::assertExists('seo/imagen-compartir/v3/'.md5($src).'.jpg');
     }
 }
