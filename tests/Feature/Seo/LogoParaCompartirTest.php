@@ -3,6 +3,7 @@
 namespace Tests\Feature\Seo;
 
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
@@ -25,6 +26,9 @@ class LogoParaCompartirTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        /* Mision og-imagen-android: pagina() precalienta la imagen convertida despues de responder;
+           este test no prueba la conversion, asi que se falsea el origen para que no intente salir. */
+        Http::fake();
         $this->armarComercio();
     }
 

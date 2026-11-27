@@ -8,6 +8,7 @@ use App\PriceType;
 use App\PromocionVinoteca;
 use App\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
@@ -29,6 +30,10 @@ class FichaDelArticuloTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        /* Mision og-imagen-android: pagina() deja la imagen de la vista previa convertida DESPUES de
+           responder (en los tests corre igual, ver SeoImagenCompartir::puedeTrabajarDespuesDeResponder()).
+           Esta clase no prueba la conversion: se falsea el origen para que no intente salir. */
+        Http::fake();
         $this->armarComercio();
     }
 
